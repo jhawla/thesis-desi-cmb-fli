@@ -1,10 +1,9 @@
 #!/usr/bin/env python
 """
-Comprehensive benchmark: High-z correction modes (fixed, taylor, exact)
+Comprehensive benchmark: High-z correction modes (fixed, taylor, exact_linear)
 Tests precision and performance across different grid sizes.
 """
 
-import os
 import time
 from pathlib import Path
 
@@ -15,8 +14,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from jax import jacfwd
 
-os.environ["JAX_PLATFORMS"] = "cpu"
-
 from desi_cmb_fli.bricks import get_cosmology
 from desi_cmb_fli.cmb_lensing import compute_cl_high_z, compute_theoretical_cl_kappa
 
@@ -24,7 +21,7 @@ jax.config.update("jax_enable_x64", True)
 
 def benchmark_precision():
     """
-    Test precision: compare fixed and taylor against exact mode
+    Test precision: compare fixed and taylor against exact_linear mode
     for various cosmologies.
     """
     print("=" * 70)
@@ -45,7 +42,7 @@ def benchmark_precision():
     pixel_scale_deg = 2.0  # degrees
     freq = np.fft.fftfreq(npix, d=pixel_scale_deg) * 360.0
     lx, ly = np.meshgrid(freq, freq, indexing='ij')
-    ell_grid = jnp.array(np.sqrt(lx**2 + ly**2))
+    ell_eval = jnp.array(np.sqrt(lx**2 + ly**2))
 
     # Also compute on 1D array for plotting
     ell_1d = np.logspace(1, 3.5, 100)
@@ -58,7 +55,7 @@ def benchmark_precision():
         cosmo_fid, 1.0 / (1.0 + cmb_z_source))[0])
 
     cl_cached = compute_theoretical_cl_kappa(
-        cosmo_fid, ell_grid, chi_max_box, chi_source_fid, cmb_z_source, n_steps=150
+        cosmo_fid, ell_eval, chi_max_box, chi_source_fid, cmb_z_source, n_steps=150
     )
 
     # Taylor gradients
@@ -66,7 +63,7 @@ def benchmark_precision():
         Om, s8 = theta
         c = get_cosmology(Omega_m=Om, sigma8=s8)
         chi_s = jc.background.radial_comoving_distance(c, 1.0 / (1.0 + cmb_z_source))[0]
-        return compute_theoretical_cl_kappa(c, ell_grid, chi_max_box, chi_s, cmb_z_source, n_steps=150)
+        return compute_theoretical_cl_kappa(c, ell_eval, chi_max_box, chi_s, cmb_z_source, n_steps=150)
 
     theta_fid = jnp.array([Om_fid, s8_fid])
     jac_fn = jacfwd(get_cl_wrapper)
@@ -104,6 +101,7 @@ def benchmark_precision():
     styles = {
         'fixed': ('--', 0.5, 1.5),
         'taylor': ('-', 0.9, 2.2),
+        'exact_linear': (':', 0.8, 2.0),
     }
 
     for label, Om, s8, color in test_params:
@@ -113,12 +111,12 @@ def benchmark_precision():
         # Exact (reference)
         print("    Computing exact (reference)...")
         cl_exact = compute_cl_high_z(
-            cosmo_test, ell_grid, chi_max_box, None, cmb_z_source,
+            cosmo_test, ell_eval, chi_max_box, None, cmb_z_source,
             mode='exact', n_steps=150
         )
 
         # Interpolate to 1D for plotting
-        ell_flat = ell_grid.flatten()
+        ell_flat = ell_eval.flatten()
         cl_exact_flat = np.array(cl_exact).flatten()
         sort_idx = np.argsort(ell_flat)
         cl_exact_1d = np.interp(ell_1d, ell_flat[sort_idx], cl_exact_flat[sort_idx])
@@ -131,8 +129,13 @@ def benchmark_precision():
                 cl_mode = cl_cached
             elif mode_name == 'taylor':
                 cl_mode = compute_cl_high_z(
-                    cosmo_test, ell_grid, chi_max_box, None, cmb_z_source,
+                    cosmo_test, ell_eval, chi_max_box, None, cmb_z_source,
                     mode='taylor', cl_cached=cl_cached, gradients=gradients, loc_fid=loc_fid
+                )
+            elif mode_name == 'exact_linear':
+                cl_mode = compute_cl_high_z(
+                    cosmo_test, ell_eval, chi_max_box, None, cmb_z_source,
+                    mode='exact_linear', n_steps=150
                 )
 
             # Interpolate to 1D
@@ -143,7 +146,7 @@ def benchmark_precision():
             rel_error = (cl_mode_1d - cl_exact_1d) / cl_exact_1d * 100
 
             # Plot
-            mode_label = {'fixed': 'Fixed', 'taylor': 'Taylor'}[mode_name]
+            mode_label = {'fixed': 'Fixed', 'taylor': 'Taylor', 'exact_linear': 'Exact (Linear)'}[mode_name]
             ax.plot(ell_1d, rel_error, linestyle=linestyle, color=color, alpha=alpha,
                    linewidth=lw, label=f"{label} ({mode_label})")
 
@@ -204,6 +207,7 @@ def benchmark_performance():
     results = {
         'fixed': {'times': [], 'n_calls': []},
         'taylor': {'times': [], 'n_calls': []},
+        'exact_linear': {'times': [], 'n_calls': []},
         'exact': {'times': [], 'n_calls': []},
     }
 
@@ -213,26 +217,27 @@ def benchmark_performance():
         # Create grid
         freq = np.fft.fftfreq(npix, d=pixel_scale_deg) * 360.0
         lx, ly = np.meshgrid(freq, freq, indexing='ij')
-        ell_grid = jnp.array(np.sqrt(lx**2 + ly**2))
+        ell_eval = jnp.array(np.sqrt(lx**2 + ly**2))
 
         n_total = npix * npix
         results['fixed']['n_calls'].append(1)  # Cached
         results['taylor']['n_calls'].append(1)  # Cached + gradient
+        results['exact_linear']['n_calls'].append(n_total)
         results['exact']['n_calls'].append(n_total)
 
         print(f"    Total ell values: {n_total}")
 
         # Precompute cache for fixed/taylor
         cl_cached = compute_theoretical_cl_kappa(
-            cosmo_fid, ell_grid, chi_max_box,
+            cosmo_fid, ell_eval, chi_max_box,
             float(jc.background.radial_comoving_distance(cosmo_fid, 1.0/(1.0+cmb_z_source))[0]),
             cmb_z_source, n_steps=50
         )
 
         # Mock gradients (for timing, not computing jacobian each time)
         gradients = {
-            'dCl_dOm': jnp.ones_like(ell_grid) * 0.1,
-            'dCl_ds8': jnp.ones_like(ell_grid) * 0.2
+            'dCl_dOm': jnp.ones_like(ell_eval) * 0.1,
+            'dCl_ds8': jnp.ones_like(ell_eval) * 0.2
         }
         loc_fid = {'Omega_m': Om_fid, 'sigma8': s8_fid}
 
@@ -240,16 +245,21 @@ def benchmark_performance():
         modes_to_test = [
             ('fixed', {'mode': 'fixed', 'cl_cached': cl_cached}),
             ('taylor', {'mode': 'taylor', 'cl_cached': cl_cached, 'gradients': gradients, 'loc_fid': loc_fid}),
+            ('exact_linear', {'mode': 'exact_linear', 'n_steps': 50}),
             ('exact', {'mode': 'exact', 'n_steps': 50}),
         ]
 
         for mode_name, kwargs in modes_to_test:
+            @jax.jit
+            def bench_fn(c, e, kwargs=kwargs):
+                return compute_cl_high_z(c, e, chi_max_box, None, cmb_z_source, **kwargs)
+
             # Warmup
-            _ = compute_cl_high_z(cosmo_test, ell_grid, chi_max_box, None, cmb_z_source, **kwargs)
+            _ = bench_fn(cosmo_test, ell_eval).block_until_ready()
 
             # Measure
             t0 = time.time()
-            _ = compute_cl_high_z(cosmo_test, ell_grid, chi_max_box, None, cmb_z_source, **kwargs)
+            _ = bench_fn(cosmo_test, ell_eval).block_until_ready()
             elapsed = time.time() - t0
 
             results[mode_name]['times'].append(elapsed)
@@ -261,17 +271,19 @@ def benchmark_performance():
     colors = {
         'fixed': '#2ca02c',
         'taylor': '#ff7f0e',
+        'exact_linear': '#9467bd',
         'exact': '#d62728'
     }
 
-    markers = {'fixed': 'o', 'taylor': 's', 'exact': 'D'}
+    markers = {'fixed': 'o', 'taylor': 's', 'exact_linear': '^', 'exact': 'D'}
 
     # Left plot: Execution time
-    for mode_name in ['fixed', 'taylor', 'exact']:
+    for mode_name in ['fixed', 'taylor', 'exact_linear', 'exact']:
         times = results[mode_name]['times']
         label_map = {
             'fixed': 'Fixed (cached)',
             'taylor': 'Taylor (1st order)',
+            'exact_linear': 'Exact (Linear Pk)',
             'exact': 'Exact (full)'
         }
         ax1.plot(grid_sizes, times, marker=markers[mode_name],
@@ -287,12 +299,13 @@ def benchmark_performance():
     ax1.set_title('Computation Time vs Grid Size', fontsize=12, fontweight='bold')
 
     # Right plot: Speedup relative to exact
-    for mode_name in ['fixed', 'taylor']:
+    for mode_name in ['fixed', 'taylor', 'exact_linear']:
         speedups = [results['exact']['times'][i] / results[mode_name]['times'][i]
                    for i in range(len(grid_sizes))]
         label_map = {
             'fixed': 'Fixed',
-            'taylor': 'Taylor'
+            'taylor': 'Taylor',
+            'exact_linear': 'Exact (Linear Pk)'
         }
         ax2.plot(grid_sizes, speedups, marker=markers[mode_name],
                 color=colors[mode_name], linewidth=2, markersize=8,
@@ -328,7 +341,7 @@ def benchmark_performance():
     print("PERFORMANCE SUMMARY (256×256 grid)")
     print("=" * 70)
     idx = -1  # Last grid size
-    for mode_name in ['fixed', 'taylor', 'exact']:
+    for mode_name in ['fixed', 'taylor', 'exact_linear', 'exact']:
         t = results[mode_name]['times'][idx]
         speedup = results['exact']['times'][idx] / t
         print(f"  {mode_name:12s}: {t:6.3f}s  (speedup: {speedup:5.1f}×)")

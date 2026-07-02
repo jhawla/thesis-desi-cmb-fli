@@ -4,7 +4,7 @@ authors:
 - family-names: Hawla
   given-names: Jonathan
 title: "thesis-desi-cmb-fli: DESI \xD7 CMB lensing field-level inference"
-version: 0.1.0
+version: 0.2.0
 date-released: '2025-10-14'
 license: MIT
 repository-code: https://github.com/Joletaxi19/thesis-desi-cmb-fli

@@ -4,11 +4,143 @@ from diffrax import Euler, ODETerm, PIDController, SaveAt, Tsit5, diffeqsolve
 from jax import debug, lax, tree
 from jax import numpy as jnp
 from jax_cosmo import Cosmology
-from jaxpm.growth import _growth_factor_ODE
 from jaxpm.kernels import longrange_kernel
 from jaxpm.painting import cic_paint, cic_read
 
 from desi_cmb_fli.utils import ch2rshape, safe_div
+
+ABACUS_OMEGA_B = 0.04930169
+ABACUS_H = 0.6736
+ABACUS_N_S = 0.9649
+ABACUS_SIGMA8 = 0.811355
+_EMULATOR = None
+
+class BackgroundEmulator:
+    """
+    Bilinear emulator for cosmological background quantities (growth, distances).
+    This completely bypasses the jax_cosmo ODE solvers and CPU callbacks during
+    JAX compilation, preventing LLVM from running out of memory (OOM) on large MCMC runs.
+    """
+    def __init__(self, Om_min=0.05, Om_max=0.7, n_Om=100):
+        # 1. Define the grid boundaries for Omega_m
+        self.Om_grid = np.linspace(Om_min, Om_max, n_Om)
+
+        # 2. Setup fiducial AbacusSummit cosmology to extract the standard scale factor array
+        fid_cosmo = jc.Cosmology(
+            Omega_c=0.315192 - ABACUS_OMEGA_B, Omega_b=ABACUS_OMEGA_B,
+            Omega_k=0.0, h=ABACUS_H, n_s=ABACUS_N_S, sigma8=ABACUS_SIGMA8, w0=-1.0, wa=0.0
+        )
+        atab, _, _, _, _, _, _ = jc.background._compute_growth_tables(fid_cosmo)
+        self.a_grid_growth = np.array(atab)
+        self.a_grid_chi = np.logspace(-4, 0, 512)
+
+        # 3. Initialize empty NumPy arrays for precomputation
+        g_grid = np.zeros((n_Om, len(self.a_grid_growth)))
+        f_grid = np.zeros((n_Om, len(self.a_grid_growth)))
+        g2_grid = np.zeros((n_Om, len(self.a_grid_growth)))
+        f2_grid = np.zeros((n_Om, len(self.a_grid_growth)))
+        chi_grid = np.zeros((n_Om, len(self.a_grid_chi)))
+
+        print("[Emulator] Precomputing background ODE grids...")
+
+        # 4. Fill the grids using jax_cosmo (runs on CPU before any JIT compilation)
+        for i, Om in enumerate(self.Om_grid):
+            c = jc.Cosmology(
+                Omega_c=float(Om) - ABACUS_OMEGA_B, Omega_b=ABACUS_OMEGA_B,
+                Omega_k=0.0, h=ABACUS_H, n_s=ABACUS_N_S, sigma8=ABACUS_SIGMA8, w0=-1.0, wa=0.0
+            )
+            _, gtab, ftab, _, g2tab, f2tab, _ = jc.background._compute_growth_tables(c)
+            g_grid[i, :] = gtab
+            f_grid[i, :] = ftab
+            g2_grid[i, :] = g2tab
+            f2_grid[i, :] = f2tab
+            chi_grid[i, :] = jc.background.radial_comoving_distance(c, self.a_grid_chi)
+
+        # 5. Convert everything to JAX arrays for fast inference
+        self.g_grid = jnp.array(g_grid)
+        self.f_grid = jnp.array(f_grid)
+        self.g2_grid = jnp.array(g2_grid)
+        self.f2_grid = jnp.array(f2_grid)
+        self.chi_grid = jnp.array(chi_grid)
+        self.a_grid_growth_jnp = jnp.array(self.a_grid_growth)
+        self.a_grid_chi_jnp = jnp.array(self.a_grid_chi)
+        self.Om_grid_jnp = jnp.array(self.Om_grid)
+
+    def _get_Om_blend(self, Om):
+        """
+        Finds the exact bounding indices and interpolation weights for a given Omega_m.
+        We do this manually to avoid using jax.vmap, which creates ghost dimensions
+        and crashes jnp.interp.
+        """
+        # Force Om to be a strict 0D scalar (removes any hidden JAX tracer dimensions)
+        Om = jnp.atleast_1d(Om)[0]
+
+        # Find the fractional index of Om inside the grid
+        Om_idx = jnp.interp(Om, self.Om_grid_jnp, jnp.arange(len(self.Om_grid_jnp)))
+
+        # Get the integer bounding indices
+        idx0 = jnp.floor(Om_idx).astype(int)
+        idx1 = jnp.clip(idx0 + 1, 0, len(self.Om_grid_jnp) - 1)
+
+        # Calculate linear interpolation weights
+        w1 = Om_idx - idx0
+        w0 = 1.0 - w1
+        return idx0, idx1, w0, w1
+
+    def get_growth_tables(self, Om):
+        # Get interpolation weights for the current Omega_m
+        idx0, idx1, w0, w1 = self._get_Om_blend(Om)
+
+        # Extract the 1D arrays from the 2D grid and blend them
+        gtab = self.g_grid[idx0] * w0 + self.g_grid[idx1] * w1
+        ftab = self.f_grid[idx0] * w0 + self.f_grid[idx1] * w1
+        g2tab = self.g2_grid[idx0] * w0 + self.g2_grid[idx1] * w1
+        f2tab = self.f2_grid[idx0] * w0 + self.f2_grid[idx1] * w1
+
+        return self.a_grid_growth_jnp, gtab, ftab, g2tab, f2tab
+
+    def a2chi(self, Om, a):
+        # Get interpolation weights for the current Omega_m
+        idx0, idx1, w0, w1 = self._get_Om_blend(Om)
+
+        # Extract the 1D chi array
+        chi_1d = self.chi_grid[idx0] * w0 + self.chi_grid[idx1] * w1
+
+        # Interpolate along the scale factor axis
+        return jnp.interp(a, self.a_grid_chi_jnp, chi_1d)
+
+    def chi2a(self, Om, chi):
+        # Get interpolation weights for the current Omega_m
+        idx0, idx1, w0, w1 = self._get_Om_blend(Om)
+
+        # Extract the 1D chi array
+        chi_1d = self.chi_grid[idx0] * w0 + self.chi_grid[idx1] * w1
+
+        return jnp.interp(chi, chi_1d[::-1], self.a_grid_chi_jnp[::-1])
+
+def _get_background_emulator():
+    global _EMULATOR
+    if _EMULATOR is None:
+        _EMULATOR = BackgroundEmulator()
+    return _EMULATOR
+
+
+def _is_abacus_background(cosmo):
+    """Return True when the emulator grid matches all fixed background parameters."""
+    checks = (
+        ("Omega_b", ABACUS_OMEGA_B),
+        ("Omega_k", 0.0),
+        ("h", ABACUS_H),
+        ("n_s", ABACUS_N_S),
+        ("w0", -1.0),
+        ("wa", 0.0),
+    )
+    try:
+        return all(np.isclose(float(getattr(cosmo, name)), value, rtol=0.0, atol=1e-10)
+                   for name, value in checks)
+    except (TypeError, ValueError):
+        return False
+
 
 
 def rfftk(shape):
@@ -194,44 +326,36 @@ def lpt(cosmo: Cosmology, init_mesh, pos, a, order=2, grad_fd=False, lap_fd=Fals
 ###########
 # Growths #
 ###########
-log10_amin: int = -3
-steps: int = 128
+
+def _get_growth_tables(cosmo):
+    """Return growth tables, using the emulator only for its calibrated background."""
+    if _is_abacus_background(cosmo):
+        Om = cosmo.Omega_c + cosmo.Omega_b
+        return _get_background_emulator().get_growth_tables(Om)
+    atab, gtab, ftab, _, g2tab, f2tab, _ = jc.background._compute_growth_tables(cosmo)
+    return atab, gtab, ftab, g2tab, f2tab
 
 
 # Growth from scale factor
 def a2g(cosmo, a):
-    if "background.growth_factor" not in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
-    cache = cosmo._workspace["background.growth_factor"]
-    return jnp.interp(a, cache["a"], cache["g"])
+    atab, gtab, *_ = _get_growth_tables(cosmo)
+    return jnp.interp(a, atab, gtab)
 
 
 def a2gg(cosmo, a):
-    if "background.growth_factor" not in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
-    cache = cosmo._workspace["background.growth_factor"]
-    # NOTE: g2 is normalized such that gg = -3/7 * g2 ~ -3/7 * g^2
-    if "g2" in cache:
-        return jnp.interp(a, cache["a"], cache["g2"]) * -3 / 7
-    # Fallback for jaxpm versions exposing only first-order growth.
-    return -3 / 7 * a2g(cosmo, a) ** 2
+    atab, gtab, _, g2tab, _ = _get_growth_tables(cosmo)
+    # gg = -3/7 * D2 (second-order growth for 2LPT)
+    return jnp.interp(a, atab, g2tab) * -3 / 7
 
 
 def a2f(cosmo, a):
-    if "background.growth_factor" not in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
-    cache = cosmo._workspace["background.growth_factor"]
-    return jnp.interp(a, cache["a"], cache["f"])
+    atab, _, ftab, _, _ = _get_growth_tables(cosmo)
+    return jnp.interp(a, atab, ftab)
 
 
 def a2ff(cosmo, a):
-    if "background.growth_factor" not in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
-    cache = cosmo._workspace["background.growth_factor"]
-    if "f2" in cache:
-        return jnp.interp(a, cache["a"], cache["f2"])
-    # If D2 ~ D1^2 then f2 ~ 2 f1.
-    return 2 * a2f(cosmo, a)
+    atab, _, _, _, f2tab = _get_growth_tables(cosmo)
+    return jnp.interp(a, atab, f2tab)
 
 
 def a2dggdg(cosmo, a):
@@ -239,38 +363,25 @@ def a2dggdg(cosmo, a):
     return safe_div(gg * ff, g * f)  # NOTE: dggdg(0) = 0
 
 
-# Growth from growth factor
+# Growth from growth factor (inverse lookups via table)
 def g2a(cosmo, g):
-    if "background.growth_factor" not in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
-    cache = cosmo._workspace["background.growth_factor"]
-    return jnp.interp(g, cache["g"], cache["a"])
+    atab, gtab, *_ = _get_growth_tables(cosmo)
+    return jnp.interp(g, gtab, atab)
 
 
 def g2gg(cosmo, g):
-    if "background.growth_factor" not in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
-    cache = cosmo._workspace["background.growth_factor"]
-    # NOTE: g2 is normalized such that gg = -3/7 * g2 ~ -3/7 * g^2
-    if "g2" in cache:
-        return jnp.interp(g, cache["g"], cache["g2"]) * -3 / 7
-    return -3 / 7 * g**2
+    atab, gtab, _, g2tab, _ = _get_growth_tables(cosmo)
+    return jnp.interp(g, gtab, g2tab) * -3 / 7
 
 
 def g2f(cosmo, g):
-    if "background.growth_factor" not in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
-    cache = cosmo._workspace["background.growth_factor"]
-    return jnp.interp(g, cache["g"], cache["f"])
+    atab, gtab, ftab, _, _ = _get_growth_tables(cosmo)
+    return jnp.interp(g, gtab, ftab)
 
 
 def g2ff(cosmo, g):
-    if "background.growth_factor" not in cosmo._workspace.keys():
-        _growth_factor_ODE(cosmo, np.atleast_1d(1.0), log10_amin=log10_amin, steps=steps)
-    cache = cosmo._workspace["background.growth_factor"]
-    if "f2" in cache:
-        return jnp.interp(g, cache["g"], cache["f2"])
-    return 2 * g2f(cosmo, g)
+    atab, gtab, _, _, f2tab = _get_growth_tables(cosmo)
+    return jnp.interp(g, gtab, f2tab)
 
 
 def g2dggdg(cosmo, g):
@@ -282,27 +393,28 @@ def g2dggdg(cosmo, g):
 # Distances #
 #############
 def a2chi(cosmo, a):
-    """
-    Radial comoving distance in Mpc/h for a given scale factor.
-    """
+    """Radial comoving distance in Mpc/h for a given scale factor."""
     a = jnp.asarray(a)
-    if "background.radial_comoving_distance" not in cosmo._workspace.keys():
-        jc.background.radial_comoving_distance(cosmo, jnp.atleast_1d(1.0))
-    cache = cosmo._workspace["background.radial_comoving_distance"]
-    chi = jnp.interp(a.reshape(-1), cache["a"], cache["chi"])
+    if _is_abacus_background(cosmo):
+        Om = cosmo.Omega_c + cosmo.Omega_b
+        res = _get_background_emulator().a2chi(Om, a.reshape(-1))
+        return res.reshape(a.shape)
+    # General cosmology: fall back to the h-aware jax_cosmo background.
+    chi = jc.background.radial_comoving_distance(cosmo, a.reshape(-1))
     return chi.reshape(a.shape)
 
 
 def chi2a(cosmo, chi):
-    """
-    Scale factor for a given radial comoving distance in Mpc/h.
-    """
+    """Scale factor for a given radial comoving distance in Mpc/h."""
     chi = jnp.asarray(chi)
-    if "background.radial_comoving_distance" not in cosmo._workspace.keys():
-        jc.background.radial_comoving_distance(cosmo, jnp.atleast_1d(1.0))
-    cache = cosmo._workspace["background.radial_comoving_distance"]
-    a = jnp.interp(chi.reshape(-1), cache["chi"][::-1], cache["a"][::-1])
-    return a.reshape(chi.shape)
+    original_shape = chi.shape
+    if _is_abacus_background(cosmo):
+        Om = cosmo.Omega_c + cosmo.Omega_b
+        res = _get_background_emulator().chi2a(Om, chi.reshape(-1))
+        return res.reshape(original_shape)
+    # General cosmology: fall back to the h-aware jax_cosmo background.
+    a = jc.background.a_of_chi(cosmo, chi.reshape(-1))
+    return a.reshape(original_shape)
 
 
 ###########

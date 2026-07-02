@@ -36,12 +36,18 @@ Git hooks automatically format code on commit. CI runs tests on push.
 
 ## Pipeline Status
 
-**✅ Completed:** Initial conditions, gravitational evolution, galaxy bias modeling, CMB lensing modeling, and field-level inference on synthetic galaxy + CMB lensing data
+**✅ Completed:** Initial conditions, gravitational evolution, galaxy bias (+ PNG / local f_NL) and
+RSD modeling, curved-sky Born CMB-lensing modeling, and field-level inference validated both on
+synthetic **closure** data and on **AbacusSummit** N-body data (galaxy-only, CMB-only, and joint
+galaxy × κ). The current headline configuration is the **joint analysis on the AbacusSummit base box**
+(both probes), with cosmology fixed to focus the constraint on the primordial non-Gaussianity
+parameters.
 
 **🚧 Next Steps:**
-- Field-level inference on real data (DESI LRG × Planck/ACT κ-maps)
+- Field-level inference on **real data** (DESI LRG × Planck/ACT κ-maps) — *not yet supported*; the only
+  external data ingested today is AbacusSummit.
 
-See [`pipeline.md`](https://github.com/Joletaxi19/thesis-desi-cmb-fli/blob/main/docs/pipeline.md) for detailed implementation roadmap and [`notebooks/`](https://github.com/Joletaxi19/thesis-desi-cmb-fli/blob/main/notebooks) for interactive demonstrations.
+See [`pipeline.md`](https://github.com/Joletaxi19/thesis-desi-cmb-fli/blob/main/docs/pipeline.md) for detailed implementation roadmap.
 
 ## Citation
 The project for the FLI × DESI × CMB lensing analysis should be cited

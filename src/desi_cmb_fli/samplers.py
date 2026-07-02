@@ -230,9 +230,8 @@ def nutswg_init(logdf, kernel="NUTS"):
 
 def get_init_state(init_pos, logdf, init_fn):
     init_pos_block1 = {name: init_pos[name] for name in ["init_mesh_"]}
-    init_pos_block2 = {
-        name: init_pos[name] for name in ["Omega_m_", "sigma8_", "b1_", "b2_", "bs2_", "bn2_"]
-    }
+    scalar_names = ["Omega_m_", "sigma8_", "b1_", "b2_", "bs2_", "bn2_"]
+    init_pos_block2 = {name: init_pos[name] for name in scalar_names if name in init_pos}
     init_state = {
         "mesh_": init_fn["mesh_"](
             position=init_pos_block1, logdensity_fn=lambda x: logdf(x | init_pos_block2)
@@ -449,6 +448,27 @@ def get_mclmc_warmup(
         desired_energy_var=desired_energy_var,
         diagonal_preconditioning=diagonal_preconditioning,
     )
+
+
+def scalar_precond_mass(logdf, pos0, scalar_keys, verbose=True):
+    """Diagonal inverse-mass that isotropizes stiff scalar latents. See docs/pipeline.md."""
+    import jax
+
+    curv = {}
+    for k in scalar_keys:
+        def f(x, k=k):
+            return logdf({**pos0, k: x})
+        curv[k] = jnp.abs(jit(jax.grad(jax.grad(f)))(pos0[k]))
+    inv_mass = {
+        k: (1.0 / jnp.maximum(curv[k], 1e-30) if k in scalar_keys else jnp.ones_like(v))
+        for k, v in pos0.items()
+    }
+    flat, _ = ravel_pytree(inv_mass)
+    if verbose:
+        for k in scalar_keys:
+            print(f"  [scalar-precond] {k:10s} curv={float(curv[k]):.3e}  "
+                  f"inv_mass={float(1.0 / jnp.maximum(curv[k], 1e-30)):.3e}")
+    return flat, {k: float(curv[k]) for k in scalar_keys}
 
 
 def get_mclmc_run(logdf, n_samples, transform=None, thinning=1, progress_bar=True):

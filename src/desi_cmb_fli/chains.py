@@ -380,7 +380,7 @@ class Chains(Samples):
         if thinning is None:
             n_split = 1
         else:
-            n_split = max(np.rint(length / thinning), 1)
+            n_split = max(int(np.rint(length / thinning)), 1)
 
         if moment is None:
 

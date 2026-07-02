@@ -13,6 +13,7 @@ import gc
 import os
 import pickle
 import shutil
+import sys
 
 import yaml
 
@@ -26,13 +27,14 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 import numpyro
 from blackjax.adaptation.mclmc_adaptation import MCLMCAdaptationState
-from jax import jit, pmap, tree
+from jax import jit, pmap
 
 from desi_cmb_fli import utils
-from desi_cmb_fli.cmb_lensing import load_abacus_observation
-from desi_cmb_fli.model import default_config, get_model_from_config
+from desi_cmb_fli.cmb_lensing import load_abacus_galaxy_observation, load_abacus_kappa_observation
+from desi_cmb_fli.model import get_model_from_config
 from desi_cmb_fli.samplers import get_mclmc_run, get_mclmc_warmup
 from desi_cmb_fli.utils import ObservationMode
 
@@ -175,18 +177,41 @@ else:
         )
         print("[Closure test] kappa_obs generated synthetically from truth_params")
 
+        if model.cmb_enabled and "kappa_obs" in truth:
+            truth["kappa_obs_packed"] = truth["kappa_obs"]
+            truth["kappa_obs"] = model.unpack_kappa_obs_to_map(truth["kappa_obs"])
+
     elif observation_mode == ObservationMode.ABACUS:
+        truth = {}
+
+        # ── Galaxy observation ──────────────────────────────────────────
         if model.galaxies_enabled:
-            raise NotImplementedError(
-                "observation_mode='abacus' with galaxies_enabled=True is not yet implemented. "
-                "No AbacusSummit galaxy catalog is loaded. "
-                "Set galaxies_enabled: false in config.yaml."
+            abacus_gxy_cfg = cfg.get("abacus_galaxy", None)
+            if abacus_gxy_cfg is None:
+                raise ValueError(
+                    "observation_mode='abacus' with galaxies_enabled=True requires "
+                    "an 'abacus_galaxy' section in config.yaml."
+                )
+            truth_gxy = load_abacus_galaxy_observation(
+                abacus_gxy_cfg=abacus_gxy_cfg,
+                model=model,
             )
-        # Abacus N-body: load external observation via the dedicated loader.
-        truth = load_abacus_observation(
-            abacus_cfg=cfg.get("abacus_kappa", {}),
-            model=model,
-        )
+            truth.update(truth_gxy)
+
+        # ── CMB kappa observation ───────────────────────────────────────
+        if model.cmb_enabled:
+            truth_cmb = load_abacus_kappa_observation(
+                abacus_cfg=cfg.get("abacus_kappa", {}),
+                model=model,
+            )
+            truth.update(truth_cmb)
+            truth["kappa_obs_packed"] = model.pack_kappa_obs(jnp.asarray(truth["kappa_obs"]))
+
+        if not truth:
+            raise ValueError(
+                "observation_mode='abacus' but neither galaxies_enabled nor "
+                "cmb_enabled is True — nothing to load."
+            )
 
         abacus_truth = cfg.get("abacus_truth_params", {})
         if abacus_truth:
@@ -231,10 +256,12 @@ else:
         truth,
         output_dir=fig_dir,
         box_shape=model.box_shape,
-        field_size_deg=model.cmb_field_size_deg if cmb_enabled else None,
-        field_npix=model.cmb_field_npix if cmb_enabled else None,
         chi_center=chi_center,
         observation_mode=observation_mode,
+        cmb_mask=getattr(model, "cmb_mask", None),
+        cmb_nside=getattr(model, "cmb_nside", None),
+        observer_position=getattr(model, "observer_position", None),
+        chi_boundary=getattr(model, "chi_boundary", None),
     )
     print(f"✓ Saved field slices to {fig_dir}")
 
@@ -298,9 +325,32 @@ else:
 condition_dict = {}
 if model.galaxies_enabled and "obs" in truth:
     condition_dict["obs"] = truth["obs"]
+    model.gxy_occ_mask3d = truth.get("gxy_occ_mask3d", None)
+    if "selec_mesh" in truth:
+        model.selec_mesh = truth["selec_mesh"]
 
-if cmb_enabled and "kappa_obs" in truth:
-    condition_dict["kappa_obs"] = truth["kappa_obs"]
+if cmb_enabled and "kappa_obs_packed" in truth:
+    condition_dict["kappa_obs"] = truth["kappa_obs_packed"]
+
+fixed_params = list(cfg.get("mcmc", {}).get("fixed_params", []))
+fixed_dict = {}
+if fixed_params:
+    _truth_src = (
+        cfg.get("truth_params", {}) if observation_mode == ObservationMode.CLOSURE
+        else cfg.get("abacus_truth_params", {})
+    )
+    for _p in fixed_params:
+        fixed_dict[_p] = float(_truth_src.get(_p, model.loc_fid[_p]))
+    print(f"\n🔒 Fixing parameters to their truth/fiducial value: {fixed_dict}")
+
+fixed_latent_keys = [p + "_" for p in fixed_params]
+
+def apply_conditioning():
+    """Condition the model on the data and on any fixed scalar latents, then block."""
+    model.condition(condition_dict)
+    if fixed_dict:
+        model.condition(fixed_dict, frombase=True)
+    model.block()
 
 if model.galaxies_enabled and cmb_enabled:
     print("\n✓ Joint inference: Galaxies + CMB lensing")
@@ -369,7 +419,6 @@ if not RESUME_MODE:
         desired_energy_var=1e-6,
         diagonal_preconditioning=True,
     )))
-    print(f"  [build warmup_mesh_fn: {_time.time()-_t0:.1f}s]", flush=True)
 
     _t0 = _time.time()
     state_mesh, config_mesh = warmup_mesh_fn(jr.split(jr.key(43), num_chains), init_mesh_)
@@ -380,10 +429,11 @@ if not RESUME_MODE:
     print("✓ Mesh warmup done", flush=True)
     print(f"  Logdens (median): {float(jnp.median(state_mesh.logdensity)):.2f}", flush=True)
     print(f"  L (median): {float(jnp.median(config_mesh.L)):.6f}", flush=True)
-    print(f"  step_size (median): {float(jnp.median(config_mesh.step_size)):.6f}", flush=True)
+    print(f"  step_size (median): {float(jnp.median(config_mesh.step_size)):.6e}", flush=True)
 
     # Update only init_mesh_ from mesh warmup, keep cosmo/bias from initial params
     init_params_["init_mesh_"] = state_mesh.position["init_mesh_"]
+    init_params_ = {k: v for k, v in init_params_.items() if k not in fixed_latent_keys}
 
     # STEP 2: Warmup all params
     print("\n" + "=" * 80, flush=True)
@@ -391,20 +441,47 @@ if not RESUME_MODE:
     print("=" * 80, flush=True)
 
     model.reset()
-    model.condition(condition_dict)
-    model.block()
+    apply_conditioning()
+
+    if os.environ.get("DIAGNOSE_FREEZE"):
+        from desi_cmb_fli.validation import diagnose_freeze
+        diagnose_freeze(model, init_params_, fig_dir)
+        sys.exit(0)
 
     print(f"Warming all params ({num_warmup} steps)...", flush=True)
-    print(f"  Initial scalar params: fiducial (Omega_m={model.loc_fid['Omega_m']:.4f}, sigma8={model.loc_fid['sigma8']:.4f}, b1={model.loc_fid['b1']:.2f}, ...)", flush=True)
+    print(
+        f"  Initial scalar params: fiducial (Omega_m={model.loc_fid['Omega_m']:.4f}, "
+        f"sigma8={model.loc_fid['sigma8']:.4f}, b1={model.loc_fid['b1']:.2f}, "
+        "b2/bs2/bn2 from latents)",
+        flush=True,
+    )
     _t0 = _time.time()
-    warmup_all_fn = pmap(jit(get_mclmc_warmup(
-        model.logpdf,
-        n_steps=num_warmup,
-        config=None,
-        desired_energy_var=desired_energy_var,
-        diagonal_preconditioning=diagonal_precond,
-    )))
-    print(f"  [build warmup_all_fn: {_time.time()-_t0:.1f}s]", flush=True)
+    if bool(cfg["mcmc"].get("scalar_precond", False)):
+        from desi_cmb_fli.samplers import scalar_precond_mass
+        _pos0 = {k: jax.device_put(np.asarray(v)[0]) for k, v in init_params_.items()}
+        _scalar_keys = [k for k in _pos0 if k != "init_mesh_"]
+        print("Building scalar-curvature preconditioner (mesh=1, scalars=1/curv)...", flush=True)
+        _inv_mass, _ = scalar_precond_mass(model.logpdf, _pos0, _scalar_keys)
+        _init_config = {
+            "L": float(jnp.median(config_mesh.L)),
+            "step_size": float(jnp.median(config_mesh.step_size)),
+            "inverse_mass_matrix": _inv_mass,
+        }
+        warmup_all_fn = pmap(jit(get_mclmc_warmup(
+            model.logpdf,
+            n_steps=num_warmup,
+            config=_init_config,
+            desired_energy_var=desired_energy_var,
+            diagonal_preconditioning=True,
+        )))
+    else:
+        warmup_all_fn = pmap(jit(get_mclmc_warmup(
+            model.logpdf,
+            n_steps=num_warmup,
+            config=None,
+            desired_energy_var=desired_energy_var,
+            diagonal_preconditioning=diagonal_precond,
+        )))
 
     _t0 = _time.time()
     state, config = warmup_all_fn(jr.split(jr.key(43), num_chains), init_params_)
@@ -443,8 +520,12 @@ if not RESUME_MODE:
     eval_per_ess = 1e3
     recalc_L = float(0.4 * eval_per_ess / 2 * median_ss)
 
-    config = MCLMCAdaptationState(L=recalc_L, step_size=float(median_ss), inverse_mass_matrix=median_imm)
-    config = tree.map(lambda x: jnp.broadcast_to(x, (num_chains, *jnp.shape(x))), config)
+    devices = jax.local_devices()[:num_chains]
+    config = MCLMCAdaptationState(
+        L=jax.device_put_replicated(jnp.array(recalc_L), devices),
+        step_size=jax.device_put_replicated(jnp.array(median_ss), devices),
+        inverse_mass_matrix=jax.device_put_replicated(median_imm, devices),
+    )
 
     print(f"\n  Recalculated L: {recalc_L:.6f} (was: {median_L_adapted:.6f})")
 
@@ -481,22 +562,35 @@ if not RESUME_MODE:
     print(f"   Values: {logdens}")
     print(f"   Std: {ld_std:.2f}")
 
-    # Test 3: Post-warmup scalar params (physical values) vs truth
+    # Test 3: Post-warmup scalar params — physical values via std2trunc
+    from desi_cmb_fli.utils import std2trunc as _std2trunc
     print("\n3. Scalar Parameters (post-warmup):")
-    truth_params = cfg.get("truth_params", {})
-    for param in ["Omega_m_", "sigma8_", "b1_", "b2_", "bs2_", "bn2_"]:
-        if param in state.position:
-            base_name = param.rstrip("_")
-            latent = default_config["latents"].get(base_name, {})
-            loc_fid = latent.get("loc_fid", latent.get("loc", 0.0))
-            scale_fid = latent.get("scale_fid", 1.0)
-            sample_vals = jnp.array(state.position[param])
-            physical_vals = loc_fid + sample_vals * scale_fid
-            truth_val = truth_params.get(base_name, "?")
-            if observation_mode == ObservationMode.CLOSURE :
-                print(f"   {base_name}: {physical_vals} (truth: {truth_val})")
-            if observation_mode == ObservationMode.ABACUS:
-                print(f"   {base_name}: {physical_vals}")
+    abacus_truth = cfg.get("abacus_truth_params", {})
+    closure_truth = cfg.get("truth_params", {})
+    _scalar_table = ["Omega_m_", "sigma8_", "b1_", "b2_", "bs2_", "bn2_", "bnpar_", "fNL_", "fNL_bp_", "fNL_bpd_", "s_e_"]
+    _scalar_table += [f"ngbar_{b}_" for b in range(int(getattr(model, "n_gxy_shells", 0)))]
+    for param in _scalar_table:
+        if param not in state.position:
+            continue
+        base_name = param.rstrip("_")
+        lat_cfg = model.latents.get(base_name)
+        if lat_cfg is None:
+            continue
+        latent_vals = jnp.array(state.position[param])   # shape (num_chains,)
+        low = lat_cfg.get("low", -jnp.inf)
+        high = lat_cfg.get("high", jnp.inf)
+        if low == -jnp.inf and high == jnp.inf:
+            phys_vals = [float(v * lat_cfg["scale_fid"] + lat_cfg["loc_fid"]) for v in latent_vals]
+        else:
+            phys_vals = [float(_std2trunc(v,
+                                          loc=lat_cfg["loc_fid"],
+                                          scale=lat_cfg["scale_fid"],
+                                          low=low,
+                                          high=high))
+                         for v in latent_vals]
+        fid_val   = lat_cfg["loc_fid"]
+        phys_str  = "  ".join(f"{v:.4f}" for v in phys_vals)
+        print(f"   {base_name:8s}: [{phys_str}]  (fid={fid_val:.4f})")
 
 
 # STEP 3: Multi-Chain Mini-Batch Sampling
@@ -506,8 +600,7 @@ print("=" * 80)
 
 # Condition model for sampling
 model.reset()
-model.condition(condition_dict)
-model.block()
+apply_conditioning()
 
 # Setup sampling function (pmap for parallel chains)
 run_fn = pmap(jit(get_mclmc_run(model.logpdf, n_samples=num_samples, thinning=thinning, progress_bar=False)))
@@ -559,8 +652,8 @@ for batch_idx in range(start_batch, num_batches):
     print(f"Batch {batch_idx + 1}/{num_batches}:")
 
     # Run sampling for this batch (parallel across chains)
-    key, *run_keys = jr.split(key, num_chains + 1)
-    run_keys = jnp.array(run_keys)
+    keys = jr.split(key, num_chains + 1)
+    key, run_keys = keys[0], keys[1:]
     state, samples_dict = run_fn(run_keys, state, config)
 
     # Identify parameters on first batch
@@ -583,8 +676,9 @@ for batch_idx in range(start_batch, num_batches):
     batch_scalars = {}
     batch_large = {}
 
+    cpu_samples = jax.device_get(samples_dict)
     for p in param_names:
-        val = jax.device_get(samples_dict[p]) # Move to CPU
+        val = cpu_samples[p]
         if p in scalar_params:
             samples_scalars[p].append(val)
             batch_scalars[p] = val
@@ -610,18 +704,29 @@ for batch_idx in range(start_batch, num_batches):
 
     # Energy variance validation on first batch of this run
     if batch_idx == start_batch:
+        diag_lines = []
         for i, mse_val in enumerate(mse_per_chain):
             ratio = float(mse_val) / desired_energy_var
             status = "✓" if ratio < 2.0 else "⚠️"
-            print(f"\n  📊 Chain {i} Energy Variance: {float(mse_val):.2e} (ratio: {ratio:.2f}) {status}")
+            line = f"\n  📊 Chain {i} Energy Variance: {float(mse_val):.2e} (ratio: {ratio:.2f}) {status}"
+            print(line)
+            diag_lines.append(line)
 
         median_mse = float(jnp.median(mse_per_chain))
         median_ratio = median_mse / desired_energy_var
-        print(f"\n  📊 Overall (median): {median_mse:.2e}, Desired: {desired_energy_var:.2e}, Ratio: {median_ratio:.2f}")
+        line = f"\n  📊 Overall (median): {median_mse:.2e}, Desired: {desired_energy_var:.2e}, Ratio: {median_ratio:.2f}"
+        print(line)
+        diag_lines.append(line)
         if median_ratio < 2.0:
-            print("     ✓ PASS: Energy variance matches desired")
+            line = "     ✓ PASS: Energy variance matches desired"
         else:
-            print(f"     ⚠️  WARN: Ratio = {median_ratio:.1f}x - consider reducing desired_energy_var")
+            line = f"     ⚠️  WARN: Ratio = {median_ratio:.1f}x - consider reducing desired_energy_var"
+        print(line)
+        diag_lines.append(line)
+
+        with open(config_dir / "energy_variance_diag.txt", "w") as _f:
+            _f.write(f"step_size per chain: {list(jnp.array(config.step_size))}\n")
+            _f.write("".join(diag_lines) + "\n")
 
     # Explicitly delete large arrays to free memory
     del batch_large, batch_content, batch_scalars

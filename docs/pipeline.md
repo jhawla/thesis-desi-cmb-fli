@@ -1,379 +1,380 @@
-# DESI × CMB Lensing Field-Level Inference
-## Pipeline Blueprint & Implementation Roadmap
+# GALAXY Clustering × CMB Lensing Field-Level Inference
 
-The scientific objective is to extract cosmological information using field-level inference on DESI galaxy clustering jointly with CMB lensing convergence maps from Planck and ACT.
+Field-level Bayesian inference of cosmology, primordial non-Gaussianity, galaxy bias, and the initial density field from galaxy clustering **jointly with** CMB-lensing convergence (κ) maps. The forward model evolves a
+Gaussian initial field to a galaxy overdensity and a κ map; an MCLMC sampler conditions on the data
+(closure or AbacusSummit) to constrain the parameters and the field.
 
-## Overview
+---
+
+## 1. Overview
 
 ![Field-Level Inference Architecture](figures/fli_architecture.png)
 
-*Figure: Complete field-level inference pipeline. The forward model (top) generates predictions from initial conditions δ_ini through N-body evolution (JAX-PM) to final density δ_final, which produces both galaxy overdensity δ_g and κ-map through ray-tracing. The MCLMC sampler compares these predictions with observed data (DESI LRG + Planck/ACT κ-map) to update the posterior distribution of cosmological parameters and the initial density field.*
+**Dataflow.** initial field δ_ini → gravitational evolution (LPT/N-body) → galaxy bias + RSD → galaxy
+overdensity δ_g; the same evolved matter field is Born-integrated along the line of sight → κ map.
+Both observables enter a joint likelihood compared against the data (illustrated here with future real DESI × Planck/ACT data).
 
-The pipeline proceeds through the following stages:
-
----
-
-## 1. Initial Conditions ✅ (October 2025)
-
-Generate 3D Gaussian random fields representing primordial density fluctuations in a periodic box. These serve as initial conditions for gravitational evolution.
-
-**Implementation:** Power spectrum computation via `jax_cosmo` (Eisenstein–Hu transfer function); 3D field generation in Fourier space; validation through measured power spectra.
-**Tests:** `tests/test_initial_conditions.py`
-**Notebook:** `notebooks/01_initial_conditions_demo.ipynb`
-
-**Next step:** Gravitational evolution using `jaxpm` to evolve δ(x, z_init) → δ(x, z_obs)
+**Modules.**
+- `desi_cmb_fli.model` — `FieldLevelModel`: probabilistic model, forward pass (`evolve`), likelihood,
+  reparametrization, preconditioning, config loader (`get_model_from_config`).
+- `desi_cmb_fli.bricks` — bias, RSD, PNG, painting, coordinate/geometry helpers.
+- `desi_cmb_fli.nbody` — growth/distance background (emulated), LPT/N-body integrators, Fourier utils.
+- `desi_cmb_fli.cmb_lensing` — Born projector, HEALPix masks, κ/galaxy data loaders, theory spectra.
+- `desi_cmb_fli.metrics` — power/angular spectra, MASTER decoupling, log-binning.
+- `desi_cmb_fli.samplers` — MCLMC / NUTS, analytic scalar preconditioner.
+- `desi_cmb_fli.validation`, `desi_cmb_fli.chains`, `desi_cmb_fli.plot` — diagnostics & plotting.
 
 ---
 
-## 2. Gravitational Evolution ✅ (October 2025)
+## 2. Forward model
 
-Evolve initial density fields forward in time using Lagrangian Perturbation Theory (LPT) and N-body particle-mesh methods with the BullFrog integrator.
+All forward-model grids share the same physical box; only the cell resolution changes (see the
+oversampling table in §2.5).
 
-**Implementation:**
-- Growth factor computations via `jaxpm` ODE solver
-- First and second-order LPT displacements
-- Full N-body evolution with BullFrog solver from `diffrax`
-- Particle-mesh force calculations
+### 2.1 Initial conditions
 
-**Tests:** `tests/test_evolution.py`
-**Notebook:** `notebooks/02_gravitational_evolution_demo.ipynb`
+A 3-D Gaussian random field on the **init grid** (`init_oversamp`, e.g. 48³ for a 32³ final grid).
+The power spectrum is `jax_cosmo` (Eisenstein–Hu transfer). The field is the inference latent
+(`white_mesh`), sampled in a Kaiser-whitened basis (see §5). Mesh dimensions are auto-adjusted so all
+axes have an **even** number of cells (MCLMC requirement).
 
-**Next step:** Galaxy bias modeling and redshift-space distortions
+### 2.2 Primordial non-Gaussianity
+
+Local PNG has two effects, both controlled by `model.png_type`:
+
+- **Matter φ² term** (`bricks.add_png`, always uses `fNL`): in the primordial potential
+  φ → φ + f_NL(φ² − ⟨φ²⟩), mapped back to the density field via the φ→δ transfer. Applied on the evol
+  grid, then **re-band-limited** to the init Nyquist (`chreshape` to init_shape then back) to drop the
+  spurious φ² power above the IC resolution ("PNG anti-aliasing").
+- **Scale-dependent galaxy bias** amplitudes `fNL_bp = f_NL b_φ`, `fNL_bpd = f_NL b_{φδ}`, entering
+  `lagrangian_weights` / `kaiser_boost` as Δb(k) ∝ 1/M(k), with M(k) the φ→δ conversion.
+
+`png_type` values:
+- `None` — Gaussian (no PNG).
+- `'fNL'` — **universality**: `b_φ = 2δ_c(b₁+1−p)`, `b_{φδ} = 2(δ_c b₂ − b₁)`, so `f_NL` is the only
+  free PNG parameter.
+- `'fNL_bias'` — infers `fNL`, `fNL_bp`, `fNL_bpd` as **free** latents (group `png`), not derived from
+  b₁,b₂. `add_png` still uses `fNL` for the matter channel.
+
+### 2.3 Gravitational evolution
+
+The init field is `chreshape`d up to the **evol grid** (`evol_oversamp`) and evolved with:
+- **LPT** (1st/2nd order, default `lpt_order: 2`), or
+- **N-body** (BullFrog integrator, `diffrax`) — snapshot only, no lightcone.
+
+**Lightcone** (`lightcone: true`, `a_obs: null`): each particle evolves at its local scale factor
+`a(χ)` from its comoving radius; snapshot mode uses a scalar `a_obs`.
+
+**Background emulator (`nbody.BackgroundEmulator`).** Growth `D`, `D₂`, rates `f`, `f₂`, and the
+distance maps `χ(a)`/`a(χ)` are served by a **bilinear emulator** rather than the `jax_cosmo` ODE
+solvers, whose in-graph CPU callbacks otherwise exhaust LLVM memory on large MCMC runs. Tables are
+precomputed once on CPU over `n_Om=100` values of `Ω_m ∈ [0.05, 0.7]` (`χ` on `logspace(-4,0,512)`),
+then bilinearly interpolated in `(Ω_m, a)`. Activated automatically when the fixed background matches
+the Abacus fiducial (`_is_abacus_background`: `Ω_b, h, n_s, w0=−1, wa=0, Ω_k=0`) — i.e. the Abacus
+runs where only `Ω_m` (and `σ8`, which does not enter the background) vary. Otherwise the exact
+`jax_cosmo` background is used. Exact in `σ8`; accurate to the `Ω_m` grid spacing (~0.007).
+
+### 2.4 Galaxy bias & redshift-space distortions
+
+**Lagrangian bias expansion** (Modi+2020), weights read at the initial particle positions from the
+evol-grid **Gaussian** field:
+- linear `b₁`, quadratic `b₂`, tidal shear `b_{s²}`, higher-derivative `b_{∇²}` (`bn2`).
+- `b₂` uses the montecosmo convention `weights += b₂·(δ²−⟨δ²⟩)/2`.
+
+**Finger-of-God higher-derivative LOS bias `bnpar` (b_∇∥).** Implemented as a **velocity** term, not a
+painting weight. `bricks.lagrangian_fog_velocity` returns `dvel = bnpar·∇δ_L·D(a)` as a
+full 3-vector at the initial positions. `bricks.rsd` adds it to the peculiar velocity **before** the
+LOS projection `(v·n̂)n̂`, so the projection turns `∇δ` into the effective `∇²_∥δ` FoG term. The
+projection LOS `n̂` is the **observer-dependent per-particle line of sight** (`los_part` from
+`tophysical_pos`, using `box_center = box_shape/2 − observer_position`), so `bnpar` respects the
+observer geometry automatically. It is only constrained with RSD on (`los` set); for snapshot/no-RSD
+runs the FoG FFTs are skipped and `bnpar` must stay in `mcmc.fixed_params`.
+
+**RSD** (`bricks.rsd`): peculiar velocity from the growth-time integrator (`v ∝ D·f`), projected onto
+the local LOS; on the lightcone the LOS and `a` are per-particle. `los: null` disables RSD.
+
+### 2.5 Painting & anti-aliasing (oversampling)
+
+Particles are painted to the galaxy/matter mesh with **interlaced order-2 CIC + Fourier deconvolution**
+at the oversampled `paint` resolution, then Fourier-cropped (`chreshape`) to the final grid
+(`model.paint_and_deconv`, `bricks.interlace_paint_deconv`). The galaxy mesh is divided by
+`prod(ptcl_shape)/prod(final_shape)` to recover `1 + δ_g` (robust to particle count).
+
+| Grid | Factor (montecosmo) | Carries |
+|------|---------------------|---------|
+| init  | `init_oversamp` (3/2) | the inferred linear field; preconditioner & `kaiser_post` build on it |
+| evol  | `evol_oversamp` (7/4) | LPT/N-body evolution, all bias products (δ², s², ∇²δ, φδ), `add_png` |
+| ptcl  | `ptcl_oversamp` (7/4) | particle cloud density (`regular_pos(evol_shape, ptcl_shape)`) |
+| paint | `paint_oversamp` (7/4)| interlaced+deconvolved CIC paint grid, cropped to final |
+
+Flow in `FieldLevelModel.evolve`: init field → chreshape→evol → `lagrangian_weights` on the evol
+Gaussian field → `add_png` + PNG re-band-limit → LPT displacement → paint+crop to final.
+
+### 2.6 CMB lensing convergence
+
+`cmb_lensing.convergence_Born_spherical` Born-integrates the evolved matter field over radial shells
+**directly on HEALPix pixels** (curved-sky). Per shell, particles are painted to the shell support,
+converted to δ, and accumulated with the lensing kernel
+$$W_\kappa(\chi,a) = \tfrac{3}{2}\,\Omega_m\left(\tfrac{H_0}{c}\right)^2 \frac{\chi}{a}\,\frac{\chi_s-\chi}{\chi_s}.$$
+Ray–box intersection intervals (`t_enter`, `t_exit`) restrict the sum to physically supported
+shell/pixel contributions. The mean density `n̄` is derived from the actual particle count
+(`pos.shape[0]`), so the normalisation is correct under particle oversampling.
+
+**Line-of-sight depth.** `kappa_pred` integrates matter only to `box_shape[2]`; the residual depth
+`χ_box → χ_high_z_max` is handled analytically in the likelihood covariance (§3.2). For AbacusSummit
+base, `chi_high_z_max: 3990` Mpc/h (matter simulated to z≈2.45), not `χ_CMB`.
 
 ---
 
-## 3. Galaxy Bias Modeling ✅ (October 2025)
+## 3. Likelihood
 
-Transform evolved matter density fields into galaxy density fields using bias models and redshift-space distortions. Add observational noise to create realistic mock data.
+### 3.1 Galaxy likelihood
 
-**Modules:** `desi_cmb_fli.bricks`, `desi_cmb_fli.nbody`
-**Implementation:**
-- Kaiser model: Linear bias + RSD in Fourier space
-- Lagrangian bias expansion (LBE): Non-linear bias effects following [Modi+2020](http://arxiv.org/abs/1910.07097)
-  - Linear bias (b₁)
-  - Quadratic bias (b₂)
-  - Tidal shear bias (b_s²)
-  - Non-local bias (b_∇²)
-- Redshift-space distortions from peculiar velocities
-- Observational noise (shot noise) modeling
-- Posterior sampling with Kaiser approximation
+A per-cell Gaussian on the overdensity, `obs ~ Normal(gxy_mesh, √(s_e²/n̄))`, restricted to the survey
+mask via `dist.mask`. Variance is the shot-noise `s_e²/n̄` with `s_e=1` ⇒ pure Poisson.
 
-**Tests:** `tests/test_model.py`
-**Notebook:** `notebooks/03_galaxy_bias_demo.ipynb`
+**Free shot-noise amplitude `s_e` (`model.gxy_stoch_noise`, default off).** An optional positive latent
+(group `stoch`, truncated-normal `loc=1, scale=1, [0,10]`) rescaling the shot-noise std. It
+marginalises non-Poisson model/stochastic scatter (which the 2-LPT + Lagrangian-bias model cannot match
+exactly at the field level) so it does not leak into `f_NL`. Following montecosmo we keep `s_e = 1` fixed in
+the reference runs.
 
-**Next step:** Field-level inference pipeline
+**Survey mask & radial selection from randoms.** For the AbacusLensing LRG mocks (equal-weight
+galaxies and ~20× randoms), the mesh is `1+δ = count/n̄_{3D}`, with `n̄_{3D} = n_eff·S(x)` and the
+selection `S` = the **painted random density** `rand_mesh_plain` (normalised to unit mean on the mask;
+no smoothing needed — randoms are densely sampled, ~2400/cell at 32³). The mask is the random occupancy
+with a **completeness cut `S > 0.8`**: partial boundary cells (octant
+faces + radial shell edges) are only fractionally filled, biasing `count/n̄` low and leaking into the
+large-scale modes / `f_NL`; dropping them removes the obs–completeness correlation and
+restores ⟨obs⟩→1, keeping ~80% of cells. The observed field is painted with the **same**
+interlaced+deconvolved scheme as the model.
+
+**Free per-radial-bin mean density `ngbars` (`model.gxy_ngbar_free`, integral constraint).** On the
+lightcone the radial selection makes the survey mean density a per-bin unknown; fixing it exactly
+imposes an integral constraint whose violation leaks low-k power into `f_NL`. Following montecosmo
+(`set_radial_count`), one free **relative** amplitude `ngbar_<b>` (1 = fiducial) is added per **fine
+uniform radial bin**:
+- `get_model_from_config` sets `n_rbins = round((χ_hi−χ_lo)/dr)`, `dr = √3·cell_size` (χ-range from the
+  catalog z-band extent under the fiducial cosmology), and injects `ngbar_0 … ngbar_{n−1}`
+  (group `syst`, prior `loc=1, scale=1, scale_fid=1e-2, low=0`). Off by default.
+- The loader builds `model.gxy_shell_id` by digitising the survey comoving radius into `n_rbins`
+  uniform bins over `[r_min, r_max]` (−1 outside the survey).
+- In the likelihood, `α = ngbar[bin_id]` rescales prediction **and** shot-noise per bin:
+  `obs ~ Normal(α·gxy_mesh, √(α·s_e²/n̄))` — the overdensity-space equivalent of `set_radial_count`
+  (which multiplies both the count and the selection). At `α=1` it reduces to the previous likelihood.
+
+Mathematically, if the true per-bin density is `α_b ×` fiducial, then `E[obs] = α_b·gxy_mesh`,
+`Var[obs] = α_b/n̄`; marginalising `α_b` over **fine** bins removes the entire radial-monopole subspace,
+so `f_NL` is measured from transverse/3-D modes only and is insensitive to a mis-traced `n̄(χ)`.
+
+### 3.2 CMB lensing likelihood
+
+A single numpyro `Normal` site over the observed footprint (so `sample == log_prob` for closure). The
+total per-mode variance is `C_ℓ = N_ℓ + C_ℓ^{high-z}` (reconstruction noise + the unmodeled high-z
+contribution treated as structured Gaussian variance). Two modes (`cmb_lensing.likelihood_mode`):
+
+- **`diagonal`** (default): the masked pseudo-$a_{\ell m}$ vector with diagonal covariance
+  `var_ℓ = M_{ℓℓ'}(N_{ℓ'}+C_{ℓ'}^{high-z})`, `M` the MASTER mode-coupling matrix (NaMaster,
+  `model.cmb_M_ll`). **Exact on the full sky** ($W=1$: pseudo-$a_{\ell m}$ = true $a_{\ell m}$). On a
+  cut sky it drops the mask-induced (ℓ,ℓ')/(m,m') coupling, so it is approximate (can mis-size error
+  bars) but fast, and the only option for full-sky / high-nside runs. Includes the parameter-dependent
+  log-determinant `ln C_ℓ` (needed in `taylor`/`exact` high-z modes where `C_ℓ^{high-z}` depends on
+  Ω_m,σ8).
+
+- **`pixel_exact`**: the **exact cut-sky** field-level likelihood via signal-eigenmode (KL)
+  compression. The band-limited noise field's pixel covariance depends only on angular separation,
+  $$\mathrm{Cov\_pix}[i,j] = \sum_\ell \tfrac{2\ell+1}{4\pi}\,(N_\ell+C_\ell^{high-z})\,P_\ell(\cos\theta_{ij})$$
+  (**bare spectrum, no pixel window** — this makes `diagonal` and `pixel_exact` coincide at
+  $f_{sky}=1$). Because the field is band-limited to $\ell_{max}=2\,$nside, a footprint of area
+  $f_{sky}$ supports only $\sim f_{sky}(\ell_{max}+1)^2$ modes (Slepian) while HEALPix gives $\sim3\times$
+  more pixels, so `Cov_pix` is **rank-deficient**. We diagonalise it **once** (constant: fixed
+  cosmo+mask+noise), keep the $k$ eigenmodes with $\lambda > \mathrm{kl\_rcond}\cdot\lambda_{max}$ (the
+  supported Slepian subspace), and use the eigenmode amplitudes $a = U_k^\top\kappa[\mathrm{obs}]$: in
+  that basis the covariance is exactly diagonal ($\Lambda_k$), so the site is a single
+  `Normal(U_k^\top\kappa_{pred}, \sqrt{\Lambda_k T})`. The full mask coupling is retained exactly within
+  the supported subspace; only numerically-null modes are dropped (lossless). This supersedes
+  `diagonal` on a cut sky (which is over-confident there). Requires **fixed cosmology and
+  `high_z_mode: fixed`** (constant covariance). `kl_rcond` (default `1e-6`) sets the cutoff: it keeps
+  cond ≈ `1/rcond` — safe in float32 down to ~`1e-6`; larger (e.g. `1e-2`, conditioning ~10²) is more
+  conservative/robust (drops the least-concentrated Slepian modes) without biasing the calibration.
+
+**High-z correction (`full_los_correction`, `high_z_mode`).** `C_ℓ^{high-z}` for the missing depth
+`χ_box → χ_high_z_max` is the Limber convergence power (`jax_cosmo`), added to the variance. Modes:
+- `fixed` — cached at the fiducial cosmology (required by `pixel_exact`, exact if `Ω_m,σ8` fixed).
+- `taylor` (default) — first-order expansion `C_ℓ(θ) ≈ C_ℓ(θ_fid) + ∇C_ℓ·Δθ`, gradients precomputed.
+- `exact_linear` — recompute the Limber integral each step with the **linear** P(k) (slow).
+- `exact` — full recompute each step (very slow).
+
+Noise: ACT DR6 `N_ℓ^{κκ}` (`data/N_L_kk_act_dr6_lensing_v1_baseline.txt`, columns ℓ, N_ℓ) or Planck
+PR4; `cmb_noise_scaling` (default 1.0) multiplies it to test sensitivity. Noise realizations:
+`sample_healpix_gaussian`; map RMS: `compute_sigma_hp`.
+
+### 3.3 Geometry & observer
+
+- **Observer** (`cmb_lensing.observer_mode`: `center` / `face` / `corner`, or explicit
+  `observer_position`): sets `box_center = box_shape/2 − observer_position`. `corner` places the
+  AbacusSummit base-box octant footprint inside `[0,L]³` at full depth. The 3-D galaxy mesh and the 2-D
+  κ map share this observer (galaxies at their true (RA,DEC,Z), Born ray-cast from the same point), so
+  both probes cover the same lightcone volume — no box rotation (the box is axis-aligned).
+- **Curved-sky scope** (`curved_sky`): galaxy LOS/RSD and CMB projection; CMB lensing is always
+  curved-sky HEALPix.
+- **Even mesh**: all axes forced even (MCLMC).
 
 ---
 
-## 4. Field-Level Inference ✅ (October 2025)
+## 4. Data & observation modes
 
-Full Bayesian inference pipeline for parameter estimation from synthetic and real data.
+`observation_mode` (`config.yaml`, `utils.ObservationMode`) supports **exactly two values**,
+`closure` and `abacus`. **Real observational data (DESI-LRG × Planck/ACT κ) is not yet supported** —
+it is a roadmap item (§8), not a runnable mode; the only external data the pipeline ingests today is
+AbacusSummit.
 
-**Module:** `desi_cmb_fli.model` (FieldLevelModel)
-**Implementation:**
-- Probabilistic model:
-  - Prior distributions for cosmology (Ωm, σ8) based on Planck18
-  - Prior distributions for bias parameters (b₁, b₂, b_s², b_∇²)
-  - Prior on initial conditions (Gaussian random field)
-- Forward model pipeline: IC → evolution (LPT/Kaiser) → bias → observable
-- Data conditioning and model blocking
-- Kaiser posterior initialization for efficient MCMC warmup
-- NUTS or MCLMC sampler for parameter inference
+- **`closure`** — synthetic `obs`/`kappa_obs` generated from `truth_params` via `model.predict`
+  (validation; data-generation and likelihood share the same distribution object).
+- **`abacus`** — external AbacusSummit data. Optional deps: `pip install desi-cmb-fli[abacus]`
+  (`healpy`, `asdf`, `abacusutils`). Three sub-modes:
 
-**Supporting modules:**
-- `desi_cmb_fli.metrics` - Analysis metrics and power spectra
-- `desi_cmb_fli.chains` - Chain utilities and diagnostics
-- `desi_cmb_fli.plot` - Visualization tools
-- `desi_cmb_fli.samplers` - MCMC samplers (NUTS, MCLMC)
+| Mode | `galaxies_enabled` | `cmb_lensing.enabled` | Data |
+|------|:--:|:--:|------|
+| CMB-only | false | true | AbacusSummit κ map |
+| Galaxy-only | true | false | galaxy catalog(s) |
+| **Joint** | **true** | **true** | **both** |
 
-**Tests:** `tests/test_model.py` (11 tests covering model creation, prediction, conditioning, initialization)
-**Notebook:** `notebooks/04_field_level_inference.ipynb` - Complete demonstration with synthetic data
+**Primary mode: joint analysis on the AbacusSummit base box (`c000_ph000`).** The default `config.yaml`
+targets the AbacusLensing **base** simulation, which is the only one carrying **both probes** on the
+same lightcone volume — the LRG galaxy catalog over the octant footprint and the `kappa_00047.asdf` κ
+map, whose footprint is **two small patches** (f_sky ≈ 4.5%) sitting inside the galaxy octant (see the
+known limitations in §8). This joint galaxy × κ run (`galaxies_enabled: true`,
+`cmb_lensing.enabled: true`, `observer_mode: corner`, `chi_high_z_max: 3990`) is the current headline
+configuration; the galaxy-only and CMB-only sub-modes are used to cross-check the two probes
+independently. The two special-geometry setups below are validation configurations, not the main
+analysis.
 
----
+**Two special-geometry AbacusSummit configurations** (both are `abacus` mode, they only differ in which
+probe is enabled and which geometry flags are set):
 
-## 5. CMB Lensing Modeling ✅ (November 2025)
+- **CubicBox snapshot (galaxy-only, no lightcone).** A single-file periodic-box snapshot
+  (`AbacusSummit_*_c000_ph000` cubic box at fixed z, auto-detected by `_is_cubic_box_catalog`). Here the
+  observer/lightcone/curved-sky machinery is meaningless, so this mode **requires**
+  `curved_sky: false`, `lightcone: false`, `los: null` (RSD off), `cmb_lensing.enabled: false`
+  (galaxies only), and `a_obs` set to the snapshot scale factor. This is the montecosmo-parity
+  validation setup (§8).
+- **HUGE full-sky κ (CMB-only).** The `AbacusSummit_huge_c000_ph201/kappa_00045.asdf` map is a full-sky
+  (`f_sky = 1`) CMB-lensing convergence map. Running it **requires disabling the galaxies**
+  (`galaxies_enabled: false`, CMB-only), with `observer_mode: center` (full sky), `chi_high_z_max: 3942`,
+  and `likelihood_mode: diagonal` (exact on the full sky — `pixel_exact` is a cut-sky construction and
+  is not needed here). It is the clean full-sky CMB-only validation of the Born projector and the
+  high-z covariance.
 
-Computation of convergence κ from matter fields using Born approximation.
+**Abacus κ ingestion** (`prepare_abacus_kappa_hp`, `load_abacus_kappa_observation`): the HEALPix map is
+`ud_grade`d to the model nside and masked with the effective footprint (sim & external mask) so
+`kappa_obs` and `kappa_pred` share support. We use `kappa_00047.asdf` (base `c000_ph000`,
+`SourceRedshift = 1089.3`, CMB); its matter shells are simulated only to z≈2.45 (χ≈3990), hence
+`chi_high_z_max: 3990`.
 
-**Module:** `desi_cmb_fli.cmb_lensing`
-
-### Born Convergence (`convergence_Born_mesh`)
-
-The Born projection converts each z-slice of the 3D matter mesh into an angular contribution to the convergence map κ. Each slice is reprojected from comoving to angular coordinates via a gnomonic (tangent-plane) projection using bilinear interpolation (`map_coordinates(order=1, mode="wrap")`).
-
-**Anti-aliasing**: the accumulation is done in **Fourier space** with two per-shell corrections:
-
-1. **Bilinear deconvolution**: division by $\mathrm{sinc}^2(\ell\,\Delta x / 2\pi\chi)$ corrects the attenuation introduced by the bilinear interpolation kernel.
-2. **Per-shell $\ell_{\max}$ filter**: each shell at comoving distance $\chi$ only contributes angular modes $\ell < k_{\rm Nyq} \times \chi$ where $k_{\rm Nyq} = \pi/\Delta x$. This prevents 3D Nyquist-aliased power from the matter mesh from contaminating the angular spectrum.
-
-The input `density_field` is pre-anti-aliased in 3D by `paint_and_deconv` (interlaced CIC + deconvolution + Fourier crop), so the 2D projection inherits the 3D anti-aliasing and adds its own angular-domain corrections.
-
-The lensing kernel per slice is:
-$W_\kappa(\chi, a) = \frac{3}{2}\Omega_m\left(\frac{H_0}{c}\right)^2 \frac{\chi}{a} \cdot \frac{\chi_s - \chi}{\chi_s}$
-
-### Flat-Sky Diagnostic Projection (`project_flat_sky`)
-
-A diagnostic-only function used by `validation.py` and `quick_cl_spectra.py` to project a 3D field (e.g. galaxy counts) onto a 2D angular map. Uses the same anti-aliasing scheme as `convergence_Born_mesh` (sinc² deconvolution + per-shell $\ell_{\max}$ filter in Fourier space).
-
-### AbacusSummit Kappa Extraction (`prepare_abacus_kappa`)
-
-Downsamples a full-sky HEALPix κ map to the model's flat-sky grid:
-1. `hp.ud_grade` to NSIDE 4096 (memory)
-2. Gnomonic projection at $8\times$ oversampling
-3. Fourier crop to target resolution (low-pass + downsample)
-
----
-
-## 6. Joint Field-Level Inference ✅ (closure mode)
-
-Joint inference on synthetic galaxy + CMB lensing data to constrain cosmology and initial conditions.
-
-**Script:** `scripts/run_inference.py`
-
-### Joint Likelihood
-
-The joint likelihood combines the galaxy number density likelihood with the CMB lensing convergence ($\kappa$) likelihood.
-
-**CMB Likelihood with Full Normalization**: The CMB convergence likelihood is implemented as a Fourier-space Gaussian with proper log-determinant term:
-$$\frac{1}{T}\ln P(\kappa_{obs}|\kappa_{pred}) = -\frac{1}{2T}\sum_{\ell} \left[\frac{|\Delta\kappa_\ell|^2}{C_\ell} + \ln C_\ell\right]$$
-where $C_\ell = N_\ell + C_\ell^{high-z}$ is the total variance (noise + cosmic variance from unmodeled high-z contribution).
-- The log-determinant term $\ln C_\ell$ was previously omitted because it is **constant** in galaxy-only mode (where $C_\ell = N_\ell$ fixed).
-- However, in **taylor** and **exact** high-z modes, $C_\ell^{high-z}$ depends on cosmological parameters ($\Omega_m, \sigma_8$), making the log-determinant **parameter-dependent** and required for correct posterior normalization.
-
-**Nyquist Frequency Filtering**: Modes beyond **0.5 × Nyquist frequency** are masked out in the CMB likelihood to avoid constraining with poorly-resolved scales. The fraction is set by `NYQUIST_FRACTION = 0.5` in `cmb_lensing.py`. The Nyquist limit is computed as:
-$\ell_{Nyquist} = \frac{180° \times N_{pix}}{\mathrm{field\_size_{deg}}}$
-Only modes with $\ell \leq 0.5 \times \ell_{Nyquist}$ contribute to the likelihood (chi-squared and log-determinant terms).
-
-**Planck PR4 Noise**: Incorporates realistic reconstruction noise using the official Planck PR4 $N_\ell$ spectrum.
-
-### High-z Analytical Marginalization
-
-Accounts for the unmodeled high-redshift ($z > z_{box}$) lensing contribution by analytically marginalizing over the missing volume.
-- The theoretical convergence power spectrum ($C_\ell^{\kappa_{high-z}}$) is computed via `jax_cosmo` using the **Non-Linear Matter Power Spectrum (Halofit)**.
-- This spectrum is added to the noise variance ($N_\ell + C_\ell^{\kappa_{high-z}}$) in the likelihood, correctly treating the high-z signal as an additional structured Gaussian variance (Cosmic Variance) rather than a fixed estimate.
-
-#### High-Z Correction Strategy (`high_z_mode`)
-
-Computing the high-z $C_\ell$ spectrum involves ~200k P(k) evaluations. We support three modes:
-- **`fixed`**: Caches $C_\ell^{high-z}$ at the **fiducial cosmology**. Fast, but mathematically inaccurate when sampled parameters drift far from fiducial.
-- **`taylor`** (Default): Uses a **First-Order Taylor Expansion** (Linear Emulator). The gradients $\partial C_\ell / \partial \Omega_m$ and $\partial C_\ell / \partial \sigma_8$ are precomputed at initialization. The likelihood applies a linear correction $C_\ell(\theta) \approx C_\ell(\theta_{fid}) + \nabla C_\ell \cdot \Delta \theta$.
-- **`exact`**: Fully recomputes the integral at every step. Extremely slow, used only for debugging/validation.
-
-### Technical Details
-
-- **Angle Calibration (Gnomonic Projection)**: The angular field of view is calculated using exact trigonometry: $\theta = 2 \arctan(L_{trans} / 2\chi_{back})$.
-  - This replaces the linear approximation ($\theta \approx L/\chi$) which introduced an error.
-  - The Ray-Tracing module uses a tangent-plane projection ($x = \chi \tan(\theta)$) to accurately map the rectilinear simulation box onto the angular grid.
-- **Even Mesh Dimensions (MCLMC Requirement)**: The mesh dimensions are automatically adjusted to ensure all axes have an **even number of cells**.
-- **CIC Anti-Aliasing** (`model.paint_and_deconv`): When `paint_oversamp > 1.0`, CIC painting uses interlaced order-2, deconvolution in Fourier space at oversampled resolution, then Fourier crop (`chreshape`) to final mesh shape.
-
-### Lightcone Implementation
-
-- **Geometry convention**: observer at $\chi=0$ (box face), simulation center at $\chi=L_z/2$.
-- **Lightcone evolution**: each particle/voxel evolves at local scale factor $a(\chi)$.
-- **Galaxy model**:
-  - LPT uses particle-wise `a`.
-  - Lagrangian bias terms are evaluated with local growth.
-  - RSD uses local LOS and local `a` per particle.
-- **Kaiser model**: supports both snapshot (scalar `a`) and lightcone (`a(\mathbf{x})`), including LOS fields for curved-sky galaxy clustering.
-- **CMB lensing**: kernel is evaluated per slice as $W_\kappa(\chi,a)$ with slice-dependent scale factor.
-- **Curved-sky scope**: implemented for galaxy clustering only; CMB lensing remains flat-sky Born projection.
-- **N-body scope**: lightcone mode is implemented for LPT; N-body remains snapshot-only.
-
-### Observation Mode: Closure
-
-Controlled by `observation_mode` in `config.yaml` (`utils.ObservationMode` enum):
-
-**`closure`**: generates synthetic `kappa_obs` from `truth_params` via `model.predict`. Used for validation.
-
-### CMB-Only Mode
-
-**Parameter:** `galaxies_enabled` (default: true)
-
-Allows disabling galaxy likelihood to run CMB-only inference.
-
-**Example:**
-```yaml
-model:
-  galaxies_enabled: false  # Disable galaxies
-cmb_lensing:
-  enabled: true  # Keep CMB
-```
-
-**Implementation Details:**
-
-- **Initialization**: Unlike joint/galaxy-only modes, CMB-only cannot use "reverse Kaiser" to initialize the density field from galaxy observations. Instead, the initial mesh is drawn from a **random Gaussian** field scaled by the prior power spectrum $P(k)$.
-
-- **Adaptive Preconditioning**: The Kaiser preconditioning automatically adapts to CMB-only mode:
-  $$\text{scale} = \sqrt{1 + n_{gal}^{eff} \cdot b_E^2 \cdot P(k)}$$
-  where $n_{gal}^{eff} = n_{gal}$ if galaxies are enabled, and $n_{gal}^{eff} = 0$ otherwise.
-
-  In CMB-only mode ($n_{gal}^{eff} = 0$):
-  - $\text{scale} = 1$ (no galaxy information)
-  - $\text{transfer} = \sqrt{P(k)}$ (standard power spectrum prior)
-
-  This ensures the prior reflects the **absence of direct density field constraints** from galaxy counts, with information coming solely from the projected $\kappa$ map.
-
-- **Optimizations**: In CMB-only mode, the pipeline automatically:
-  - Fixes bias parameters (b₁, b₂, b_s², b_∇²) to fiducial values (not sampled)
-  - Skips galaxy position and Lagrangian bias expansion calculations for computational efficiency
-  - Creates a dummy galaxy mesh for API consistency
-
-> **Note:** The positive Ω_m-σ_8 correlation observed in CMB-only mode is physical, arising from large-scale lensing geometry and working with h fixed (see `figures/positive_correlation_diagnostic/`).
-
-### Configuration
-
-#### ACT DR6 Noise File
-
-**Location:** `data/N_L_kk_act_dr6_lensing_v1_baseline.txt`
-
-Contains the lensing reconstruction noise power spectrum N_ℓ^κκ for ACT Data Release 6. Format: two columns (ℓ, N_ℓ). Used in the CMB lensing likelihood to account for reconstruction noise.
-
-**Script:** `plot_cmb_noise_comparison.py` - Compares ACT DR6 vs Planck PR4 noise spectra to visualize the improvement in reconstruction noise.
-
-#### Artificial Noise Scaling
-
-**Parameter:** `cmb_noise_scaling` (default: 1.0)
-
-Multiplies the CMB noise N_ell by a factor to test sensitivity to noise level.
-
-**Example:**
-```yaml
-cmb_lensing:
-  cmb_noise_scaling: 0.01  # Reduces noise by 100×
-```
+**Abacus galaxy loading** (`load_abacus_galaxy_observation`): a list of per-z-shell ASDF files
+(`RA, DEC, Z_COSMO/Z_RSD`, `RAND_*`) via `bricks.catalog2positions`/`randoms2positions`, deduplicated
+across overlapping shells by `Z_COSMO`, accumulated and painted once. A single-file **CubicBox
+snapshot** (`x,y,z`, no `RA`) is auto-detected (`_is_cubic_box_catalog`) and routed to
+`_load_abacus_cubic_box`: full periodic box, `selec=1`, uniform n̄, no randoms/observer (config
+`lightcone: false`, `a_obs` at the snapshot z, `curved_sky: false`, `los: null`). `abacus_galaxy.file`
+is a single path (snapshot) or a list of shell paths (lightcone).
 
 ---
 
-## 7. Joint FLI – Abacus Validation 🚧 (ongoing)
+## 5. Inference & sampling
 
-Joint inference using an external AbacusSummit N-body convergence map with a synthetic noise realization drawn from N_ℓ.
+**Sampler.** MCLMC (default) or NUTS (`desi_cmb_fli.samplers`), over the field latent + scalar
+latents, in a reparametrized (whitened) space.
 
-**Required optional dependencies:** `pip install desi-cmb-fli[abacus]` (adds `healpy`, `asdf`, `abacusutils`).
+**Cosmology: inferable but fixed by default.** The cosmological parameters `Omega_m` and `sigma8` are
+ordinary latents and **can be inferred** jointly with the field and biases (they carry priors in
+`latents`, and the background emulator §2.3 covers the varying-`Ω_m` case). However, **the current
+scientific direction is to fix them** and concentrate the constraining power on the primordial
+non-Gaussianity parameters (§2.2). In practice this means: put `Omega_m, sigma8` in
+`mcmc.fixed_params` (the default `config.yaml` ships `fixed_params: [Omega_m, sigma8]`) **and** run the
+high-z correction in the fixed-cosmology mode (`cmb_lensing.high_z_mode: fixed`, which caches
+`C_ℓ^{high-z}` at the fiducial cosmology — this is also what `pixel_exact` requires, §3.2). The
+`taylor`/`exact`/`exact_linear` high-z modes exist precisely for the case where cosmology *is* varied,
+so that `C_ℓ^{high-z}` tracks `Ω_m, σ8`; they are unnecessary once cosmology is fixed.
 
-Controlled by `observation_mode: abacus` in `config.yaml`.
+**Kaiser preconditioning** (`precond: kaiser`/`kaiser_dyn`). The field is sampled in a whitened basis
+with `scale = √(1 + n_gal^{eff}·b_E²·P(k))`, `transfer = √P(k)/scale`. In galaxy/joint modes the warmup
+initial field is a "reverse-Kaiser" estimate from the galaxy data; in **CMB-only** mode
+(`n_gal^{eff}=0`) `scale=1`, `transfer=√P(k)` (pure prior — the field is constrained only through κ),
+the initial field is a random Gaussian draw, and the biases are fixed to fiducial (galaxy calculations
+skipped).
 
-### Abacus Mode: Kappa Map Selection and High-z Correction
+**Warmup steps.** STEP 1 warms the mesh with cosmo/bias fixed; STEP 2 frees the scalar latents; a
+median-collapse then homogenises per-chain configs for STEP 3 sampling.
 
-**Map selection.** We use `kappa_00047.asdf` from AbacusSummit base `c000_ph000`, which has `SourceRedshift = 1089.3` (CMB). Per the AbacusSummit lensing paper, each `kappa_NNNNN` file is a **cumulative convergence map**: the lensing kernel $W(\chi)$ uses $\chi_s = \chi(z_s)$ for the stated source redshift, but the **N-body matter shells are only integrated up to the maximum simulation depth**, which for the base-resolution lightcone is $z \approx 2.45$ ($\chi \approx 3990$ Mpc/h). Shells beyond this are not simulated.
+**Joint scalar preconditioning (`mcmc.scalar_precond`).** In the joint run, the bias scalars have
+likelihood curvature ~1e6–1e7 while the whitened field is ~unit (ratio ~1e3–1e4), and the CMB κ
+sharpens the bias geometry further. A diagonal-mass sampler cannot bootstrap this (it must estimate the
+mass from chain variance, but the chain cannot step to gather it → `step_size → 0`). `scalar_precond`
+breaks the deadlock by supplying the scalar mass **analytically**: `samplers.scalar_precond_mass`
+computes each scalar's curvature (1-D second derivative via double autodiff) and builds
+`inverse_mass_matrix` with `field = 1` (already whitened), `scalar = 1/|curv|`, passed as the STEP-2
+initial config; blackjax then refines it per-chain. Pair with starting biases at their prior mode
+(`loc`/`loc_fid`). Default off.
 
-**Line-of-sight matching.** When `observation_mode: abacus`, `kappa_obs` integrates matter to $\chi \approx 3990$ Mpc/h, not to $\chi_{\rm CMB}$. The FLI box depth (`box_shape[2]`) can be shallower than 3990 Mpc/h: `kappa_pred` only integrates to `box_shape[2]`, and the `full_los_correction` adds the residual $C_\ell^{\rm high-z}$ in the likelihood variance for the missing line-of-sight depth $\chi_{\rm box} \to \chi_{\rm high-z\_max}$.
-
-**`chi_high_z_max` parameter.** Set in `cmb_lensing` config. If the box is shallower than $\chi_{\rm abacus}$, set `chi_high_z_max: 3990.0` to cap the variance at the Abacus depth rather than extending it to $\chi_{\rm CMB}$.
-
----
-
-## 8. Diagnostic & Analysis Tools
-
-### Theoretical Spectrum Comparison (`quick_cl_spectra.py`)
-
-A diagnostic script to compare **simulated or observed spectra** against **theoretical predictions** computed via Limber integration with `jax_cosmo`. Supports both observation modes:
-
-- **Closure mode**: generates N independent LPT realizations from `truth_params`, accumulates spectra, plots mean ± std bands.
-- **Abacus mode**: loads the AbacusSummit kappa patch once, draws N independent noise realizations; uses a lightweight proxy model (geometry + N_ℓ only, without a full `FieldLevelModel`). Pass `--no-smooth` to disable the HEALPix band-limit, exposing gnomview aliasing (diagnostic only).
-- **Spectra computed**: $C_\ell^{\kappa\kappa}$ (obs and pred), $C_\ell^{gg}$, $C_\ell^{\kappa g}$.
-- **Log-binned spectra**: raw 2D spectra are log-binned via `metrics.bin_cl_log` (geometric bin centres, configurable bins/decade) and shown as error-bar markers alongside faded unbinned curves.
-- **Noise Overlay**: theory curves shown as `Box`, `Box + high-z`, and `Box + high-z + N_ℓ` dashed lines.
-
-#### Resolution-Aware Limber Theory for $C_\ell^{gg}$ and $C_\ell^{\kappa g}$
-
-The Limber integrals for galaxy and cross-spectra must account for the **finite 3D resolution of the simulation mesh**. The `project_flat_sky` function applies a per-shell cut $\ell_\text{max}(\chi) = k_\text{Nyq} \times \chi$ (where $k_\text{Nyq} = \pi/\Delta x$), zeroing modes that cannot be resolved by the 3D grid.
-
-The fix is to integrate only shells satisfying $k_\perp = (\ell + 0.5)/\chi < k_\text{Nyq}$, i.e.\ $\chi > (\ell + 0.5)/k_\text{Nyq}$:
-
-$$C_\ell^{gg} = \int_{\max(\chi_\text{min},\;(\ell+0.5)/k_\text{Nyq})}^{\chi_\text{max}} \frac{w_g^2(\chi)}{\chi^2}\,P\!\left(\frac{\ell+0.5}{\chi}\right)d\chi$$
-
-This is implemented via the `k_nyq` parameter in `compute_theoretical_cl_gg` and `compute_theoretical_cl_kg` (`cmb_lensing.py`). The script `quick_cl_spectra.py` computes `k_nyq_mesh = π/Δx` from the mesh geometry and passes it automatically. The uncorrected (full-resolution) theory is shown as a dotted reference line on the $C_\ell^{gg}$ panel.
-
-#### Poisson Shot Noise in $C_\ell^{gg}$
-
-The measured galaxy auto-spectrum includes a **Poisson white-noise floor** not present in the Limber signal theory or in the cross-spectrum $C_\ell^{\kappa g}$. For $N_\text{gal}$ discrete tracers over a solid angle $\Omega_\text{sky}$ the shot-noise level is constant in $\ell$:
-
-$$N_\ell^{\text{shot}} = \frac{\Omega_\text{sky}}{N_\text{gal}} = \frac{(L_x / \chi_\text{center})^2}{\bar{n} \cdot L_x L_y L_z}$$
-
-where $\bar{n}$ is `model.gxy_density` [(h/Mpc)³] and the denominator is the total number of simulation particles. The script `quick_cl_spectra.py` computes this level analytically, prints it at run time, and overlays three theory curves on the galaxy panel: the resolution-aware Limber signal alone (`--`), the signal plus shot noise (`-.`), and a horizontal flat line marking $N_\ell^{\text{shot}}$ (`:`). The diagnostic table prints both `ratio` (signal only) and `ratio+shot` columns. The cross-spectrum $C_\ell^{\kappa g}$ is unaffected because the kappa and galaxy fields are independent in the noise, so the shot-noise contribution vanishes in the cross-correlation.
-
-### Fisher Information Analysis (`analyze_fisher_scales.py`)
-
-Computes Fisher information matrices to compare the constraining power of galaxies vs CMB lensing separately:
-
-- **Separate Sensitivities**: Evaluates $\partial C_\ell / \partial \theta$ for each observable (galaxy auto-spectrum, CMB lensing spectrum)
-- **Implementation Note (2026-02)**: Uses `model.nell_grid` for CMB noise, `model.gxy_density` for $\bar n$, and enables galaxies via `model.galaxies_enabled` in `cfg['model']`.
-- **Exact formulas used in the script**:
-  - **CMB lensing (2D Fourier pixels, masked):** with
-    $$M = \{\ell: 20 < \ell \le 0.5\,\ell_{Nyq},\ \mathrm{finite}(\partial_{\Omega_m}C_\ell, C_\ell, N_\ell)\},$$
-    the script computes
-    $$F_{\Omega_m\Omega_m}^{\mathrm{CMB}} = \sum_{p\in M} \frac{1}{2}\left(\frac{\partial C_p/\partial\Omega_m}{C_p+N_p}\right)^2,$$
-    and
-    $$\sigma(\Omega_m)_{\mathrm{CMB}} = \left(F_{\Omega_m\Omega_m}^{\mathrm{CMB}}\right)^{-1/2}.$$
-  - **Galaxy clustering (Gaussian + shot noise, FKP weight):** with $P_N=1/\bar n$ and $P_{gg}(k)=b_E^2P_{mm}(k)$, the script uses the **discrete finite-volume FFT sum** on the anisotropic box lattice:
-    $$F_{\Omega_m\Omega_m}^{\mathrm{gxy}} = \frac{1}{2}\sum_{\mathbf{k}\in\mathcal{K},\,\mathbf{k}\neq0}\left[\frac{\bar n P_{gg}(k)}{1+\bar n P_{gg}(k)}\right]^2\left[\frac{\partial\ln P_{gg}(k)}{\partial\Omega_m}\right]^2,$$
-    where $\mathcal{K}$ is the exact set of discrete FFT modes $k_i=2\pi\,\mathrm{fftfreq}(N_i,d=L_i/N_i)$.
-    $$\sigma(\Omega_m)_{\mathrm{gxy}} = \left(F_{\Omega_m\Omega_m}^{\mathrm{gxy}}\right)^{-1/2}.$$
-- **Parameter Constraints**: Computes Fisher matrices and marginal uncertainties for $\Omega_m$ and $\sigma_8$
-- **Information Comparison**: Quantifies the relative information from each probe at different noise levels
-
-### Run Analysis and Comparison
-
-**`analyze_run.py`** - Analyze a single inference run:
-- Merges batch outputs into a single chain file
-- Computes convergence diagnostics (R-hat, ESS)
-- Generates corner plots and trace plots; in `abacus` mode, uses `abacus_truth_params` as corner-plot markers instead of `truth_params`
-- Supports custom burn-in and chain exclusion
-
-**`compare_runs.py`** - Compare multiple runs with GetDist:
-- Triangle plots comparing posterior distributions
-- Automatic constraint computation (mean ± std)
-- Per-run burn-in and chain filtering
-- Customizable labels and output paths
-
-**Usage examples:**
-```bash
-# Analyze single run with 20% burn-in, excluding chains 0 and 2
-python scripts/analyze_run.py --run_dir outputs/run_001 --burn_in 0.2 --exclude_chains 0 2
-
-# Compare three runs
-python scripts/compare_runs.py outputs/run_001 outputs/run_002 outputs/run_003 \
-    --labels "Galaxies Only" "CMB Only" "Joint" --burn_ins 0.2 0.2 0.2
-```
-
-### Kappa Map Visualization (`plot_kappa_maps.py`)
-
-Runs a single forward-model realization and displays the κ maps:
-- **Closure mode**: shows κ observed (= pred + noise), κ predicted (noiseless), and galaxy density projected (if `galaxies_enabled`).
-- **Abacus mode**: shows Abacus κ + noise and Abacus κ (noiseless).
-
-Uses the same config as `run_inference.py`.
-
-### Benchmarking and Validation
-
-**`benchmark_highz_cl_modes.py`** - Benchmark precision and performance of high-z correction modes (fixed/taylor/exact) across different grid resolutions.
-
-**`test_omega_m_effect.py`** - Validates the positive $\Omega_m$-$\sigma_8$ correlation in CMB-only mode by testing the effect of $\Omega_m$ on lensing power spectrum.
-
-**`plot_lensing_fraction.py`** - Computes the fraction of total CMB lensing signal captured by the simulation box as a function of redshift depth.
-
-### Energy Variance Diagnostics
-
-The MCLMC sampler's performance is critically dependent on the **energy variance** parameter (`desired_energy_var` in `config.yaml`). The script `run_inference.py` implements automatic diagnostics after warmup:
-
-1. **Per-Chain Energy Variance**: After the first sampling batch, the script reports `MSE/dim` for each chain individually.
-2. **Ratio Check**: Compares the actual energy variance to the desired value. A ratio $< 2\times$ is considered acceptable.
-3. **Tuning Guidance**: If the ratio is too high, reduce `desired_energy_var` in `config.yaml`. Values around `5e-8` to `5e-7` work well for runs with realistic noise levels; for reduced-noise runs (`cmb_noise_scaling: 0.01`) use `5e-9` or lower.
+**Energy-variance tuning.** MCLMC performance depends on `mcmc.mclmc.desired_energy_var`. After the
+first sampling batch, `run_inference.py` reports per-chain `MSE/dim` and its ratio to the target
+(ratio < 2× acceptable). `5e-8`–`5e-7` works for realistic noise; use `5e-9` or lower for reduced-noise
+runs (`cmb_noise_scaling: 0.01`).
 
 ---
 
-## Next Steps
+## 6. Diagnostics & tools
 
-1. **Implement joint analysis of the abacus galaxy + CMB lensing dataset** (currently just implemented for cmb lensing).
-2. **Implement survey selection function and masking** to enable realistic analysis of real data with non-uniform coverage and complex geometry.
-3. **Implement proper Fisher forecast comparison** between galaxies and CMB lensing to quantify the relative information content of each probe (talk to Arnaud De Mattia).
-4. **Compare the analysis to a standard power spectrum analysis** to validate the field-level inference results (talk to Arnaud De Mattia).
-5. **Implement curved-sky for CMB lensing** to enable accurate modeling of large angular scales (talk to Wassim Kabalan) and directly take an HEALPix κ-map as input.
-6. **Infer $b_1 \times σ_8$** instead of $b_1$ to break degeneracies and improve constraints (talk to Hugo Simon).
-7. **Measure the runtime of a single model evaluation** to assess the additional computational cost of the CMB lensing modeling and likelihood compared to the galaxy-only pipeline.
-8. **Implement the taylor expansion for the high-z correction at the order two (quadratic)** to improve accuracy when sampling far from the fiducial cosmology.
-9. **Preconditioning for Joint Inference** - Incorporate CMB lensing terms into the MCLMC/MAMS preconditioning matrices for improved sampling efficiency.
-10. **Field-Level Inference on Real Data** - Application to joint DESI LRG $\times$ Planck/ACT $\kappa$-map datasets.
+- **`quick_pk_spectra.py`** — 3-D `P(k)` diagnostic. In **closure** mode: measured matter `P(k)` from
+  the model's `matter_mesh` vs nonlinear `jax_cosmo` `P_mm` at `a_fid`. In **abacus** mode: galaxy
+  `P_gg(k)` as seen by the likelihood, Abacus observed catalog vs LPT-simulated galaxies at the config
+  cosmology (same survey mask, Poisson shot-noise subtracted).
+- **`quick_cl_spectra.py`** — angular spectra `C_ℓ^{κκ}, C_ℓ^{gg}, C_ℓ^{κg}` vs theory, for closure (N LPT realizations, mean±std) and abacus (loaded maps + N noise draws) modes.
+  Uses **resolution-aware Limber** (`compute_theoretical_cl_gg/kg`, `k_nyq` cut: integrate only shells
+  with `k_⊥=(ℓ+0.5)/χ < k_Nyq = π/Δx`) and overlays the Poisson shot-noise floor
+  `N_ℓ^{shot} = Ω_sky/N_gal` on the `C_ℓ^{gg}` panel; spectra are log-binned (`metrics.bin_cl_log`).
+- **`analyze_run.py`** — merge batches, R-hat/ESS, corner/trace plots (abacus mode uses
+  `abacus_truth_params` markers), custom burn-in / chain exclusion.
+- **`compare_runs.py`** — GetDist triangle comparison of multiple runs (per-run burn-in, labels).
+- **`plot_2D_maps.py`** — κ (and galaxy-projection) maps for one forward realization.
+- **`benchmark_highz_cl_modes.py`** — precision/speed of the high-z modes; **`plot_lensing_fraction.py`**
+  — box-captured lensing fraction vs depth; **`make_abacus_kappa_mask.py`** — degrade the AbacusLensing
+  footprint to a model-nside `.npy`; **`plot_highz_correction_vs_depth.py`** — mean high-z κ correction
+  amplitude vs box depth (`χ_min`); **`plot_linear_vs_nbody.py`** — linear (Kaiser) vs N-body evolved
+  matter field from the same IC; **`plot_cmb_noise_comparison.py`** — ACT DR6 vs Planck PR4 κ noise
+  spectra.
+- **Freeze diagnostic** (`DIAGNOSE_FREEZE=1`): logpdf + per-group gradient + 1-D scans of each free
+  scalar at the STEP-2 start; localises curvature pathologies. (Used to derive `scalar_precond`.)
 
-Implementation details will be documented as development progresses.
+---
+
+## 8. Validation status, known limitations & roadmap
+
+**Validated.** On the Abacus **CubicBox snapshot** (periodic full box, z=0.8), the
+galaxy-only run reproduces montecosmo result — unbiased `f_NL` (≈ −111 ± 500).
+
+**Current results (Abacus lightcone).**
+- **Galaxy-only** is **unbiased**: with fine-bin `ngbars` + `png_type: fNL` (universality) +
+  oversampling, `f_NL = 1.5 ± 33` (consistent with 0). Under `png_type: fNL_bias` the scale-dependent
+  bias amplitude `fNL_bp ≈ 0` (the meaningful observable), while the decoupled matter-φ² `fNL` channel
+  is weakly identified and can wander.
+- **Joint (full galaxies + κ)** converges cleanly and is consistent with galaxy-only, but the CMB gain
+  on `f_NL` and `b_1`is small: the galaxy footprint (~13% sky octant) already saturates the
+  large-scale information that κ could add over its small footprint.
+
+**Known limitations.**
+- The AbacusSummit base κ footprint is small (two lobes, f_sky ≈ 4.5%) and sits inside the galaxy
+  octant. Restricting galaxies to that footprint (to expose the κ gain) under-fills the box (~15% of
+  cells) → the large-scale modes where `f_NL` lives become unconstrained and the chains do not
+  converge. A tighter box is not available: the two-lobe geometry keeps any enclosing box ~50% empty,
+  and the pipeline uses an axis-aligned box (no rotation).
+- κ source z=1089 vs galaxies z=0.4–0.8 sets an intrinsic κ×g cross-correlation ceiling (r≈0.5–0.64);
+  the high-z part is handled as covariance, not signal.
+
+**Roadmap.**
+1. Compare to a standard power-spectrum analysis (with A. de Mattia).
+2. Full CMB-aware joint preconditioner (beyond the analytic scalar mass of `scalar_precond`).
+3. Find another external simulation with a **larger κ footprint** and galaxies to expose the κ gain on `f_NL`.
+4. Application to real DESI-LRG × Planck/ACT κ data.

@@ -21,3 +21,6 @@ notebooks/FLI_introduction.ipynb
 
 # Configs
 configs/inference/submitted
+
+# Large data artifacts
+data/abacus_kappa_mask_00047.npy

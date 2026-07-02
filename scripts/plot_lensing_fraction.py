@@ -35,7 +35,7 @@ def plot_fraction_vs_depth():
     for i, chi_max in enumerate(chi_max_list):
         cl_box = compute_theoretical_cl_kappa(cosmo, ell_arr, chi_min=1.0, chi_max=chi_max, z_source=z_source, n_steps=256)
 
-        # Ratio of AMPLITUDES (sqrt of power ratio)
+        # Ratio of amplitudes
         ratio = jnp.sqrt(cl_box / cl_tot)
         ratios.append(ratio)
 
@@ -62,7 +62,6 @@ def plot_fraction_vs_depth():
 
     plt.xlabel(r'Box Depth $z_{max}$')
     plt.ylabel(r'Amplitude Ratio $\sqrt{C_\ell^{box} / C_\ell^{total}}$')
-    # plt.title(r'Fraction of CMB Lensing Signal Contained in Box (Averaged over $\ell$)') # Title is redundant with caption usually
     plt.title('CMB Lensing Signal Captured by Box (Depth 2000 Mpc/h)')
     plt.grid(True, alpha=0.3)
     plt.legend(loc='lower right')
@@ -111,7 +110,6 @@ def plot_spectra_comparison():
     # Upper: Spectra
     ax1.loglog(ell_plot, cl_total, 'k-', lw=2, label='Total Signal ($z < 1100$)')
     ax1.loglog(ell_plot, cl_box, 'r--', lw=2, label=f'Box Signal ($z < {z_box:.2f}$)')
-    # Show missing part? No, straightforward comparison requested.
 
     ax1.set_ylabel(r'$C_\ell^{\kappa\kappa}$')
     ax1.set_title('Comparison of Lensing Power Spectra (Theoretical)')

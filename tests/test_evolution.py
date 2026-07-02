@@ -66,7 +66,7 @@ def test_invlaplace_kernel_zero_at_k_zero():
 
 def test_pm_forces_shape_matches_positions():
     mesh_shape = np.array([8, 8, 8])
-    n_particles = 100
+    n_particles = int(np.prod(mesh_shape))
     key = jr.PRNGKey(42)
     pos = jr.uniform(key, (n_particles, 3)) * mesh_shape
     forces = pm_forces(pos, mesh_shape)

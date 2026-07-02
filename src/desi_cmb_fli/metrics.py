@@ -133,10 +133,8 @@ def spectrum(
         if mesh2 is None:
             psum = jnp.bincount(dig, weights=weights, length=n_bins)
         else:
-            # NOTE: bincount is really slow with complex numbers, so bincount real and imag parts
-            psum_real = jnp.bincount(dig, weights=weights.real, length=n_bins)
-            psum_imag = jnp.bincount(dig, weights=weights.imag, length=n_bins)
-            psum = (psum_real**2 + psum_imag**2) ** 0.5
+            # NOTE: bincount is really slow with complex numbers, so bincount the real part.
+            psum = jnp.bincount(dig, weights=weights.real, length=n_bins)
         pow = pow.at[i_ell].set(psum)
     pow = pow[:, 1:-1] / kcount * (box_shape / mesh_shape).prod()  # from cell units to [Mpc/h]^3
 
@@ -206,6 +204,114 @@ def get_cl_2d(map1, map2=None, field_size_deg=1.0, comp=(0, 0)):
     valid_idx = unique_ell > 1.0
 
     return unique_ell[valid_idx], cl_averaged[valid_idx]
+
+
+def masked_healpix_to_full(masked_map, mask, fill_value=0.0):
+    """Expand a masked HEALPix vector to a full-sky map."""
+    mask = np.asarray(mask, dtype=bool)
+    full = np.full(mask.size, fill_value, dtype=float)
+    full[mask] = np.asarray(masked_map, dtype=float)
+    return full
+
+
+def get_cl_healpix(
+    masked_map1,
+    mask1,
+    masked_map2=None,
+    mask2=None,
+    lmax=None,
+    decouple="fsky",
+    coupling_matrix=None,
+):
+    """Compute masked HEALPix pseudo-C_ell with decoupling.
+
+    Parameters
+    ----------
+    masked_map1 : array
+        Values on the active pixels of ``mask1``.
+    mask1 : array-like bool
+        Angular mask for the first map.
+    masked_map2 : array, optional
+        Values on the active pixels of ``mask2``. If None, compute auto-spectrum.
+    mask2 : array-like bool, optional
+        Angular mask for the second map. Defaults to ``mask1``.
+    lmax : int, optional
+        Maximum multipole. Defaults to ``3*nside-1`` used by healpy.
+    decouple : {"fsky", "master", "none"}
+        ``"fsky"``   — divide pseudo-Cl by mean(mask1 * mask2) (diagonal MASTER approximation).
+        ``"master"`` — full MASTER decoupling: solve M_ll @ x = Cl_pseudo via
+                       least-squares (requires ``coupling_matrix``).
+        ``"none"``   — return raw pseudo-Cl without correction.
+    coupling_matrix : array (lmax+1, lmax+1), optional
+        MASTER mode-coupling matrix M_ll. Required when ``decouple="master"``.
+        Typically ``model.cmb_M_ll`` (precomputed by ``FieldLevelModel`` via NaMaster).
+
+    Returns
+    -------
+    ell : ndarray
+    cl : ndarray
+    info : dict
+        Contains ``cl_pseudo``, ``norm``, and (for ``decouple="master"``) ``lstsq_rank``.
+    """
+    import healpy as hp
+
+    mask1 = np.asarray(mask1, dtype=bool)
+    if mask2 is None:
+        mask2 = mask1
+    else:
+        mask2 = np.asarray(mask2, dtype=bool)
+
+    if mask1.size != mask2.size:
+        raise ValueError("mask1 and mask2 must have the same full-sky length")
+
+    masked_map1 = np.asarray(masked_map1, dtype=float)
+    masked_map1 = masked_map1 - np.mean(masked_map1)
+    full1 = masked_healpix_to_full(masked_map1, mask1, fill_value=0.0)
+    if masked_map2 is None:
+        full2 = full1
+    else:
+        masked_map2 = np.asarray(masked_map2, dtype=float)
+        masked_map2 = masked_map2 - np.mean(masked_map2)
+        full2 = masked_healpix_to_full(masked_map2, mask2, fill_value=0.0)
+
+    cl_pseudo = hp.anafast(full1, full2, lmax=lmax)
+    norm = float(np.mean(mask1.astype(float) * mask2.astype(float)))
+    norm = max(norm, 1e-12)
+    info_extra = {}
+
+    if decouple == "fsky":
+        cl = cl_pseudo / norm
+    elif decouple == "master":
+        if coupling_matrix is None:
+            raise ValueError(
+                "coupling_matrix (M_ll) must be provided when decouple='master'."
+            )
+        M = np.asarray(coupling_matrix, dtype=float)
+        n = len(cl_pseudo)
+        if M.shape[0] != n or M.shape[1] != n:
+            # Truncate/restrict to the range covered by cl_pseudo
+            n_use = min(n, M.shape[0], M.shape[1])
+            cl_full = np.zeros(n)
+            cl_decoupled, _, rank, _ = np.linalg.lstsq(
+                M[:n_use, :n_use], cl_pseudo[:n_use], rcond=None
+            )
+            cl_full[:n_use] = cl_decoupled
+            cl = cl_full
+        else:
+            cl, _, rank, _ = np.linalg.lstsq(M, cl_pseudo, rcond=None)
+            info_extra["lstsq_rank"] = int(rank)
+    elif decouple == "none":
+        cl = cl_pseudo.copy()
+    else:
+        raise ValueError(f"Unknown decouple mode: {decouple!r}")
+
+    ell = np.arange(len(cl))
+    valid = ell >= 2
+    return ell[valid], np.asarray(cl)[valid], {
+        "cl_pseudo": np.asarray(cl_pseudo)[valid],
+        "norm": norm,
+        **info_extra,
+    }
 
 
 def bin_cl_log(ell, cl, n_bins_per_decade=15, ell_min=None, ell_max=None):

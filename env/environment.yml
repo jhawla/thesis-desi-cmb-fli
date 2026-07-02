@@ -22,6 +22,7 @@ dependencies:
   - pymdown-extensions
   - pip
   - healpy
+  - namaster
   - pip:
     - numpyro>=0.13
     - jaxpm==0.0.2

@@ -196,13 +196,14 @@ def load_and_process_run(run_dir, burn_in=0.0, exclude_chains=None):
             truth_vals = full_cfg.get("truth_params", {})
 
     # Identify available scalar parameters (avoid showing fixed bias params in CMB-only)
-    priority_params = ["Omega_m", "sigma8", "b1", "b2", "bs2", "bn2"]
+    priority_params = ["Omega_m", "sigma8", "fNL", "fNL_bp", "fNL_bpd", "b1", "b2", "bs2", "bn2", "bnpar", "s_e"]
     if model.galaxies_enabled:
         available_params = [p for p in priority_params if p in physical_samples]
         extra_params = [p for p in physical_samples.keys() if p not in available_params]
         available_params += sorted(extra_params)
     else:
-        available_params = [p for p in ["Omega_m", "sigma8"] if p in physical_samples]
+        # CMB-only: show cosmology + fNL, but not the (fixed/unused) bias params.
+        available_params = [p for p in ["Omega_m", "sigma8", "fNL"] if p in physical_samples]
 
     # Filter chains/samples to available params only
     physical_chains = Chains({k: physical_chains.data[k] for k in available_params},
@@ -306,7 +307,12 @@ def analyze_run(run_dir, burn_in=0.0, exclude_chains=None, output_subdir=None):
     try:
         from getdist import plots
         print("Generating Triangle Plot...")
-        samples_gd = physical_chains.to_getdist()
+        # Exclude the per-shell ngbars from the triangle (too many params); they remain in the
+        # diagnostics table, traces.png and posteriors.png.
+        corner_params = [p for p in available_params if not str(p).startswith("ngbar")]
+        corner_chains = Chains({k: physical_chains.data[k] for k in corner_params},
+                               physical_chains.groups, physical_chains.labels)
+        samples_gd = corner_chains.to_getdist()
 
         g = plots.get_subplot_plotter()
         g.triangle_plot([samples_gd], filled=True, title_limit=1, markers=truth_vals)
