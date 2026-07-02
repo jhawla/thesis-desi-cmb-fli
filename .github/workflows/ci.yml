@@ -17,6 +17,5 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-          pip install "jax-cosmo @ git+https://github.com/DifferentiableUniverseInitiative/jax_cosmo@master"
       - name: Run tests
         run: pytest -q

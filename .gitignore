@@ -13,8 +13,8 @@ __pycache__/
 outputs/
 logs/
 
-# Notebooks
-notebooks/FLI_introduction.ipynb
+# Notebooks (obsolete, kept locally only — to be redone)
+notebooks/
 
 # VSCode settings
 .vscode/

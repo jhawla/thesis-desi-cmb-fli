@@ -43,7 +43,7 @@ dependencies = [
   "jaxlib>=0.6.1,<0.10.0",
   "jax_cosmo@git+https://github.com/ASKabalan/jax_cosmo@ALL-MODIF",
   "numpyro>=0.20.0",
-  "jaxpm@git+https://github.com/DifferentiableUniverseInitiative/JaxPM.git@ALL-MODIF",
+  "jaxpm@git+https://github.com/DifferentiableUniverseInitiative/JaxPM.git@41-spherical-lensing",
   "jax-healpy@git+https://github.com/CMBSciPol/jax-healpy.git@maintaint-shapes-batching",
   "diffrax>=0.4.0",
   "blackjax>=1.3",
