@@ -25,5 +25,8 @@ jobs:
           # the sdist against the system GSL/FFTW/CFITSIO installed above so the CMB
           # harmonic tests run on the pip-only CI runner
           pip install pymaster
+          # s2fft is jax-healpy's "recommended" optional dep (used by the alm2map/map2alm
+          # path); present via conda on NERSC but not pulled by the pip install here
+          pip install s2fft
       - name: Run tests
         run: pytest -q
