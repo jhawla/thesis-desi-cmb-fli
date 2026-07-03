@@ -3,11 +3,11 @@ message: This project should be cited as described below when reused or extended
 authors:
 - family-names: Hawla
   given-names: Jonathan
-title: "thesis-desi-cmb-fli: DESI \xD7 CMB lensing field-level inference"
+title: "thesis-desi-cmb-fli: Galaxy clustering \xD7 CMB lensing field-level inference"
 version: 0.2.0
 date-released: '2025-10-14'
 license: MIT
-repository-code: https://github.com/Joletaxi19/thesis-desi-cmb-fli
+repository-code: https://github.com/jhawla/thesis-desi-cmb-fli
 keywords:
 - cosmology
 - field-level inference

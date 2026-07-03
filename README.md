@@ -1,12 +1,6 @@
 # thesis-desi-cmb-fli
 
-Repository for a thesis project targeting **field-level inference (FLI)** on DESI galaxy samples cross-correlated with CMB lensing reconstructions from Planck and ACT.
-
-## Thesis vision
-- Construction of a reproducible FLI workflow that ingests DESI galaxy
-  clustering data and CMB lensing maps (Planck PR4, ACT DR6).
-- Delivery of joint cosmological constraints from the cross-correlation of those
-  observables.
+Thesis project targeting the **joint analysis of galaxy clustering and CMB lensing at the field level**.
 
 ## Code Attribution
 
@@ -44,10 +38,9 @@ galaxy × κ). The current headline configuration is the **joint analysis on the
 parameters.
 
 **🚧 Next Steps:**
-- Field-level inference on **real data** (DESI LRG × Planck/ACT κ-maps) — *not yet supported*; the only
-  external data ingested today is AbacusSummit.
+- Field-level inference on **real data** (DESI LRG × Planck/ACT κ-maps).
 
-See [`pipeline.md`](https://github.com/Joletaxi19/thesis-desi-cmb-fli/blob/main/docs/pipeline.md) for detailed implementation roadmap.
+See [`pipeline.md`](https://github.com/jhawla/thesis-desi-cmb-fli/blob/main/docs/pipeline.md) for detailed implementation roadmap.
 
 ## Citation
 The project for the FLI × DESI × CMB lensing analysis should be cited
