@@ -35,10 +35,70 @@ oversampling table in §2.5).
 
 A 3-D Gaussian random field on the **init grid** (`init_oversamp`, e.g. 48³ for a 32³ final grid).
 The power spectrum is `jax_cosmo` (Eisenstein–Hu transfer). The field is the inference latent
-(`white_mesh`), sampled in a Kaiser-whitened basis (see §5). Mesh dimensions are auto-adjusted so all
-axes have an **even** number of cells (MCLMC requirement).
+`init_mesh` (sampled as `init_mesh_` in the Kaiser-whitened basis, see §5). Mesh dimensions are
+auto-adjusted (`get_model_from_config`) so all axes have an **even** number of cells: the real↔complex
+Gaussian repacking `utils._rg2cgh`/`cgh2rg` asserts `all(shape % 2 == 0)`, because the
+hermitian-symmetry bookkeeping (self-conjugate modes at 0 and Nyquist) assumes an exact Nyquist plane.
 
-### 2.2 Primordial non-Gaussianity
+### 2.2 Primordial non-Gaussianity — theory
+
+**Local-type PNG.** The primordial (matter-era) Bardeen potential is made non-Gaussian by
+
+$$\Phi(\mathbf{x}) = \phi(\mathbf{x}) + f_\mathrm{NL}\left[\phi^2(\mathbf{x}) - \langle\phi^2\rangle\right],$$
+
+with $\phi$ Gaussian. Note the normalisation of $\phi$ **in the matter era** — this is the
+**CMB convention** of $f_\mathrm{NL}^\mathrm{loc}$; the LSS convention (normalising at $z=0$)
+differs by $g(a\!\to\!0)/g(a\!=\!1) \simeq 1.28$. Any comparison to an external simulation or to
+published constraints must state which convention is used.
+
+**Potential → density transfer** (`bricks.trans_phi2delta_interp`):
+
+$$\delta_L(k,a) = M(k,a)\,\Phi(k), \qquad
+M(k,a) = \frac{2\,r_h^2\,k^2\,T(k)\,D_\mathrm{norm}(a)}{3\,\Omega_m},$$
+
+with $r_h = c/H_0 = 2997.92\ \mathrm{Mpc}/h$, $T(k)$ the linear transfer function normalised to
+1 as $k\to0$ (obtained as $T(k)=\sqrt{P_\mathrm{lin}(k)/k^{n_s}}$, renormalised at the lowest
+tabulated $k$), and $D_\mathrm{norm}(a) = D(a)/D(a_\mathrm{norm})\times a_\mathrm{norm}$ with
+$a_\mathrm{norm}$ in matter domination (`z_norm = 10`).
+
+**Two physical effects.**
+
+1. *Matter channel* (`bricks.add_png`): $\phi\to\Phi$ above, mapped back through $M(k)$. This is a
+   second-order effect on the matter field, only captured by the LPT/N-body path (not by `kaiser`).
+
+2. *Scale-dependent galaxy bias.* The Lagrangian bias expansion (`bricks.lagrangian_weights`,
+   after [Modi+2020](http://arxiv.org/abs/1910.07097)) gains two PNG terms:
+
+$$w(\mathbf{q}) = 1 + b_1\delta_L + \tfrac{b_2}{2}\left(\delta_L^2-\langle\delta_L^2\rangle\right)
+ + b_{s^2}\left(s^2-\langle s^2\rangle\right) + b_{\nabla^2}\nabla^2\delta_L
+ + f_\mathrm{NL} b_\phi\,\phi
+ + f_\mathrm{NL} b_{\phi\delta}\left(\phi\delta_L-\langle\phi\delta_L\rangle\right).$$
+
+   In Eulerian Fourier language the $b_\phi$ term is the familiar $1/k^2$ scale-dependent bias
+
+$$\Delta b(k,a) = \frac{f_\mathrm{NL}\,b_\phi}{M(k,a)} \;\propto\; \frac{f_\mathrm{NL} b_\phi}{k^2\,T(k)\,D(a)} .$$
+
+**Universality relations** (`bricks.b_phi`, `bricks.b_phi_delta`), used when `png_type: 'fNL'`:
+
+$$b_\phi = 2\delta_c\,(b_1 + 1 - p) = 2\delta_c\,(b_1^E - p), \qquad
+  b_{\phi\delta} = 2\,(\delta_c b_2 - b_1),$$
+
+with $\delta_c = 1.686$, $b_1,b_2$ **Lagrangian** ($b_1^E = 1+b_1$, $b_2$ in the
+$\tfrac{b_2}{2}\delta^2$ normalisation) and $p=1$ for a halo-mass-selected sample
+($p\simeq1.6$ recent mergers, $p\simeq0.55$ stellar-mass selected).
+
+**What is actually measurable.** From clustering alone only the *products*
+$f_\mathrm{NL}b_\phi$ and $f_\mathrm{NL}b_{\phi\delta}$ enter the scale-dependent bias; $f_\mathrm{NL}$
+by itself is fixed only through the (much weaker) matter $\phi^2$ channel. This is why
+`png_type: 'fNL_bias'` samples the products directly, and why under that option `fNL` alone is
+weakly identified.
+
+**Caveat — super-box modes.** $P_\phi(k)\propto k^{n_s-4}$ makes $\langle\phi^2\rangle$
+logarithmically divergent: modes with $k < k_\mathrm{fund}$ are absent from the box, so
+$f_\mathrm{NL}$ is defined *within the simulated volume*. The missing long-wavelength modulation is
+absorbed into the constant bias parameters.
+
+### 2.2 Primordial non-Gaussianity — implementation
 
 Local PNG has two effects, both controlled by `model.png_type`:
 
@@ -66,8 +126,12 @@ The init field is `chreshape`d up to the **evol grid** (`evol_oversamp`) and evo
 `a(χ)` from its comoving radius; snapshot mode uses a scalar `a_obs`.
 
 **Background emulator (`nbody.BackgroundEmulator`).** Growth `D`, `D₂`, rates `f`, `f₂`, and the
-distance maps `χ(a)`/`a(χ)` are served by a **bilinear emulator** rather than the `jax_cosmo` ODE
-solvers, whose in-graph CPU callbacks otherwise exhaust LLVM memory on large MCMC runs. Tables are
+distance maps `χ(a)`/`a(χ)` are served — **in `nbody` only** — by a **bilinear emulator** rather than
+the `jax_cosmo` ODE solvers, whose in-graph CPU callbacks otherwise exhaust LLVM memory. It is not a
+global replacement: `cmb_lensing` still calls `jax_cosmo` inside the graph with the *sampled*
+cosmology, notably `radial_comoving_distance` for `χ_s` in `convergence_Born_spherical`
+(`cmb_lensing.py:301`, once per likelihood evaluation) and in `compute_cl_high_z` /
+`compute_theoretical_cl_*` under the `exact`/`exact_linear` high-z modes. Tables are
 precomputed once on CPU over `n_Om=100` values of `Ω_m ∈ [0.05, 0.7]` (`χ` on `logspace(-4,0,512)`),
 then bilinearly interpolated in `(Ω_m, a)`. Activated automatically when the fixed background matches
 the Abacus fiducial (`_is_abacus_background`: `Ω_b, h, n_s, w0=−1, wa=0, Ω_k=0`) — i.e. the Abacus
@@ -107,8 +171,11 @@ at the oversampled `paint` resolution, then Fourier-cropped (`chreshape`) to the
 | ptcl  | `ptcl_oversamp` (7/4) | particle cloud density (`regular_pos(evol_shape, ptcl_shape)`) |
 | paint | `paint_oversamp` (7/4)| interlaced+deconvolved CIC paint grid, cropped to final |
 
-Flow in `FieldLevelModel.evolve`: init field → chreshape→evol → `lagrangian_weights` on the evol
-Gaussian field → `add_png` + PNG re-band-limit → LPT displacement → paint+crop to final.
+Flow in `FieldLevelModel.evolve`: init field → chreshape→evol → `add_png` + PNG re-band-limit
+(`model.py:1212-1221`) → LPT displacement → paint+crop to final; `lagrangian_weights`
+(`model.py:1275`) comes **after** and is handed `init_mesh_evol_grid`, i.e. the **pre-`add_png`**
+Gaussian field, which is why the bias products read the Gaussian field and why `phi` is recovered
+correctly there.
 
 ### 2.6 CMB lensing convergence
 
@@ -120,7 +187,10 @@ Ray–box intersection intervals (`t_enter`, `t_exit`) restrict the sum to physi
 shell/pixel contributions. The mean density `n̄` is derived from the actual particle count
 (`pos.shape[0]`), so the normalisation is correct under particle oversampling.
 
-**Line-of-sight depth.** `kappa_pred` integrates matter only to `box_shape[2]`; the residual depth
+**Line-of-sight depth.** `kappa_pred` integrates matter only to `chi_boundary`, which is
+`box_shape[2]` for `observer_mode: face`/`corner` but **`box_shape[2]/2` for `observer_mode: center`**
+(the observer sits mid-box, so only half the depth lies ahead) — that is the full-sky/huge
+configuration. The radial shells (`cmb_r_shells`) span exactly that range. The residual depth
 `χ_box → χ_high_z_max` is handled analytically in the likelihood covariance (§3.2). For AbacusSummit
 base, `chi_high_z_max: 3990` Mpc/h (matter simulated to z≈2.45), not `χ_CMB`.
 
@@ -146,8 +216,12 @@ no smoothing needed — randoms are densely sampled, ~2400/cell at 32³). The ma
 with a **completeness cut `S > 0.8`**: partial boundary cells (octant
 faces + radial shell edges) are only fractionally filled, biasing `count/n̄` low and leaking into the
 large-scale modes / `f_NL`; dropping them removes the obs–completeness correlation and
-restores ⟨obs⟩→1, keeping ~80% of cells. The observed field is painted with the **same**
-interlaced+deconvolved scheme as the model.
+restores ⟨obs⟩→1, keeping ~80% of cells. **Painting is not symmetric between numerator and
+denominator**: the galaxy counts use the same interlaced+deconvolved scheme as the model
+(`interlace_paint_deconv`, when `paint_oversamp > 1`), but the randoms — hence `S` — are always
+painted with plain CIC (`paint_arbitrary`). Since `obs = count/(n_eff·S)`, the two carry different
+window/aliasing corrections; this is benign only insofar as the densely-sampled randoms are smooth on
+the cell scale.
 
 **Free per-radial-bin mean density `ngbars` (`model.gxy_ngbar_free`, integral constraint).** On the
 lightcone the radial selection makes the survey mean density a per-bin unknown; fixing it exactly
@@ -243,8 +317,7 @@ AbacusSummit.
 **Primary mode: joint analysis on the AbacusSummit base box (`c000_ph000`).** The default `config.yaml`
 targets the AbacusLensing **base** simulation, which is the only one carrying **both probes** on the
 same lightcone volume — the LRG galaxy catalog over the octant footprint and the `kappa_00047.asdf` κ
-map, whose footprint is **two small patches** (f_sky ≈ 4.5%) sitting inside the galaxy octant (see the
-known limitations in §8). This joint galaxy × κ run (`galaxies_enabled: true`,
+map, whose footprint is **two small patches** (f_sky ≈ 4.5%) sitting inside the galaxy octant. This joint galaxy × κ run (`galaxies_enabled: true`,
 `cmb_lensing.enabled: true`, `observer_mode: corner`, `chi_high_z_max: 3990`) is the current headline
 configuration; the galaxy-only and CMB-only sub-modes are used to cross-check the two probes
 independently. The two special-geometry setups below are validation configurations, not the main
@@ -284,8 +357,10 @@ is a single path (snapshot) or a list of shell paths (lightcone).
 
 ## 5. Inference & sampling
 
-**Sampler.** MCLMC (default) or NUTS (`desi_cmb_fli.samplers`), over the field latent + scalar
-latents, in a reparametrized (whitened) space.
+**Sampler.** MCLMC, over the field latent + scalar latents, in a reparametrized (whitened) space.
+`run_inference.py` wires **only** `get_mclmc_warmup`/`get_mclmc_run`; the NUTS-within-Gibbs
+(`nutswg_*`) and MAMS (`get_mams_*`) paths exist in `desi_cmb_fli.samplers` but are not reachable from
+the script and are not exposed by any config switch.
 
 **Cosmology: inferable but fixed by default.** The cosmological parameters `Omega_m` and `sigma8` are
 ordinary latents and **can be inferred** jointly with the field and biases (they carry priors in
@@ -299,9 +374,14 @@ high-z correction in the fixed-cosmology mode (`cmb_lensing.high_z_mode: fixed`,
 so that `C_ℓ^{high-z}` tracks `Ω_m, σ8`; they are unnecessary once cosmology is fixed.
 
 **Kaiser preconditioning** (`precond: kaiser`/`kaiser_dyn`). The field is sampled in a whitened basis
-with `scale = √(1 + n_gal^{eff}·b_E²·P(k))`, `transfer = √P(k)/scale`. In galaxy/joint modes the warmup
-initial field is a "reverse-Kaiser" estimate from the galaxy data; in **CMB-only** mode
-(`n_gal^{eff}=0`) `scale=1`, `transfer=√P(k)` (pure prior — the field is constrained only through κ),
+with `scale = √(1 + B(k,μ)²·P(k)/noise_eff)`, `transfer = √P(k)/scale`
+(`model._precond_scale_and_transfer`). `B` is the **full** Eulerian Kaiser boost
+`B = D(a_fid)·(b_E + f(a_fid)·μ²)` (`bricks.kaiser_boost`), not `b_E` alone — it reduces to `D·b_E`
+only when `los: null` disables RSD. The effective noise is `noise_eff = 1/(n̄·⟨S²⟩)` whenever a
+selection mesh is present (§3.1), falling back to `1/n̄` otherwise. `kaiser` evaluates the boost and
+`P` at the **fiducial** cosmology (fixed preconditioner), `kaiser_dyn` at the sampled one. In
+galaxy/joint modes the warmup initial field is a "reverse-Kaiser" estimate from the galaxy data; in
+**CMB-only** mode (`n_gal^{eff}=0` ⇒ `noise_eff=∞`) `scale=1`, `transfer=√P(k)` (pure prior — the field is constrained only through κ),
 the initial field is a random Gaussian draw, and the biases are fixed to fiducial (galaxy calculations
 skipped).
 
@@ -350,7 +430,7 @@ runs (`cmb_noise_scaling: 0.01`).
 
 ---
 
-## 8. Validation status, known limitations & roadmap
+## 7. Validation status & roadmap
 
 **Validated.** On the Abacus **CubicBox snapshot** (periodic full box, z=0.8), the
 galaxy-only run reproduces montecosmo result — unbiased `f_NL` (≈ −111 ± 500).
@@ -363,15 +443,6 @@ galaxy-only run reproduces montecosmo result — unbiased `f_NL` (≈ −111 ± 
 - **Joint (full galaxies + κ)** converges cleanly and is consistent with galaxy-only, but the CMB gain
   on `f_NL` and `b_1`is small: the galaxy footprint (~13% sky octant) already saturates the
   large-scale information that κ could add over its small footprint.
-
-**Known limitations.**
-- The AbacusSummit base κ footprint is small (two lobes, f_sky ≈ 4.5%) and sits inside the galaxy
-  octant. Restricting galaxies to that footprint (to expose the κ gain) under-fills the box (~15% of
-  cells) → the large-scale modes where `f_NL` lives become unconstrained and the chains do not
-  converge. A tighter box is not available: the two-lobe geometry keeps any enclosing box ~50% empty,
-  and the pipeline uses an axis-aligned box (no rotation).
-- κ source z=1089 vs galaxies z=0.4–0.8 sets an intrinsic κ×g cross-correlation ceiling (r≈0.5–0.64);
-  the high-z part is handled as covariance, not signal.
 
 **Roadmap.**
 1. Compare to a standard power-spectrum analysis (with A. de Mattia).

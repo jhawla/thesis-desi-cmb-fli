@@ -977,7 +977,7 @@ class FieldLevelModel(Model):
         evals, evecs = np.linalg.eigh(cov)  # ascending eigenvalues, orthonormal eigenvectors
         del cov
         lam_max = float(evals[-1])
-        rcond = float(getattr(self, "cmb_kl_rcond", 1e-8))
+        rcond = float(self.cmb_kl_rcond)
         keep = evals > rcond * lam_max
         k = int(np.count_nonzero(keep))
         if k == 0:

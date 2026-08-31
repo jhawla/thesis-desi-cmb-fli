@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "desi-cmb-fli"
-version = "0.2.0"
+version = "0.3.0"
 description = "Scaffold for DESI × CMB lensing field-level inference thesis work"
 readme = "README.md"
 requires-python = ">=3.10"

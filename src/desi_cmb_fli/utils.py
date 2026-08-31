@@ -39,6 +39,43 @@ class ObservationMode(str, Enum):
             ) from None
 
 
+MODEL_STATE_KEYS = ("gxy_count", "a_fid", "selec_mesh", "gxy_occ_mask3d", "gxy_shell_id")
+
+
+def model_state_for_truth(model) -> dict:
+    """Observation-derived model attributes, for storage in truth.npz."""
+    return {k: jnp.asarray(v) for k in MODEL_STATE_KEYS
+            if (v := getattr(model, k, None)) is not None}
+
+
+def restore_model_state_from_truth(model, truth) -> list:
+    """Re-apply those attributes onto ``model`` in place; return the keys found in ``truth``."""
+    restored = [k for k in MODEL_STATE_KEYS if k in truth]
+    for k in restored:
+        v = jnp.asarray(truth[k])
+        setattr(model, k, float(v) if v.ndim == 0 else v)
+    return restored
+
+
+def check_model_state(model, observation_mode, restored) -> None:
+    """Fail loudly if observation-derived state is missing at conditioning time."""
+    if not model.galaxies_enabled:
+        return
+    if model.gxy_ngbar_free and getattr(model, "gxy_shell_id", None) is None:
+        raise RuntimeError(
+            "gxy_ngbar_free=True but gxy_shell_id is None: the ngbar_* latents would be sampled "
+            "from their prior alone, dropping the integral constraint and silently changing the "
+            "posterior."
+        )
+    if observation_mode == ObservationMode.ABACUS and "gxy_count" not in restored:
+        raise RuntimeError(
+            "observation_mode='abacus' but truth.npz carries no gxy_count, so the catalog n̄ is "
+            f"lost and the shot-noise variance falls back on the config value "
+            f"({float(model.gxy_count):.6g} = gxy_density x V_cell). Runs created before "
+            "gxy_count was persisted cannot be resumed consistently."
+        )
+
+
 def vlim(a, level=1.0, scale=1.0, axis=0):
     """
     Return robust inferior and superior limit values of an array,

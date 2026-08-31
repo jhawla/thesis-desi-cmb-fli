@@ -36,7 +36,12 @@ from desi_cmb_fli import utils
 from desi_cmb_fli.cmb_lensing import load_abacus_galaxy_observation, load_abacus_kappa_observation
 from desi_cmb_fli.model import get_model_from_config
 from desi_cmb_fli.samplers import get_mclmc_run, get_mclmc_warmup
-from desi_cmb_fli.utils import ObservationMode
+from desi_cmb_fli.utils import (
+    ObservationMode,
+    check_model_state,
+    model_state_for_truth,
+    restore_model_state_from_truth,
+)
 
 try:
     from scripts.analyze_run import analyze_run
@@ -127,6 +132,8 @@ if model.cmb_enabled and model.cmb_noise_nell is not None:
     plot_cmb_noise_spectrum(model, fig_dir)
 
 
+observation_mode = ObservationMode.validate(cfg.get("observation_mode", "closure"))
+
 # =============================================================================
 # RESUME MODE: Load saved state and skip to sampling
 # =============================================================================
@@ -158,7 +165,6 @@ else:
     print("=" * 80)
 
     seed = cfg["seed"]
-    observation_mode = ObservationMode.validate(cfg.get("observation_mode", "closure"))
 
     # ── Branch by observation mode ──────────────────────────────────────────
     if observation_mode == ObservationMode.CLOSURE:
@@ -226,7 +232,8 @@ else:
         raise NotImplementedError(f"observation_mode {observation_mode!r} not handled here")
     # ─────────────────────────────────────────────────────────────────────────
 
-    jnp.savez(config_dir / "truth.npz", **truth)
+    truth.update(model_state_for_truth(model))
+    jnp.savez(config_dir / "truth.npz", **{k: v for k, v in truth.items() if v is not None})
 
     effective_cfg = copy.deepcopy(cfg)
     effective_cfg["observation_mode"] = observation_mode.value
@@ -321,13 +328,16 @@ else:
     print(f"\n⚠️  WARNING: Only {len(devices)} GPUs available for {num_chains} chains.")
     print("   Some chains will share GPUs, which may slow down sampling significantly.")
 
+_restored = restore_model_state_from_truth(model, truth)
+if RESUME_MODE:
+    print(f"\n🔄 Restored from truth.npz: {_restored}")
+    print(f"   gxy_count={float(model.gxy_count):.4f} gxy/cell, a_fid={model.a_fid:.4f}")
+check_model_state(model, observation_mode, _restored)
+
 # Condition model on observations
 condition_dict = {}
 if model.galaxies_enabled and "obs" in truth:
     condition_dict["obs"] = truth["obs"]
-    model.gxy_occ_mask3d = truth.get("gxy_occ_mask3d", None)
-    if "selec_mesh" in truth:
-        model.selec_mesh = truth["selec_mesh"]
 
 if cmb_enabled and "kappa_obs_packed" in truth:
     condition_dict["kappa_obs"] = truth["kappa_obs_packed"]
