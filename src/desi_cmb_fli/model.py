@@ -18,9 +18,13 @@ from numpyro.handlers import block, condition, seed, trace
 from numpyro.infer.util import log_density
 
 from desi_cmb_fli.bricks import (
+    INTERLACE_ORDER,
     add_png,
+    band_limit,
     fNL_bias,
     get_cosmology,
+    interlace_accumulate,
+    interlace_combine,
     interlace_paint_deconv,
     kaiser_boost,
     kaiser_model,
@@ -83,6 +87,9 @@ default_config = {
     "cmb_noise_scaling": 1.0,  # Artificial noise scaling factor (for tests: 0.01 = divide by 100)
     "cmb_nside": 256,      # HEALPix nside for curved-sky convergence map
     "cmb_n_shells": 189,   # Number of radial shells for Born integration
+    "cmb_chi_min": 0.0,  # Born integration starts here (Mpc/h); C_l of chi < chi_min goes into the noise
+    "cmb_shell_weights": "nearest",  # 'nearest' or 'linear' radial shell assignment of the particles
+    "cmb_proj_oversamp": 1,  # Born projection sphere refined by this factor (anti-aliasing); a_lm band unchanged
     "cmb_observer_mode": "face",  # 'face' or 'center'
     "cmb_observer_position": None,  # Optional explicit [x, y, z] in Mpc/h
     "cmb_mask": None,  # Optional external survey mask (npy/FITS or array)
@@ -270,6 +277,9 @@ def get_model_from_config(config_or_path):
         # If enabled, setup specific CMB params
         model_config["cmb_nside"] = int(cmb_cfg.get("nside", 256))
         model_config["cmb_n_shells"] = int(cmb_cfg.get("n_shells", 189))
+        model_config["cmb_chi_min"] = float(cmb_cfg.get("chi_min", 0.0))
+        model_config["cmb_shell_weights"] = str(cmb_cfg.get("shell_weights", "nearest"))
+        model_config["cmb_proj_oversamp"] = int(cmb_cfg.get("proj_oversamp", 1))
         if "likelihood" in cmb_cfg:
             raise ValueError(
                 "cmb_lensing.likelihood has been removed; the HEALPix harmonic likelihood is always used."
@@ -313,17 +323,24 @@ def get_model_from_config(config_or_path):
 
         from desi_cmb_fli.bricks import get_cosmology as _get_cosmology
 
-        raw = cfg.get("abacus_galaxy", {}).get("file")
-        paths = raw if isinstance(raw, list | tuple) else [raw]
-        zs = sorted({float(m.group(1)) for p in paths if p
-                     for m in [_re.search(r"/z(\d+\.\d+)/", str(p))] if m})
-        if len(zs) < 2:
-            print(f"[ngbars] gxy_ngbar_free set but only {len(zs)} z-shell found; disabling.")
+        gxy_cfg = cfg.get("abacus_galaxy", {})
+        z_range = gxy_cfg.get("z_range")
+        if z_range is None:
+            raw = gxy_cfg.get("file")
+            paths = raw if isinstance(raw, list | tuple) else [raw]
+            zs = sorted({float(m.group(1)) for p in paths if p
+                         for m in [_re.search(r"/z(\d+\.\d+)/", str(p))] if m})
+            if len(zs) >= 2:
+                # Effective survey z-range (catalog bands extend ~half a spacing beyond the nominal z's).
+                dz_lo, dz_hi = zs[1] - zs[0], zs[-1] - zs[-2]
+                z_range = (max(zs[0] - 0.5 * dz_lo, 0.0), zs[-1] + 0.5 * dz_hi)
+
+        if z_range is None:
+            print("[ngbars] gxy_ngbar_free set but no z-range found "
+                  "(set abacus_galaxy.z_range); disabling.")
             model_config["gxy_ngbar_free"] = False
         else:
-            # Effective survey z-range (catalog bands extend ~half a spacing beyond the nominal z's).
-            dz_lo, dz_hi = zs[1] - zs[0], zs[-1] - zs[-2]
-            z_lo, z_hi = max(zs[0] - 0.5 * dz_lo, 0.0), zs[-1] + 0.5 * dz_hi
+            z_lo, z_hi = float(z_range[0]), float(z_range[1])
 
             def _fid(name, dflt):
                 c = model_config["latents"].get(name, {})
@@ -344,7 +361,7 @@ def get_model_from_config(config_or_path):
                 lat["label"] = r"{\bar{n}}_{g," + str(b) + "}"
                 model_config["latents"][f"ngbar_{b}"] = lat
             print(f"[ngbars] {n_rbins} free fine radial bins (dr≈{dr:.0f} Mpc/h, "
-                  f"chi≈[{chi_lo:.0f},{chi_hi:.0f}] Mpc/h), montecosmo-style; ngbar_0..ngbar_{n_rbins - 1}")
+                  f"chi≈[{chi_lo:.0f},{chi_hi:.0f}] Mpc/h); ngbar_0..ngbar_{n_rbins - 1}")
 
     model_instance = FieldLevelModel(**model_config)
 
@@ -572,6 +589,14 @@ class FieldLevelModel(Model):
         HEALPix nside for the curved-sky convergence map (default 256).
     cmb_n_shells : int
         Number of radial Born integration shells (default 189).
+    cmb_chi_min : float
+        Comoving distance where the Born integration starts (default 0). The
+        C_ell of the dropped range is added to the covariance at fiducial.
+    cmb_shell_weights : str
+        Radial shell assignment of the particles, 'nearest' or 'linear'.
+    cmb_proj_oversamp : int
+        Power of two. The Born projection is scattered onto nside*proj_oversamp, while the
+        observable stays the a_lm with l <= 2*cmb_nside (default 1, no refinement).
     cmb_z_source : float
         CMB source redshift (last scattering surface).
     precond : str
@@ -609,6 +634,9 @@ class FieldLevelModel(Model):
     cmb_noise_scaling: float = field(default=default_config["cmb_noise_scaling"])
     cmb_nside: int = field(default=default_config["cmb_nside"])
     cmb_n_shells: int = field(default=default_config["cmb_n_shells"])
+    cmb_chi_min: float = field(default=default_config["cmb_chi_min"])
+    cmb_shell_weights: str = field(default=default_config["cmb_shell_weights"])
+    cmb_proj_oversamp: int = field(default=default_config["cmb_proj_oversamp"])
     cmb_observer_mode: str = field(default=default_config["cmb_observer_mode"])
     cmb_observer_position: tuple | None = field(default=default_config["cmb_observer_position"])
     cmb_mask: np.ndarray | str | None = field(default=default_config["cmb_mask"])
@@ -663,6 +691,14 @@ class FieldLevelModel(Model):
         self.init_shape = np.asarray(get_scaled_shape(tuple(self.sim_mesh_shape), self.init_oversamp))
         self.evol_shape = np.asarray(get_scaled_shape(tuple(self.sim_mesh_shape), self.evol_oversamp))
         self.ptcl_shape = np.asarray(get_scaled_shape(tuple(self.sim_mesh_shape), self.ptcl_oversamp))
+
+        if self.evolution == "lpt" and not np.array_equal(self.ptcl_shape, self.evol_shape):
+            raise ValueError(
+                f"ptcl_oversamp={self.ptcl_oversamp} and evol_oversamp={self.evol_oversamp} give "
+                f"ptcl_shape={tuple(self.ptcl_shape)} != evol_shape={tuple(self.evol_shape)}. "
+                "jaxpm's cic_read reshapes the particle array to the force-grid shape, so LPT "
+                "needs exactly one particle per evol cell: set the two oversampling factors equal."
+            )
 
         # Oversampled paint shape for CIC deconvolution
         if self.paint_oversamp != 1.0:
@@ -760,9 +796,6 @@ class FieldLevelModel(Model):
             print(f"[CMB] Computing HEALPix deep-field mask (nside={self.cmb_nside}) ...")
 
             t_enter, t_exit = _box_ray_intervals(self.observer_position, self.box_shape, self.cmb_nside)
-            self.t_enter = jnp.asarray(t_enter)
-            self.t_exit = jnp.asarray(t_exit)
-
             self.cmb_sim_mask = (t_exit >= self.chi_boundary - 1e-4) & (t_exit > t_enter)
             self.cmb_chi_max_model = self.chi_boundary
 
@@ -771,11 +804,54 @@ class FieldLevelModel(Model):
             n_pix_mask = int(np.sum(self.cmb_mask))
             print(f"[CMB] Effective mask: {n_pix_mask} pixels / {len(self.cmb_mask)} ({n_pix_mask / len(self.cmb_mask):.2%})")
 
-            # 4. Radial shells strictly limited to the exact geometric depth
-            dr = self.cmb_chi_max_model / self.cmb_n_shells
+            # Anti-aliasing of the Born projection. The observable stays the a_lm with
+            # l <= 2*cmb_nside; only the sphere the particles are scattered onto is refined,
+            # so that sub-pixel power is represented instead of folding into that band.
+            ov = int(self.cmb_proj_oversamp)
+            if ov < 1 or (ov & (ov - 1)):
+                raise ValueError(
+                    f"cmb_lensing.proj_oversamp must be a power of two >= 1, got {ov}"
+                )
+            self.cmb_proj_nside = self.cmb_nside * ov
+            if ov == 1:
+                self.cmb_proj_mask, self.cmb_proj_sim_mask = self.cmb_mask, self.cmb_sim_mask
+            else:
+                t_enter, t_exit = _box_ray_intervals(
+                    self.observer_position, self.box_shape, self.cmb_proj_nside
+                )
+                self.cmb_proj_sim_mask = (t_exit >= self.chi_boundary - 1e-4) & (t_exit > t_enter)
+                self.cmb_proj_mask = self.cmb_proj_sim_mask & load_healpix_mask(
+                    self.cmb_external_mask, self.cmb_proj_nside
+                )
+                print(
+                    f"[CMB] Born projection anti-aliasing: scattered at nside "
+                    f"{self.cmb_proj_nside} (x{ov}), a_lm still to l <= {2 * self.cmb_nside}"
+                )
+            self.t_enter = jnp.asarray(t_enter)
+            self.t_exit = jnp.asarray(t_exit)
+
+            # 4. Radial shells tiling [chi_min, chi_boundary] exactly
+            chi_min = float(self.cmb_chi_min)
+            if not 0.0 <= chi_min < self.cmb_chi_max_model:
+                raise ValueError(
+                    f"cmb_lensing.chi_min={chi_min} must lie in [0, chi_boundary={self.cmb_chi_max_model:.1f})"
+                )
+            if self.cmb_shell_weights not in ("nearest", "linear"):
+                raise ValueError(
+                    f"cmb_lensing.shell_weights must be 'nearest' or 'linear', got {self.cmb_shell_weights!r}"
+                )
+            # 'nearest' bins tile the range; 'linear' tents span it, apex to apex, so that
+            # their support ends exactly on chi_min and chi_boundary.
+            n_gap = self.cmb_n_shells + (1 if self.cmb_shell_weights == "linear" else 0)
+            dr = (self.cmb_chi_max_model - chi_min) / n_gap
+            half = dr if self.cmb_shell_weights == "linear" else dr / 2.0
             self.cmb_d_r = dr
             self.cmb_r_shells = np.linspace(
-                dr / 2.0, self.cmb_chi_max_model - dr / 2.0, self.cmb_n_shells
+                chi_min + half, self.cmb_chi_max_model - half, self.cmb_n_shells
+            )
+            print(
+                f"[CMB] Born shells: {self.cmb_n_shells} x {dr:.1f} Mpc/h over "
+                f"chi=[{chi_min:.0f}, {self.cmb_chi_max_model:.0f}], shell_weights={self.cmb_shell_weights}"
             )
             self.cmb_a_shells = np.array(
                 [float(jc.background.a_of_chi(cosmo_fid, r)[0]) for r in self.cmb_r_shells]
@@ -847,6 +923,21 @@ class FieldLevelModel(Model):
                         [self.cmb_alm_l[_idx_re_m0], self.cmb_alm_l[_idx_mp], self.cmb_alm_l[_idx_mp]]
                     )
                 )
+                # jax_healpy's map2alm only supports lmax == 2*nside, so a refined projection
+                # transforms to its own larger lmax; these are the positions of the SAME (l, m)
+                # pairs in that larger a_lm array, so the observable is bit-identical in content.
+                if self.cmb_proj_nside != self.cmb_nside:
+                    self.cmb_proj_lmax = 2 * self.cmb_proj_nside
+                    _get = lambda idx: hp.Alm.getidx(  # noqa: E731
+                        self.cmb_proj_lmax, self.cmb_alm_l[idx], self.cmb_alm_m[idx])
+                    self.cmb_proj_pack_re_idx = jnp.asarray(
+                        np.concatenate([_get(_idx_re_m0), _get(_idx_mp)]))
+                    self.cmb_proj_pack_im_idx = jnp.asarray(_get(_idx_mp))
+                else:
+                    self.cmb_proj_lmax = self.cmb_lmax
+                    self.cmb_proj_pack_re_idx = self.cmb_pack_re_idx
+                    self.cmb_proj_pack_im_idx = self.cmb_pack_im_idx
+
                 # Re and Im of an m>0 mode each carry half the modal variance var_l.
                 self.cmb_u_half = jnp.asarray(
                     np.concatenate(
@@ -857,6 +948,11 @@ class FieldLevelModel(Model):
                     )
                 )
             else:
+                if self.cmb_proj_nside != self.cmb_nside:
+                    raise ValueError(
+                        "cmb_lensing.proj_oversamp > 1 is only implemented for "
+                        "likelihood_mode='diagonal' (pixel_exact works on the observable pixels)."
+                    )
                 if self.full_los_correction and self.high_z_mode != "fixed":
                     raise ValueError(
                         "cmb_likelihood_mode='pixel_exact' requires high_z_mode='fixed' when "
@@ -890,6 +986,20 @@ class FieldLevelModel(Model):
                     print(
                         f"  Cached C_l^{{high-z}} at fiducial "
                         f"(mode={self.high_z_mode}, chi={self.chi_boundary:.0f}->{chi_high_z_upper:.0f} Mpc/h)"
+                    )
+                    if chi_min > 0.0:
+                        cl_low_z = compute_theoretical_cl_kappa(
+                            cosmo_fid, self.ell_1d, 1.0, chi_min, self.cmb_z_source
+                        )
+                        self.cl_high_z_cached = self.cl_high_z_cached + cl_low_z
+                        print(
+                            f"  Added C_l^{{low-z}} at fiducial (chi=1->{chi_min:.0f} Mpc/h) to the "
+                            "cached LOS correction"
+                        )
+                elif chi_min > 0.0:
+                    raise ValueError(
+                        "cmb_lensing.chi_min > 0 needs the dropped low-z C_l in the covariance, "
+                        "which only high_z_mode 'fixed' or 'taylor' provide."
                     )
 
                 if self.high_z_mode == "taylor":
@@ -927,6 +1037,8 @@ class FieldLevelModel(Model):
                         ell_in, nell_in, self.cmb_nside, cl_extra_1d=self.cl_high_z_cached
                     )
                     print(f"[CMB] sigma_hp (with high-z) = {self.sigma_hp:.6f}")
+            elif chi_min > 0.0:
+                raise ValueError("cmb_lensing.chi_min > 0 requires full_los_correction=True.")
 
             if self.cmb_likelihood_mode == "pixel_exact":
                 self._build_cmb_pixel_cov()
@@ -1102,7 +1214,19 @@ class FieldLevelModel(Model):
         ngbars_padded = jnp.concatenate([jnp.asarray(ngbars), jnp.ones((1,), ngbars.dtype)])
         return ngbars_padded[sid]
 
-    def paint_and_deconv(self, pos, weights=None, from_shape=None):
+    def obs_to_delta(self, obs):
+        """Galaxy overdensity from the observed counts mesh, zero outside the survey mask.
+
+        Inverse of the likelihood mean at ngbar=1: delta_g = obs / (n̄·S) - 1. The likelihood
+        itself never divides — this is for the warm start and the diagnostics only.
+        """
+        selec = getattr(self, "selec_mesh", None)
+        nbar = self.gxy_count if selec is None else self.gxy_count * jnp.asarray(selec)
+        delta = jnp.asarray(obs) / jnp.maximum(nbar, 1e-10) - 1.0
+        mask = getattr(self, "gxy_occ_mask3d", None)
+        return delta if mask is None else jnp.where(jnp.asarray(mask), delta, 0.0)
+
+    def paint_and_deconv(self, pos, weights=None, from_shape=None, crop=True):
         """CIC paint + interlace + deconvolve, with optional oversampled Fourier crop.
 
         Follows montecosmo's approach:
@@ -1111,8 +1235,9 @@ class FieldLevelModel(Model):
         - Fourier crop via chreshape to final resolution (when oversampled)
 
         ``pos`` is in ``from_shape`` cell units (default: the final mesh grid; with
-        evolution oversampling, the caller passes ``evol_shape``). The output always has
-        shape ``mesh_shape`` (final grid).
+        evolution oversampling, the caller passes ``evol_shape``). The output has shape
+        ``mesh_shape`` (final grid), or ``paint_shape`` when ``crop=False`` — the survey
+        selection multiplies the model there, before the crop averages over final cells.
         """
         if from_shape is None:
             from_shape = self._sim_mesh
@@ -1131,7 +1256,10 @@ class FieldLevelModel(Model):
         scale_pos = jnp.asarray(np.asarray(paint_shape) / np.asarray(from_shape), dtype=pos.dtype)
         pos_paint = pos * scale_pos
 
-        return interlace_paint_deconv(pos_paint, paint_shape, final_shape, weights=weights)
+        if crop:
+            return interlace_paint_deconv(pos_paint, paint_shape, final_shape, weights=weights)
+        shifted = [jnp.zeros(paint_shape) for _ in range(INTERLACE_ORDER)]
+        return interlace_combine(interlace_accumulate(shifted, pos_paint, weights), paint_shape)
 
     def evolve(self, params: tuple):
         cosmology, bias, init, png = params
@@ -1256,9 +1384,11 @@ class FieldLevelModel(Model):
         # Preserve real-space positions for matter field painting (always needed for CMB)
         pos_real = pos
 
-        # Paint unbiased matter field in real space (always needed for CMB lensing).
-        # Particles are in evol-grid cell units; mean-normalise to 1 + delta (robust to
-        # particle count, so unaffected by ptcl oversampling).
+        # Unbiased matter field, for diagnostics only: the CMB-lensing likelihood Born-integrates
+        # pos_real directly and never reads it. Free in the density path -- log_density discards
+        # deterministic values, so XLA dead-code-eliminates this paint; it only materialises
+        # under predict(). Particles are in evol-grid cell units; mean-normalise to 1 + delta
+        # (robust to particle count, so unaffected by ptcl oversampling).
         matter_mesh = self.paint_and_deconv(pos_real, from_shape=self.evol_shape)
         matter_mesh = matter_mesh / jnp.mean(matter_mesh)
         matter_mesh = deterministic("matter_mesh", matter_mesh)
@@ -1306,48 +1436,56 @@ class FieldLevelModel(Model):
             # CIC paint weighted by Lagrangian bias expansion weights. The painted field is
             # counts-per-final-cell (mean = ptcl/final cells); divide by that fixed factor to
             # recover the 1 + delta_g overdensity (identity when ptcl_oversamp=1).
-            ptcl_per_cell = float(np.prod(self.ptcl_shape) / np.prod(self._sim_mesh))
-            gxy_mesh = self.paint_and_deconv(
-                pos_rsd, weights=lbe_weights, from_shape=self.evol_shape
+            ptcl_per_cell = float(np.prod(self.ptcl_shape) / np.prod(self.paint_shape))
+            gxy_paint = self.paint_and_deconv(
+                pos_rsd, weights=lbe_weights, from_shape=self.evol_shape, crop=False
             ) / ptcl_per_cell
-            gxy_mesh = deterministic("gxy_mesh", gxy_mesh)
+            gxy_mesh = deterministic("gxy_mesh", band_limit(gxy_paint, self._sim_mesh))
         else:
             # CMB-only: create dummy gxy_mesh for API consistency
             gxy_mesh = jnp.zeros(self.mesh_shape)
+            gxy_paint = None
 
-        return {"gxy_mesh": gxy_mesh, "matter_mesh": matter_mesh, "pos_real": pos_real}
+        return {
+            "gxy_mesh": gxy_mesh,
+            "gxy_paint": gxy_paint,
+            "matter_mesh": matter_mesh,
+            "pos_real": pos_real,
+        }
 
-    def likelihood(self, gxy_mesh, matter_mesh=None, pos_real=None, cosmology=None, bias=None, temp=1.0, s_e=1.0, ngbars=None):
+    def likelihood(self, gxy_mesh, gxy_paint=None, matter_mesh=None, pos_real=None, cosmology=None, bias=None, temp=1.0, s_e=1.0, ngbars=None):
         """
-        Gaussian field-level likelihood with shot-noise variance.
+        Gaussian field-level likelihood on galaxy *counts* per cell.
 
-        Variance per cell = s_e**2 / n̄  (s_e rescales the
-        shot-noise amplitude, s_e=1 => pure Poisson).
-        Per-z n̄(z) is used when available (Abacus mode); otherwise the
-        global gxy_count (closure mode).  Cells outside the survey mask
-        are excluded via ``dist.mask``.
+        The observable is the painted count mesh; the survey selection multiplies the
+        predicted intensity instead of dividing the data, so partially covered cells stay
+        finite. Mean = n̄·alpha·<(1+delta_g)·S> and variance = s_e**2·n̄·alpha·S, both per
+        cell (s_e=1 => pure Poisson). Cells outside the survey mask are excluded via
+        ``dist.mask``. See docs/pipeline.md 3.1 "Galaxy likelihood".
         """
 
         if self.observable == "field":
             # Galaxy likelihood (if enabled)
             if self.galaxies_enabled:
                 selec = getattr(self, "selec_mesh", None)
-                if selec is not None:
-                    nbar = jnp.maximum(jnp.asarray(selec) * self.gxy_count, 1e-10)
+                selec_fine = getattr(self, "selec_paint", None)
+                if selec_fine is not None and gxy_paint is not None:
+                    intens = band_limit(gxy_paint * jnp.asarray(selec_fine), self._sim_mesh)
+                elif selec is not None:
+                    intens = gxy_mesh * jnp.asarray(selec)
                 else:
-                    nbar = self.gxy_count
+                    intens = gxy_mesh
+                nbar = self.gxy_count if selec is None else self.gxy_count * jnp.asarray(selec)
 
-                # Free per-shell mean density: the data overdensity was built
-                # with a fixed n̄, so a per-shell relative amplitude alpha rescales the predicted
-                # field (mean) and the shot-noise (var ∝ alpha) per radial bin. alpha=1 outside bins.
-                mean_field = gxy_mesh
+                # Free per-shell mean density: a per-radial-bin relative amplitude alpha rescales
+                # the predicted counts and their shot noise alike. alpha=1 outside the bins.
                 if ngbars is not None and getattr(self, "gxy_shell_id", None) is not None:
                     alpha = self._ngbar_alpha_field(ngbars)
-                    mean_field = alpha * gxy_mesh
-                    nbar = nbar / jnp.maximum(alpha, 1e-6)
+                    intens = alpha * intens
+                    nbar = jnp.maximum(alpha, 1e-6) * nbar
 
-                variance = temp * (s_e**2 / nbar)
-                gxy_dist = dist.Normal(mean_field, variance**0.5)
+                variance = temp * s_e**2 * jnp.maximum(nbar, 1e-10)
+                gxy_dist = dist.Normal(self.gxy_count * intens, variance**0.5)
 
                 if getattr(self, "gxy_occ_mask3d", None) is not None:
                     gxy_dist = gxy_dist.mask(jnp.asarray(self.gxy_occ_mask3d))
@@ -1378,12 +1516,13 @@ class FieldLevelModel(Model):
                     self.cmb_r_shells,
                     self.cmb_a_shells,
                     self.cmb_d_r,
-                    self.cmb_nside,
-                    self.cmb_sim_mask,
+                    self.cmb_proj_nside,
+                    self.cmb_proj_sim_mask,
                     self.cmb_z_source,
                     self.t_enter,
                     self.t_exit,
                     return_full=True,
+                    shell_weights=self.cmb_shell_weights,
                 )
 
                 kappa_pred = deterministic("kappa_pred", kappa_pred)
@@ -1418,18 +1557,28 @@ class FieldLevelModel(Model):
 
             return obs_mesh  # NOTE: mesh is 1+delta_obs
 
-    def pack_alm(self, alm):
+    def pack_alm(self, alm, re_idx=None, im_idx=None):
         """Pack complex a_lm into the flat real observable vector (l>=2 modes)."""
-        return jnp.concatenate(
-            [jnp.real(alm)[self.cmb_pack_re_idx], jnp.imag(alm)[self.cmb_pack_im_idx]]
-        )
+        re_idx = self.cmb_pack_re_idx if re_idx is None else re_idx
+        im_idx = self.cmb_pack_im_idx if im_idx is None else im_idx
+        return jnp.concatenate([jnp.real(alm)[re_idx], jnp.imag(alm)[im_idx]])
 
     def pack_kappa_map(self, kmap):
         """Mask a HEALPix kappa map, transform to a_lm, and pack to the real observable vector."""
         import jax_healpy as jhp
 
-        W = jnp.asarray(self.cmb_mask, dtype=kmap.dtype)
-        alm = jhp.map2alm(W * kmap, lmax=self.cmb_lmax, pol=False, iter=0, healpy_ordering=True)
+        # The model's map lives on the (possibly refined) projection sphere, the data's on the
+        # observable one. Both are packed into the same (l, m) list; the refined one is
+        # transformed at its own lmax and the extra modes are simply not selected, which is
+        # what keeps its sub-pixel power out of the observable instead of folded into it.
+        fine = (self.cmb_proj_nside != self.cmb_nside
+                and kmap.shape[-1] == np.shape(self.cmb_proj_mask)[-1])
+        mask = self.cmb_proj_mask if fine else self.cmb_mask
+        lmax = self.cmb_proj_lmax if fine else self.cmb_lmax
+        W = jnp.asarray(mask, dtype=kmap.dtype)
+        alm = jhp.map2alm(W * kmap, lmax=lmax, pol=False, iter=0, healpy_ordering=True)
+        if fine:
+            return self.pack_alm(alm, self.cmb_proj_pack_re_idx, self.cmb_proj_pack_im_idx)
         return self.pack_alm(alm)
 
     def pack_kappa_obs(self, kmap):

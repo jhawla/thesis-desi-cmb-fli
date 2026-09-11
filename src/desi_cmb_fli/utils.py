@@ -39,7 +39,8 @@ class ObservationMode(str, Enum):
             ) from None
 
 
-MODEL_STATE_KEYS = ("gxy_count", "a_fid", "selec_mesh", "gxy_occ_mask3d", "gxy_shell_id")
+MODEL_STATE_KEYS = ("gxy_count", "a_fid", "selec_mesh", "selec_paint", "gxy_occ_mask3d",
+                    "gxy_shell_id")
 
 
 def model_state_for_truth(model) -> dict:
@@ -57,10 +58,20 @@ def restore_model_state_from_truth(model, truth) -> list:
     return restored
 
 
-def check_model_state(model, observation_mode, restored) -> None:
+def check_model_state(model, observation_mode, restored, truth=None) -> None:
     """Fail loudly if observation-derived state is missing at conditioning time."""
     if not model.galaxies_enabled:
         return
+    if truth is not None and "obs" in truth and float(getattr(model, "gxy_count", 0.0)) > 2.0:
+        obs = jnp.asarray(truth["obs"])
+        mask = getattr(model, "gxy_occ_mask3d", None)
+        obs_mean = float(jnp.mean(obs if mask is None else obs[jnp.asarray(mask)]))
+        if obs_mean < 0.1 * float(model.gxy_count):
+            raise RuntimeError(
+                f"truth.npz holds a galaxy overdensity (mean {obs_mean:.3g} over the survey), not "
+                f"counts (expected ~{float(model.gxy_count):.4g}). It predates the counts "
+                "likelihood and cannot be resumed; rebuild the observation from the catalog."
+            )
     if model.gxy_ngbar_free and getattr(model, "gxy_shell_id", None) is None:
         raise RuntimeError(
             "gxy_ngbar_free=True but gxy_shell_id is None: the ngbar_* latents would be sampled "

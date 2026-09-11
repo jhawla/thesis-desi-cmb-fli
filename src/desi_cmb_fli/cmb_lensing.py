@@ -4,7 +4,7 @@ CMB Lensing Module
 Pipeline overview
 -----------------
 LPT -> particle positions (cell units)
-  -> paint_particles_spherical (jaxpm) per radial shell
+  -> single-pass bilinear scatter onto (n_shells, npix) HEALPix rows
      -> delta on HEALPix mask (normalised on footprint)
         -> convergence_Born_spherical (Born integral)
            -> kappa_hp : (n_pix_mask,)
@@ -16,6 +16,10 @@ Likelihood:
     Native dist.Normal over the packed masked pseudo-a_lm (see FieldLevelModel).
 """
 
+import os
+import tempfile
+from pathlib import Path
+
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -24,6 +28,12 @@ import jax_cosmo.constants as constants
 import numpy as np
 
 NYQUIST_FRACTION = 0.5
+
+# Where the reduced randoms meshes are cached. Set abacus_galaxy.randoms_cache_dir
+# in the config to override, or to null to disable caching.
+_DEFAULT_RANDOMS_CACHE_DIR = (
+    Path(os.environ.get("SCRATCH", tempfile.gettempdir())) / "desi_cmb_fli_cache"
+)
 
 
 # =========================================================================
@@ -239,6 +249,28 @@ def lensing_kernel(cosmo, chi, a, chi_source):
 # =========================================================================
 
 
+def linear_shell_volumes(r_shells, d_r, npix):
+    """Per-pixel volume of each shell under the 'linear' shell weights.
+
+    The weight of shell ``i`` is the tent ``max(0, 1 - |r - c_i| / d_r)``: it rises from
+    zero at ``c_i - d_r`` and falls back to zero at ``c_i + d_r``, so a particle enters
+    and leaves the integration continuously at both ends of the radial range. Shell ``i``
+    sees the volume ``Omega_pix * int w_i(r) r^2 dr``, computed here in closed form.
+    """
+    r_shells = np.asarray(r_shells, dtype=float)
+
+    def piece(a, b, alpha, beta):
+        a, b = max(a, 0.0), max(b, 0.0)
+        return alpha * (b**3 - a**3) / 3.0 + beta * (b**4 - a**4) / 4.0
+
+    vol = np.array([
+        piece(c - d_r, c, -(c - d_r) / d_r, 1.0 / d_r)
+        + piece(c, c + d_r, (c + d_r) / d_r, -1.0 / d_r)
+        for c in r_shells
+    ])
+    return (4.0 * np.pi / npix) * vol
+
+
 def convergence_Born_spherical(
     cosmo,
     pos,
@@ -254,14 +286,16 @@ def convergence_Born_spherical(
     t_enter=None,
     t_exit=None,
     return_full=False,
+    shell_weights="nearest",
 ):
     """Compute CMB convergence on a HEALPix mask via the Born approximation.
 
-        For each radial shell:
-            1. paint_particles_spherical -> full-sky HEALPix density rho
-            2. paint a uniform reference lattice to identify the shell support
-            3. delta = rho / <rho>_shell - 1 on that shell support
-            4. kappa += delta * d_r * W_kappa(chi, a)
+    Each particle is assigned radially to its shell(s) and bilinearly scattered
+    onto the HEALPix row(s) in a single pass, giving per-shell densities
+    ``rho``; then ``kappa = sum_i (rho_i / n_bar - 1) * d_r_i * W_kappa(chi_i,
+    a_i)`` over the shells whose segment lies fully inside the box along each
+    ray. Shells must tile the radial range exactly. See docs/pipeline.md
+    "Single-pass shell scatter" and "Shell weights" (2.6).
 
     Parameters
     ----------
@@ -289,6 +323,12 @@ def convergence_Born_spherical(
     return_full : bool, optional
         If True, return a full-sky HEALPix map with zeros outside ``mask``.
         If False, return only the active pixels.
+    shell_weights : {'nearest', 'linear'}
+        'nearest': each particle goes entirely to the shell containing it.
+        'linear': its weight is split linearly between the two shells whose
+        centres bracket its radius, ramping up from zero over the half shell
+        below the first edge (uniform shells only), so ``kappa`` is continuous
+        in the particle radii, inner edge included.
 
     Returns
     -------
@@ -296,7 +336,7 @@ def convergence_Born_spherical(
         Full-sky HEALPix map if ``return_full`` is True, otherwise the masked pixels.
     """
     import healpy as hp
-    from jaxpm.spherical import paint_particles_spherical
+    import jax_healpy as jhp
 
     chi_s = jc.background.radial_comoving_distance(cosmo, 1.0 / (1.0 + z_source))[0]
     observer_pos_mpc = jnp.asarray(observer_pos_mpc, dtype=float)
@@ -313,8 +353,10 @@ def convergence_Born_spherical(
 
     if not hasattr(d_r, "__len__"):
         d_r_arr = jnp.full(n_shells, d_r)
+        d_r_np = np.full(n_shells, float(d_r))
     else:
         d_r_arr = jnp.asarray(d_r)
+        d_r_np = np.asarray(d_r, dtype=float)
 
     if t_enter is None or t_exit is None:
         t_enter, t_exit = _box_ray_intervals(observer_pos_mpc, box_shape, nside)
@@ -326,41 +368,70 @@ def convergence_Born_spherical(
     v_box = float(np.prod(np.asarray(box_shape, dtype=float)))
     n_bar = n_total / v_box
 
-    def scan_fn(kappa_acc, i):
-        chi_i = r_shells_jnp[i]
-        a_i   = a_shells_jnp[i]
-        dr_i  = d_r_arr[i]
-
-        R_min = chi_i - 0.5 * dr_i
-        R_max = chi_i + 0.5 * dr_i
-
-        rho_full = paint_particles_spherical(
-            positions=pos,
-            nside=nside,
-            observer_position=observer_pos_mpc,
-            R_min=R_min,
-            R_max=R_max,
-            box_size=box_size_jnp,
-            mesh_shape=mesh_shape_tuple,
-            method="bilinear",
+    lower = np.asarray(r_shells, dtype=float) - 0.5 * d_r_np
+    upper = np.asarray(r_shells, dtype=float) + 0.5 * d_r_np
+    if not np.allclose(upper[:-1], lower[1:]):
+        raise ValueError(
+            "convergence_Born_spherical requires contiguous shells: "
+            "r_shells +/- d_r/2 must tile without gaps or overlaps."
         )
 
-        # The ray intervals encode the exact box geometry for any observer;
-        # require the whole shell segment to lie inside the box along the ray.
-        is_fully_inside = (t_enter_jnp <= R_min) & (t_exit_jnp >= R_max)
-        shell_mask = mask_jnp & is_fully_inside
+    pos_phys = pos * box_size_jnp / jnp.asarray(mesh_shape_tuple, dtype=float)
+    rel = pos_phys - observer_pos_mpc
+    r = jnp.linalg.norm(rel, axis=-1)
+    r_safe = jnp.where(r > 1e-10, r, 1e-10)
+    theta, phi = jhp.vec2ang(rel / r_safe[..., None])
+    pixels, interp_weights = jhp.get_interp_weights(nside, theta, phi)
 
-        full_valid = jnp.isfinite(rho_full) & shell_mask
-        delta_full = jnp.where(
-            full_valid, rho_full / n_bar - 1.0, 0.0
+    if shell_weights == "nearest":
+        edges = jnp.asarray(np.concatenate([lower, upper[-1:]]))
+        shell = jnp.searchsorted(edges, r, side="right") - 1
+        inside = (shell >= 0) & (shell < n_shells)
+        assignment = [(shell, jnp.where(inside, 1.0, 0.0))]
+        shell_vol = (
+            (4.0 * jnp.pi / npix_full)
+            * (jnp.asarray(upper) ** 3 - jnp.asarray(lower) ** 3)
+            / 3.0
         )
+        mask_lower, mask_upper = lower, upper
+    elif shell_weights == "linear":
+        if not np.allclose(d_r_np, d_r_np[0]):
+            raise ValueError("shell_weights='linear' requires uniform shells.")
+        h = d_r_np[0]
+        f = (r - float(r_shells[0])) / h
+        i0 = jnp.floor(f)
+        w1 = f - i0
+        i0 = i0.astype(jnp.int32)
 
-        W_i = lensing_kernel(cosmo, chi_i, a_i, chi_s)
-        kappa_acc = kappa_acc + delta_full * dr_i * W_i
-        return kappa_acc, None
+        def tent(idx, w):
+            ok = (idx >= 0) & (idx < n_shells)
+            return idx, jnp.where(ok, w, 0.0)
 
-    kappa_init = jnp.zeros(npix_full)
-    kappa_hp, _ = jax.lax.scan(scan_fn, kappa_init, jnp.arange(n_shells))
+        assignment = [tent(i0, 1.0 - w1), tent(i0 + 1, w1)]
+        shell_vol = jnp.asarray(linear_shell_volumes(r_shells, h, npix_full))
+        # The tent reaches d_r beyond each centre; nudge the mask bounds inwards so that
+        # a shell whose support ends exactly on the box boundary is not lost to rounding.
+        tol = 1e-6 * (float(np.max(r_shells)) + h)
+        mask_lower = np.asarray(r_shells) - h + tol
+        mask_upper = np.asarray(r_shells) + h - tol
+    else:
+        raise ValueError(f"shell_weights must be 'nearest' or 'linear', got {shell_weights!r}")
+
+    counts = jnp.zeros((n_shells, npix_full))
+    for idx, w in assignment:
+        shell_idx = jnp.broadcast_to(jnp.clip(idx, 0, n_shells - 1), pixels.shape)
+        counts = counts.at[shell_idx, pixels].add(interp_weights * w)
+
+    rho = counts / shell_vol[:, None]
+
+    is_fully_inside = (t_enter_jnp[None, :] <= jnp.asarray(mask_lower)[:, None]) & (
+        t_exit_jnp[None, :] >= jnp.asarray(mask_upper)[:, None]
+    )
+    shell_mask = mask_jnp[None, :] & is_fully_inside
+    delta = jnp.where(shell_mask & jnp.isfinite(rho), rho / n_bar - 1.0, 0.0)
+
+    W = lensing_kernel(cosmo, r_shells_jnp, a_shells_jnp, chi_s)
+    kappa_hp = (delta * (d_r_arr * W)[:, None]).sum(0)
     if return_full:
         return kappa_hp
     return kappa_hp[mask_jnp]
@@ -820,12 +891,13 @@ def _load_abacus_cubic_box(file_paths, model, final_shape, paint_oversamp) -> di
         mesh_count = mesh_plain
 
     nbar = float(jnp.mean(mesh_count))
-    obs_mesh = mesh_count / nbar
+    obs_mesh = mesh_count
     survey_mask = jnp.ones(final_shape, dtype=bool)
     selec_mesh = jnp.ones(final_shape, dtype=jnp.float32)
 
     model.gxy_count = nbar
     model.selec_mesh = selec_mesh
+    model.selec_paint = None
     model.gxy_occ_mask3d = survey_mask
     if getattr(model, "lightcone", False):
         raise ValueError(
@@ -847,6 +919,36 @@ def _load_abacus_cubic_box(file_paths, model, final_shape, paint_oversamp) -> di
     }
 
 
+def _randoms_cache_path(cache_dir, rand_paths, z_range, box_shape, mesh_shape,
+                        observer_pos, cosmo, max_rows, chunk_rows, paint_shape):
+    """Content-addressed path for the reduced randoms meshes.
+
+    The randoms catalogue (tens of GB) is only ever used to produce two
+    ``mesh_shape`` arrays and one count, so that reduction is cached on disk.
+    The key covers every input that changes it. The catalogue files are
+    identified by (path, size, mtime) rather than hashed, and the cosmology by
+    the leaves of the ``Cosmology`` pytree -- i.e. the background parameters
+    that set the z -> distance conversion, and not the nuisance latents.
+    """
+    import hashlib
+    import json
+
+    stamp = {
+        "version": 3,
+        "files": [[str(p), p.stat().st_size, p.stat().st_mtime_ns] for p in rand_paths],
+        "z_range": None if z_range is None else [float(z) for z in z_range],
+        "box_shape": [float(x) for x in np.asarray(box_shape).ravel()],
+        "mesh_shape": [int(x) for x in mesh_shape],
+        "observer": [float(x) for x in np.asarray(observer_pos).ravel()],
+        "cosmo": [float(np.asarray(x)) for x in jax.tree_util.tree_leaves(cosmo)],
+        "max_rows": None if max_rows is None else int(max_rows),
+        "chunk_rows": int(chunk_rows),
+        "paint_shape": None if paint_shape is None else [int(x) for x in paint_shape],
+    }
+    digest = hashlib.sha256(json.dumps(stamp, sort_keys=True).encode()).hexdigest()[:16]
+    return Path(cache_dir) / f"randoms_{digest}.npz"
+
+
 def load_abacus_galaxy_observation(
     abacus_gxy_cfg: dict,
     model,
@@ -858,7 +960,12 @@ def load_abacus_galaxy_observation(
     Parameters
     ----------
     abacus_gxy_cfg : dict
-        Config sub-dict with 'file' (str | list[str]).
+        Config sub-dict with 'file' (str | list[str]), and optionally
+        'randoms' (standalone randoms file(s); otherwise the RAND_* columns of
+        'file' are used), 'z_range' (overrides the per-shell path-derived
+        redshift bounds), 'randoms_max_rows' and 'randoms_chunk_rows'
+        (FITS randoms streaming).  FKP weights, if present, are deliberately
+        not applied: the likelihood is Poisson on raw counts.
     model : FieldLevelModel
         Required: observer_position, box_shape, mesh_shape, loc_fid.
         Modified in-place: gxy_count, selec_mesh, gxy_occ_mask3d.
@@ -872,18 +979,29 @@ def load_abacus_galaxy_observation(
     from pathlib import Path as _Path
 
     from desi_cmb_fli.bricks import (
+        INTERLACE_ORDER,
         catalog2positions,
         get_cosmology,
+        interlace_accumulate,
+        interlace_combine,
+        interlace_finalize,
         paint_arbitrary,
+        radius_mesh,
         randoms2positions,
+        randoms_num_rows,
     )
+    from desi_cmb_fli.utils import get_scaled_shape
 
-    raw_file = abacus_gxy_cfg["file"]
-    file_paths = (
-        [_Path(p) for p in raw_file]
-        if isinstance(raw_file, list | tuple)
-        else [_Path(raw_file)]
-    )
+    def _as_paths(raw):
+        return (
+            [_Path(p) for p in raw]
+            if isinstance(raw, list | tuple)
+            else [_Path(raw)]
+        )
+
+    file_paths = _as_paths(abacus_gxy_cfg["file"])
+    rand_file = abacus_gxy_cfg.get("randoms")
+    rand_paths = _as_paths(rand_file) if rand_file else None
 
     cosmo_fid = get_cosmology(**model.loc_fid)
     final_shape = tuple(model.mesh_shape)
@@ -900,8 +1018,15 @@ def load_abacus_galaxy_observation(
         m = _re.search(r"/z(\d+\.\d+)/", str(fp))
         return float(m.group(1)) if m else None
 
+    cfg_z_range = abacus_gxy_cfg.get("z_range")
+    if cfg_z_range is not None:
+        cfg_z_range = (float(cfg_z_range[0]), float(cfg_z_range[1]))
+
     nominal_zs = [_nominal_z(fp) for fp in file_paths]
-    if all(z is not None for z in nominal_zs) and len(file_paths) > 1:
+    if cfg_z_range is not None:
+        z_ranges = [cfg_z_range] * len(file_paths)
+        print(f"[Abacus-gxy] z_range from config: [{cfg_z_range[0]:.3f}, {cfg_z_range[1]:.3f}]")
+    elif all(z is not None for z in nominal_zs) and len(file_paths) > 1:
         zs = sorted(set(nominal_zs))
         z_boundaries = {}
         for z in zs:
@@ -915,10 +1040,8 @@ def load_abacus_galaxy_observation(
         z_ranges = [None] * len(file_paths)
 
     all_gxy_positions = []
-    all_rand_positions = []
-    all_rand_weight_parts = []
+    n_gxy_per_file = []
     n_gxy_total = 0
-    n_rand_total = 0
     chi_min_gxy, chi_max_gxy = float("inf"), float("-inf")
 
     for fp, z_range in zip(file_paths, z_ranges, strict=False):
@@ -934,21 +1057,8 @@ def load_abacus_galaxy_observation(
             chi_min_gxy = min(chi_min_gxy, chi_min_i)
             chi_max_gxy = max(chi_max_gxy, chi_max_i)
             all_gxy_positions.append(np.asarray(pos_i))
+        n_gxy_per_file.append(n_i)
         n_gxy_total += n_i
-
-        rpos_i, rn_i = randoms2positions(
-            path=fp,
-            cosmo=cosmo_fid,
-            observer_position=observer_pos,
-            box_shape=model.box_shape,
-            mesh_shape=final_shape,
-            z_range=z_range,
-        )
-        if rn_i > 0:
-            all_rand_positions.append(np.asarray(rpos_i))
-            alpha_i = n_i / rn_i if rn_i > 0 else 0.0
-            all_rand_weight_parts.append(np.full(rn_i, alpha_i, dtype=np.float64))
-        n_rand_total += rn_i
 
     if n_gxy_total == 0:
         raise ValueError(
@@ -958,13 +1068,109 @@ def load_abacus_galaxy_observation(
 
     all_gxy_pos = jnp.concatenate(all_gxy_positions, axis=0)
     del all_gxy_positions
-    all_rand_pos = (
-        jnp.concatenate(all_rand_positions, axis=0) if all_rand_positions else None
+
+    chunk_rows = int(abacus_gxy_cfg.get("randoms_chunk_rows", 50_000_000))
+    max_rows = abacus_gxy_cfg.get("randoms_max_rows")
+
+    def _random_sources():
+        if rand_paths is None:
+            yield from zip(file_paths, z_ranges, [None] * len(file_paths),
+                           n_gxy_per_file, strict=False)
+            return
+        for rp in rand_paths:
+            n_rows = randoms_num_rows(rp)
+            if n_rows is None:
+                yield rp, cfg_z_range, None, None
+                continue
+            if max_rows:
+                n_rows = min(n_rows, int(max_rows))
+            for start in range(0, n_rows, chunk_rows):
+                yield rp, cfg_z_range, (start, min(start + chunk_rows, n_rows)), None
+
+    rand_mesh_support = jnp.zeros(final_shape)
+    rand_mesh_window = None
+    rand_mesh_paint = None
+    n_rand_total = 0
+    paint_chunk = int(abacus_gxy_cfg.get("randoms_paint_chunk", 4_194_304))
+    rand_paint_shape = (
+        get_scaled_shape(final_shape, paint_oversamp) if paint_oversamp > 1.0 else None
     )
-    all_rand_weights = (
-        jnp.concatenate(all_rand_weight_parts) if all_rand_weight_parts else None
-    )
-    del all_rand_positions, all_rand_weight_parts
+    if rand_paint_shape is not None and tuple(rand_paint_shape) != tuple(
+        int(s) for s in model.paint_shape
+    ):
+        raise ValueError(
+            f"[Abacus-gxy] randoms paint grid {tuple(rand_paint_shape)} differs from the model's "
+            f"{tuple(int(s) for s in model.paint_shape)}: the selection could not multiply the "
+            "predicted field."
+        )
+
+    # The randoms reduce to these two meshes and one count; cache that reduction.
+    cache_dir = abacus_gxy_cfg.get("randoms_cache_dir", _DEFAULT_RANDOMS_CACHE_DIR)
+    cache_path = None
+    if rand_paths is not None and cache_dir is not None:
+        cache_path = _randoms_cache_path(
+            cache_dir, rand_paths, cfg_z_range, model.box_shape, final_shape,
+            observer_pos, cosmo_fid, max_rows, chunk_rows, rand_paint_shape,
+        )
+
+    if cache_path is not None and cache_path.exists():
+        with np.load(cache_path) as cached:
+            rand_mesh_support = jnp.asarray(cached["support"])
+            rand_mesh_window = jnp.asarray(cached["window"])
+            if "window_paint" in cached:
+                rand_mesh_paint = jnp.asarray(cached["window_paint"])
+            n_rand_total = int(cached["n_rand_total"])
+        print(f"[Abacus-gxy] Randoms reduction from cache: {cache_path}")
+    else:
+        rand_shifted, rand_mesh_cic = None, jnp.zeros(final_shape)
+        if rand_paint_shape is not None:
+            rand_shifted = [jnp.zeros(rand_paint_shape) for _ in range(INTERLACE_ORDER)]
+            rand_scale = jnp.asarray(
+                [rand_paint_shape[i] / final_shape[i] for i in range(3)], dtype=float
+            )
+        for rp, z_range, row_range, n_i in _random_sources():
+            rpos_i, rn_i = randoms2positions(
+                path=rp,
+                cosmo=cosmo_fid,
+                observer_position=observer_pos,
+                box_shape=model.box_shape,
+                mesh_shape=final_shape,
+                z_range=z_range,
+                row_range=row_range,
+            )
+            n_rand_total += rn_i
+            if rn_i == 0:
+                continue
+            w_i = None if n_i is None else n_i / rn_i
+            rand_mesh_support = paint_arbitrary(rand_mesh_support, rpos_i, chunk_size=paint_chunk)
+            if rand_shifted is not None:
+                rand_shifted = interlace_accumulate(
+                    rand_shifted, rpos_i * rand_scale, w_i, chunk_size=paint_chunk
+                )
+            else:
+                rand_mesh_cic = paint_arbitrary(
+                    rand_mesh_cic, rpos_i, w_i, chunk_size=paint_chunk
+                )
+        if rand_shifted is not None:
+            rand_mesh_window = interlace_finalize(rand_shifted, rand_paint_shape, final_shape)
+            rand_mesh_paint = interlace_combine(rand_shifted, rand_paint_shape)
+            del rand_shifted
+        else:
+            rand_mesh_window = rand_mesh_cic
+        if cache_path is not None:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            to_cache = {
+                "support": np.asarray(rand_mesh_support),
+                "window": np.asarray(rand_mesh_window),
+                "n_rand_total": np.int64(n_rand_total),
+            }
+            if rand_mesh_paint is not None:
+                to_cache["window_paint"] = np.asarray(rand_mesh_paint, dtype=np.float32)
+            np.savez(cache_path, **to_cache)
+            print(f"[Abacus-gxy] Randoms reduction cached: {cache_path}")
+
+    # No global alpha = n_gal/n_rand: the unit-mean normalisation below divides any constant out.
+    # The ASDF path's per-shell alpha (w_i above) does survive, since it varies from shell to shell.
     print(f"[Abacus-gxy] {n_gxy_total} galaxies, {n_rand_total} randoms -> mesh {final_shape}")
 
     mesh_plain = paint_arbitrary(jnp.zeros(final_shape), all_gxy_pos)
@@ -983,51 +1189,56 @@ def load_abacus_galaxy_observation(
     else:
         mesh_count = mesh_plain
 
-    rand_mesh_plain = None
-    rand_mesh_support = None
-    if all_rand_pos is not None:
-        rand_mesh_plain   = paint_arbitrary(jnp.zeros(final_shape), all_rand_pos, all_rand_weights)
-        rand_mesh_support = paint_arbitrary(jnp.zeros(final_shape), all_rand_pos)
-
-    del all_gxy_pos, all_rand_pos, all_rand_weights
+    del all_gxy_pos
 
     if n_rand_total == 0:
         raise ValueError(
-            "[Abacus-gxy] No randoms found. ASDF files must contain RAND_* columns."
+            "[Abacus-gxy] No randoms found. Set abacus_galaxy.randoms, or use "
+            "ASDF catalogs carrying RAND_* columns."
         )
 
-    # Survey mask = random occupancy + completeness cut at 0.8.
+    # Survey mask = random occupancy + completeness cut (docs/pipeline.md "Completeness cut").
+    completeness_min = float(abacus_gxy_cfg.get("completeness_min", 0.8))
     survey_mask = jnp.asarray(np.asarray(rand_mesh_support > 0))
-    selec_mesh = jnp.asarray(rand_mesh_plain, dtype=jnp.float32)
     del rand_mesh_support
 
-    selec_mesh = selec_mesh / jnp.mean(selec_mesh[survey_mask])
-    survey_mask = survey_mask & (selec_mesh > 0.8)
+    # Unit mean over the occupied cells, so the selection is a dimensionless completeness and
+    # n_eff_per_cell below carries the density. selec_paint is the same field on the paint grid:
+    # band_limit(selec_paint) == selec_mesh inside the survey, by construction.
+    norm = jnp.mean(jnp.asarray(rand_mesh_window)[survey_mask])
+    selec_mesh = jnp.asarray(rand_mesh_window / norm, dtype=jnp.float32)
+    survey_mask = survey_mask & (selec_mesh > completeness_min)
+    if rand_mesh_paint is None:
+        selec_paint = None
+    else:
+        paint_per_final = float(np.prod(rand_paint_shape) / np.prod(final_shape))
+        selec_paint = jnp.asarray(rand_mesh_paint * paint_per_final / norm, dtype=jnp.float32)
     selec_mesh = jnp.where(survey_mask, selec_mesh, 1.0)
     n_survey_cells = int(jnp.sum(survey_mask))
 
     print(
         f"[Abacus-gxy] Selection: "
         f"{n_survey_cells}/{int(np.prod(final_shape))} cells "
-        f"({float(n_survey_cells) / int(np.prod(final_shape)):.1%})"
+        f"({float(n_survey_cells) / int(np.prod(final_shape)):.1%}), "
+        f"completeness_min={completeness_min}"
     )
 
     n_gal_in_survey = float(jnp.sum(mesh_count[survey_mask]))
     sum_selec_survey = float(jnp.sum(selec_mesh[survey_mask]))
     n_eff_per_cell = n_gal_in_survey / sum_selec_survey
 
-    nbar_3d = n_eff_per_cell * selec_mesh
-    obs_mesh = jnp.where(survey_mask, mesh_count / jnp.maximum(nbar_3d, 1e-6), 1.0)
+    obs_mesh = mesh_count
 
     model.gxy_count = n_eff_per_cell
     model.selec_mesh = selec_mesh
+    model.selec_paint = selec_paint
     model.gxy_occ_mask3d = survey_mask
+
+    rmesh = np.asarray(radius_mesh(model.box_center, model.box_shape, final_shape,
+                                   curved_sky=model.curved_sky, los=model.los))
 
     n_rbins = int(getattr(model, "n_gxy_shells", 0))
     if getattr(model, "gxy_ngbar_free", False) and n_rbins >= 1:
-        from desi_cmb_fli.bricks import radius_mesh as _radius_mesh
-        rmesh = np.asarray(_radius_mesh(model.box_center, model.box_shape, final_shape,
-                                        curved_sky=model.curved_sky, los=model.los))
         rsurv = rmesh[np.asarray(survey_mask)]
         rmin, rmax = float(rsurv.min()), float(rsurv.max())
         eps = (rmax - rmin) / n_rbins * 1e-3 + 1e-6
@@ -1043,16 +1254,14 @@ def load_abacus_galaxy_observation(
     if getattr(model, "lightcone", False):
         from desi_cmb_fli.nbody import a2g, chi2a, g2a
 
-        cell_z = float(model.box_shape[2]) / float(final_shape[2])
-        iz_survey = jnp.where(in_survey_z)[0]
-        chi_survey = (iz_survey.astype(float) + 0.5) * cell_z
+        chi_survey = jnp.asarray(rmesh[np.asarray(survey_mask)])
         a_survey = chi2a(cosmo_fid, chi_survey)
         a_fid_new = float(g2a(cosmo_fid, jnp.mean(a2g(cosmo_fid, a_survey))))
         a_fid_old = getattr(model, "a_fid", None)
         if a_fid_old is not None:
             print(
                 f"[Abacus-gxy] Updating a_fid: {a_fid_old:.4f} "
-                f"-> {a_fid_new:.4f} [survey z-slices only]"
+                f"-> {a_fid_new:.4f} [survey cells]"
             )
         model.a_fid = a_fid_new
 
@@ -1072,5 +1281,55 @@ def load_abacus_galaxy_observation(
         "gxy_occ_mask3d": survey_mask,
         "selec_mesh": selec_mesh,
         "mesh_plain": mesh_plain,
-        "rand_mesh_plain": rand_mesh_plain,
+        "rand_mesh_plain": rand_mesh_window,
     }
+
+
+def load_abacus_ic_truth(abacus_ic_cfg: dict, model) -> dict:
+    """Load the AbacusSummit linear IC field -> {'init_mesh': rfftn field}.
+
+    Validation reference only.  The sampler is warm-started from the *observed*
+    galaxy field (``model.kaiser_post``); this field is never a starting point,
+    it only lets ``plot_warmup_diagnostics`` score the reconstruction against
+    the true modes instead of against a P_lin reference.
+
+    The published ``ic_dens_N*.asdf`` holds delta_L at ``InitialRedshift``
+    (z=99) over the full simulation box -- not at ``CLASS_Redshift``, which is
+    only the redshift of the CLASS power spectrum the ICs were drawn from.  It
+    is grown to a=1 with the header ``GrowthTable`` (normalised to D=1 at
+    ``InitialRedshift``) and Fourier-resampled onto ``model.init_shape``, so
+    that ``model.spectrum(irfftn(init_mesh))`` matches
+    ``lin_power_interp(cosmo)``.
+    """
+    import asdf as _asdf
+
+    from desi_cmb_fli.utils import chreshape, r2chshape
+
+    with _asdf.open(str(abacus_ic_cfg["file"])) as f:
+        header = f.tree["header"]
+        box_ic = float(header["BoxSize"])
+        z_ic = float(header["InitialRedshift"])
+        growth = dict(header["GrowthTable"])
+        dens = np.asarray(f.tree["data"]["density"], dtype=np.float32)
+
+    if not np.allclose(np.asarray(model.box_shape, dtype=float), box_ic):
+        raise ValueError(
+            f"[Abacus-IC] Box mismatch: IC box is {box_ic} Mpc/h but "
+            f"model.box_shape={tuple(model.box_shape)}. The published IC covers the "
+            f"whole simulation box; set model.box_shape to {box_ic} to use it, or "
+            f"drop abacus_ic.file to run without the IC reference."
+        )
+
+    dens = dens * (float(growth[0.0]) / float(growth[z_ic]))
+
+    init_shape = tuple(int(s) for s in model.init_shape)
+    meshk = jnp.fft.rfftn(jnp.asarray(dens))
+    if tuple(dens.shape) != init_shape:
+        meshk = chreshape(meshk, r2chshape(init_shape))
+
+    print(
+        f"[Abacus-IC] delta_L from z={z_ic:g} grown to a=1 "
+        f"(x{float(growth[0.0]) / float(growth[z_ic]):.4f}), "
+        f"{dens.shape} -> {init_shape}"
+    )
+    return {"init_mesh": meshk}

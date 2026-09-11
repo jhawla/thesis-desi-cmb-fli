@@ -151,7 +151,7 @@ def main():
 
             gxy_cfg   = cfg.get("abacus_galaxy", {})
             gxy_truth = load_abacus_galaxy_observation(gxy_cfg, model)
-            obs_field = gxy_truth["obs"]
+            obs_field = model.obs_to_delta(gxy_truth["obs"]) + 1.0
             print(f"  Galaxy mesh std(1+δ): {float(jnp.std(obs_field)):.4f}")
 
     else:  # closure
@@ -180,7 +180,10 @@ def main():
             kappa_obs = None
         else:
             kappa_obs = np.asarray(model.unpack_to_map(jnp.asarray(truth["kappa_obs"])))
-        obs_field = np.asarray(truth.get("obs")) if galaxies_enabled else None
+        obs_field = (
+            np.asarray(model.obs_to_delta(truth["obs"])) + 1.0
+            if galaxies_enabled and truth.get("obs") is not None else None
+        )
 
         if kappa_pred is not None:
             print(f"  κ std(predicted): {float(np.std(kappa_pred)):.4f}")

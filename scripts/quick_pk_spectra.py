@@ -34,6 +34,7 @@ from desi_cmb_fli.bricks import get_cosmology
 from desi_cmb_fli.cmb_lensing import load_abacus_galaxy_observation
 from desi_cmb_fli.metrics import spectrum
 from desi_cmb_fli.model import get_model_from_config
+from desi_cmb_fli.validation import conditioning_params
 
 os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
@@ -99,6 +100,20 @@ def _build_abacus_proxy(cfg_dict, cell_size):
     return proxy, dict(model_cfg, cell_size=cell_size)
 
 
+def _corner_kedges(model):
+    """Default binning, extended past k_Nyq up to the cube diagonal sqrt(3) k_Nyq.
+
+    The mesh k-space is a cube, so the sphere |k| < k_Nyq holds only pi/6 = 52.4%
+    of the modes. The remaining corner modes enter the cell-wise likelihood at full
+    weight but are never binned by the default kmax = k_Nyq.
+    """
+    box_shape  = np.asarray(model.box_shape)
+    mesh_shape = np.asarray(model.mesh_shape)
+    k_nyq = np.pi * np.min(mesh_shape / box_shape)
+    dk    = 2 * 2 * np.pi / np.min(box_shape)
+    return np.arange(0, np.sqrt(3) * k_nyq, dk) + dk / 2
+
+
 def _plot_pk(k_arr, pk_mean, pk_std, pk_th, k_nyq, label_meas, label_th,
              title, outfile, show):
     ratio = pk_mean / pk_th
@@ -117,6 +132,8 @@ def _plot_pk(k_arr, pk_mean, pk_std, pk_th, k_nyq, label_meas, label_th,
                   label=f"$k_{{Nyq}}={k_nyq:.3f}$")
     ax_pk.axvline(0.5 * k_nyq, color="orange", lw=1, ls=":", alpha=0.7,
                   label=f"$0.5 k_{{Nyq}}={0.5*k_nyq:.3f}$")
+    ax_pk.axvspan(k_nyq, np.sqrt(3) * k_nyq, color="red", alpha=0.07,
+                  label="corner modes")
 
     ax_pk.set_ylabel(r"$P(k)\;[({\rm Mpc}/h)^3]$", fontsize=12)
     ax_pk.set_title(title, fontsize=10)
@@ -130,6 +147,7 @@ def _plot_pk(k_arr, pk_mean, pk_std, pk_th, k_nyq, label_meas, label_th,
     ax_rat.axhline(0.95, color="k", lw=0.5, ls="--")
     ax_rat.axvline(k_nyq, color="red", lw=1, ls=":", alpha=0.7)
     ax_rat.axvline(0.5 * k_nyq, color="orange", lw=1, ls=":", alpha=0.7)
+    ax_rat.axvspan(k_nyq, np.sqrt(3) * k_nyq, color="red", alpha=0.07)
     ax_rat.fill_between(k_arr, ratio - pk_std / pk_th, ratio + pk_std / pk_th,
                         color="steelblue", alpha=0.25)
     ax_rat.set_xlabel(r"$k\;[h/{\rm Mpc}]$", fontsize=12)
@@ -149,15 +167,18 @@ def _print_ratio_table(k_arr, pk_mean, pk_std, pk_th, k_nyq):
     ratio = pk_mean / pk_th
     low_k  = k_arr < 0.5 * k_nyq
     high_k = (k_arr >= 0.5 * k_nyq) & (k_arr < k_nyq)
+    corner = k_arr >= k_nyq
     print(f"  {'k [h/Mpc]':>12s}  {'P(k)_meas':>12s}  {'P(k)_th':>12s}  "
           f"{'ratio':>8s}  {'std/mean':>8s}")
     for i in range(len(k_arr)):
-        flag = "<-- Nyq" if not low_k[i] else ""
+        flag = "<-- corner" if corner[i] else ("<-- Nyq" if not low_k[i] else "")
         std_over_mean = pk_std[i] / pk_mean[i] if pk_mean[i] > 0 else float("nan")
         print(f"  {k_arr[i]:12.4f}  {pk_mean[i]:12.4e}  {pk_th[i]:12.4e}  "
               f"  {ratio[i]:8.4f}  {std_over_mean:8.3f}  {flag}")
     print(f"\n  Mean ratio  k < 0.5 k_Nyq : {np.nanmean(ratio[low_k]):.4f}")
     print(f"  Mean ratio  k > 0.5 k_Nyq : {np.nanmean(ratio[high_k]):.4f}")
+    if corner.any():
+        print(f"  Mean ratio  k > k_Nyq (corner modes) : {np.nanmean(ratio[corner]):.4f}")
 
 
 def _main_closure(args, cfg_dict, output_dir):
@@ -186,10 +207,12 @@ def _main_closure(args, cfg_dict, output_dir):
 
     all_k, all_pk = [], []
 
+    cond_params = conditioning_params(model, truth_params)
+
     @jax.jit
     def run_one_realization(seed):
         return model.predict(
-            samples=truth_params,
+            samples=cond_params,
             hide_base=False, hide_samp=False, hide_det=False,
             frombase=True, rng=jr.key(seed),
         )
@@ -200,7 +223,8 @@ def _main_closure(args, cfg_dict, output_dir):
         truth_i = run_one_realization(seed_i)
         mm = np.array(truth_i["matter_mesh"])
         delta = mm / np.mean(mm) - 1.0
-        k3d, pk3d = spectrum(delta, box_shape=np.array(model.box_shape), comp=(0, 0))
+        k3d, pk3d = spectrum(delta, box_shape=np.array(model.box_shape),
+                             kedges=_corner_kedges(model), comp=(0, 0))
         all_k.append(np.array(k3d))
         all_pk.append(np.array(pk3d))
 
@@ -262,7 +286,7 @@ def _main_abacus(args, cfg_dict, output_dir):
 
     print("\n[Abacus comparison] Loading galaxy catalog...")
     gxy_truth = load_abacus_galaxy_observation(abacus_gxy_cfg, model)
-    obs_mesh    = np.array(gxy_truth["obs"])
+    obs_mesh    = np.array(model.obs_to_delta(gxy_truth["obs"])) + 1.0
     survey_mask = np.array(gxy_truth["gxy_occ_mask3d"])
 
     occ_frac = float(np.mean(survey_mask))
@@ -287,7 +311,8 @@ def _main_abacus(args, cfg_dict, output_dir):
     # Measure Abacus P(k) with survey mask applied
     delta_abacus = np.zeros_like(obs_mesh)
     delta_abacus[survey_mask] = obs_mesh[survey_mask] - 1.0
-    k_arr, pk_abacus_raw = spectrum(delta_abacus, box_shape=np.array(model.box_shape), comp=(0, 0))
+    k_arr, pk_abacus_raw = spectrum(delta_abacus, box_shape=np.array(model.box_shape),
+                                    kedges=_corner_kedges(model), comp=(0, 0))
     k_arr     = np.array(k_arr)
     pk_abacus = np.array(pk_abacus_raw) / occ_frac - P_shot
 
@@ -302,19 +327,24 @@ def _main_abacus(args, cfg_dict, output_dir):
     print(f"  Cosmology: Omega_m={truth_params.get('Omega_m', '?')}, "
           f"sigma8={truth_params.get('sigma8', '?')}")
 
+    cond_params = conditioning_params(
+        model, truth_params, cfg_dict.get("abacus_truth_params", {})
+    )
+
     all_pk_model = []
     for i in range(n_real):
         seed_i = base_seed + i
         print(f"  Realization {i+1}/{n_real} (seed={seed_i})", end="\r")
         obs_i = model.predict(
-            samples=truth_params,
+            samples=cond_params,
             hide_base=False, hide_samp=False, hide_det=False,
             frombase=True, rng=jr.key(seed_i),
         )
         gxy_mesh_i = np.array(obs_i["gxy_mesh"])
         delta_i    = np.zeros_like(gxy_mesh_i)
         delta_i[survey_mask] = gxy_mesh_i[survey_mask] - 1.0
-        _, pk_i_raw = spectrum(delta_i, box_shape=np.array(model.box_shape), comp=(0, 0))
+        _, pk_i_raw = spectrum(delta_i, box_shape=np.array(model.box_shape),
+                               kedges=_corner_kedges(model), comp=(0, 0))
         all_pk_model.append(np.array(pk_i_raw) / occ_frac)
 
     print(f"  Done.{' '*40}")
@@ -325,6 +355,7 @@ def _main_abacus(args, cfg_dict, output_dir):
     # Print comparison table
     low_k  = k_arr < 0.5 * k_nyq
     high_k = (k_arr >= 0.5 * k_nyq) & (k_arr < k_nyq)
+    corner = k_arr >= k_nyq
 
     print("\n" + "=" * 78)
     print("Galaxy P(k) COMPARISON: Abacus vs Model (config cosmology)")
@@ -332,7 +363,7 @@ def _main_abacus(args, cfg_dict, output_dir):
     print(f"  {'k [h/Mpc]':>10s}  {'P_Abacus':>12s}  {'P_Model':>12s}  {'ratio':>8s}")
     for i in range(len(k_arr)):
         ratio = pk_abacus[i] / pk_model_mean[i] if pk_model_mean[i] > 0 else float("nan")
-        flag  = "" if low_k[i] else "  <- > 0.5 k_Nyq"
+        flag  = "  <- corner" if corner[i] else ("" if low_k[i] else "  <- > 0.5 k_Nyq")
         print(f"  {k_arr[i]:10.4f}  {pk_abacus[i]:12.4e}  {pk_model_mean[i]:12.4e}  "
               f"{ratio:8.4f}{flag}")
 
@@ -341,6 +372,9 @@ def _main_abacus(args, cfg_dict, output_dir):
           f"{np.nanmean(pk_abacus[low_k] / pk_model_mean[low_k]):.4f}")
     print(f"  Mean ratio Abacus/Model  k > 0.5 k_Nyq : "
           f"{np.nanmean(pk_abacus[high_k] / pk_model_mean[high_k]):.4f}")
+    if corner.any():
+        print(f"  Mean ratio Abacus/Model  k > k_Nyq (corner modes) : "
+              f"{np.nanmean(pk_abacus[corner] / pk_model_mean[corner]):.4f}")
 
     # Plot
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -361,6 +395,8 @@ def _main_abacus(args, cfg_dict, output_dir):
                   label=f"$k_{{Nyq}}={k_nyq:.3f}$")
     ax_pk.axvline(0.5 * k_nyq, color="orange", lw=1, ls=":", alpha=0.6,
                   label=f"$0.5 k_{{Nyq}}={0.5*k_nyq:.3f}$")
+    ax_pk.axvspan(k_nyq, np.sqrt(3) * k_nyq, color="red", alpha=0.07,
+                  label="corner modes")
 
     Omega_m = truth_params.get("Omega_m", "?")
     sigma8  = truth_params.get("sigma8", "?")
@@ -385,6 +421,7 @@ def _main_abacus(args, cfg_dict, output_dir):
     ax_rat.axhline(0.95, color="k", lw=0.5, ls="--", alpha=0.5)
     ax_rat.axvline(k_nyq,       color="red",    lw=1, ls=":", alpha=0.6)
     ax_rat.axvline(0.5 * k_nyq, color="orange", lw=1, ls=":", alpha=0.6)
+    ax_rat.axvspan(k_nyq, np.sqrt(3) * k_nyq, color="red", alpha=0.07)
     ax_rat.set_xlabel(r"$k\;[h/{\rm Mpc}]$", fontsize=12)
     ax_rat.set_ylabel("Abacus / Model", fontsize=10)
     ax_rat.set_ylim(0.7, 1.5)

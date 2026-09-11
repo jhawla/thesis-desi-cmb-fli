@@ -684,7 +684,7 @@ def kaiser_model(
 # =====================================================================
 
 
-def paint_arbitrary(mesh, positions, weights=None):
+def paint_arbitrary(mesh, positions, weights=None, chunk_size=None):
     """CIC-paint an arbitrary set of N particles into a mesh.
 
     Parameters
@@ -695,6 +695,11 @@ def paint_arbitrary(mesh, positions, weights=None):
         Particle positions in cell units (float).
     weights : array (N,) or scalar, optional
         Per-particle weights.  If None, every particle contributes 1.
+    chunk_size : int, optional
+        Particles per interior scatter pass.  ``enmesh`` allocates an
+        ``[chunk_size, 8, 3]`` float array, so lowering this bounds the peak
+        memory of very large catalogs; the passes run inside one ``scan``, so
+        the cost is compile-time-free.  Defaults to the jaxpm value (2**24).
 
     Returns
     -------
@@ -704,7 +709,74 @@ def paint_arbitrary(mesh, positions, weights=None):
     pmid = jnp.floor(positions).astype(jnp.int32) % jnp.array(mesh.shape)
     disp = positions - jnp.floor(positions)
     val = 1.0 if weights is None else jnp.asarray(weights)
-    return scatter(pmid, disp, mesh, val=val)
+    kw = {} if chunk_size is None else {"chunk_size": int(chunk_size)}
+    return scatter(pmid, disp, mesh, val=val, **kw)
+
+
+INTERLACE_ORDER = 2
+
+
+def interlace_accumulate(shifted, pos_paint, weights=None, chunk_size=None):
+    """Add one batch of positions to the per-shift painted meshes.
+
+    ``shifted`` is a list of ``INTERLACE_ORDER`` real meshes on the paint grid, one per
+    interlacing shift; start it with ``[jnp.zeros(paint_shape)] * INTERLACE_ORDER``. Painting is
+    linear in the positions, so a catalogue too large to hold at once can be streamed through this
+    and finished with ``interlace_finalize`` — the result is identical to one call on the whole
+    catalogue. See docs/pipeline.md "Survey mask & radial selection from randoms".
+    """
+    pos_paint = jnp.asarray(pos_paint)
+    if shifted is None:
+        raise ValueError("shifted must be a list of meshes; build it with jnp.zeros(paint_shape)")
+    if pos_paint.shape[0] == 0:
+        return list(shifted)
+    out = []
+    for i_shift, mesh in enumerate(shifted):
+        shift = i_shift / INTERLACE_ORDER  # 0.0, then 0.5
+        out.append(paint_arbitrary(mesh, pos_paint + shift, weights, chunk_size=chunk_size))
+    return out
+
+
+def interlace_combine_k(shifted, paint_shape):
+    """Interlace and CIC-deconvolve the per-shift meshes, in Fourier on the paint grid."""
+    kvec = rfftk(paint_shape)
+    kvec_sum = sum(kvec)  # precomputed — constant across interlace shifts
+    meshk = jnp.zeros(r2chshape(paint_shape), dtype=complex)
+    for i_shift, mesh_i in enumerate(shifted):
+        shift = i_shift / INTERLACE_ORDER
+        phase = jnp.exp(1j * shift * kvec_sum)
+        meshk = meshk + jnp.fft.rfftn(mesh_i) * phase / INTERLACE_ORDER
+    return meshk / paint_kernel(kvec, order=2)
+
+
+def interlace_combine(shifted, paint_shape):
+    """Interlaced, CIC-deconvolved mesh on the paint grid: total weight per paint cell."""
+    return jnp.fft.irfftn(interlace_combine_k(shifted, paint_shape), s=paint_shape)
+
+
+def band_limit(mesh, final_shape):
+    """Fourier-crop a mesh onto the final grid, preserving its mean.
+
+    This is the cell-averaging operator: it is what turns a field known at paint resolution
+    into the per-final-cell average the likelihood compares to the data.
+    """
+    final_shape = tuple(int(s) for s in final_shape)
+    mesh = jnp.asarray(mesh)
+    if tuple(mesh.shape) == final_shape:
+        return mesh
+    meshk = chreshape(jnp.fft.rfftn(mesh), r2chshape(final_shape))
+    return jnp.fft.irfftn(meshk, s=final_shape)
+
+
+def interlace_finalize(shifted, paint_shape, final_shape):
+    """Combine the per-shift meshes: interlace, CIC-deconvolve and Fourier-crop.
+
+    Conserves the total weight, so the result is a count per *final* cell.
+    """
+    meshk = interlace_combine_k(shifted, paint_shape)
+    meshk = meshk * jnp.prod(jnp.array(paint_shape) / jnp.array(final_shape))
+    meshk = chreshape(meshk, r2chshape(final_shape))
+    return jnp.fft.irfftn(meshk, s=final_shape)
 
 
 def interlace_paint_deconv(pos_paint, paint_shape, final_shape, weights=None):
@@ -713,21 +785,9 @@ def interlace_paint_deconv(pos_paint, paint_shape, final_shape, weights=None):
     Shared implementation used by both ``FieldLevelModel.paint_and_deconv`` and
     ``catalog2mesh``.  Positions must already be in ``paint_shape`` cell units.
     """
-    kvec = rfftk(paint_shape)
-    kvec_sum = sum(kvec)  # precomputed — constant across interlace shifts
-    meshk = jnp.zeros(r2chshape(paint_shape), dtype=complex)
-    interlace_order = 2
-    for i_shift in range(interlace_order):
-        shift = i_shift / interlace_order  # 0.0, then 0.5
-        mesh_i = paint_arbitrary(
-            jnp.zeros(paint_shape), pos_paint + shift, weights
-        )
-        phase = jnp.exp(1j * shift * kvec_sum)
-        meshk = meshk + jnp.fft.rfftn(mesh_i) * phase / interlace_order
-    meshk = meshk / paint_kernel(kvec, order=2)
-    meshk = meshk * jnp.prod(jnp.array(paint_shape) / jnp.array(final_shape))
-    meshk = chreshape(meshk, r2chshape(final_shape))
-    return jnp.fft.irfftn(meshk, s=final_shape)
+    shifted = [jnp.zeros(paint_shape) for _ in range(INTERLACE_ORDER)]
+    shifted = interlace_accumulate(shifted, pos_paint, weights)
+    return interlace_finalize(shifted, paint_shape, final_shape)
 
 
 def radecz2cart(cosmo: Cosmology, radecz: dict):
@@ -793,7 +853,8 @@ def catalog2positions(
     else:
         import fitsio
 
-        data = fitsio.read(str(path), columns=["RA", "DEC", "Z"])
+        raw = fitsio.read(str(path), columns=["RA", "DEC", "Z"])
+        data = {name: raw[name] for name in ("RA", "DEC", "Z")}
 
     if z_range is not None:
         z_min, z_max = z_range
@@ -821,6 +882,18 @@ def catalog2positions(
     return pos, n_in_box, chi_inbox_min, chi_inbox_max
 
 
+def randoms_num_rows(path: str | Path) -> int | None:
+    """Row count of a FITS randoms table, or None for ASDF (read in one pass)."""
+    path = Path(path)
+    if path.suffix == ".asdf":
+        return None
+
+    import fitsio
+
+    with fitsio.FITS(str(path)) as f:
+        return int(f[1].get_nrows())
+
+
 def randoms2positions(
     path: str | Path,
     cosmo: Cosmology,
@@ -828,12 +901,13 @@ def randoms2positions(
     box_shape,
     mesh_shape,
     z_range: tuple[float, float] | None = None,
+    row_range: tuple[int, int] | None = None,
 ):
-    """Read randoms from an AbacusLensing ASDF file (RAND_RA/DEC/Z columns).
+    """Read randoms and return positions in cell-units, filtered to the box.
 
-    Same geometry pipeline as ``catalog2positions`` but reads the
-    ``RAND_*`` columns instead of the galaxy columns.  Uses
-    ``observer_position`` to derive the box_center (see ``catalog2positions``).
+    Same geometry pipeline as ``catalog2positions``.  ASDF files carry the
+    randoms alongside the galaxies in ``RAND_RA/DEC/Z`` columns; standalone
+    FITS randoms files use plain ``RA/DEC/Z``.
 
     Parameters
     ----------
@@ -841,6 +915,9 @@ def randoms2positions(
         Observer position in Mpc/h inside the simulation box.
     z_range : tuple[float, float] | None
         If provided, keep only objects with z_min <= z < z_max.
+    row_range : tuple[int, int] | None
+        FITS only: read rows ``[start, stop)`` instead of the whole table,
+        so multi-billion-row randoms can be streamed in chunks.
 
     Returns
     -------
@@ -850,17 +927,23 @@ def randoms2positions(
         Number of randoms inside the volume.
     """
     path = Path(path)
-    if path.suffix != ".asdf":
-        raise ValueError(f"randoms2positions only supports ASDF files, got: {path}")
+    if path.suffix == ".asdf":
+        import asdf as _asdf
 
-    import asdf as _asdf
+        with _asdf.open(str(path)) as f:
+            data = {
+                "RA": np.array(f["data"]["RAND_RA"]),
+                "DEC": np.array(f["data"]["RAND_DEC"]),
+                "Z": np.array(f["data"]["RAND_Z"]),
+            }
+    else:
+        import fitsio
 
-    with _asdf.open(str(path)) as f:
-        data = {
-            "RA": np.array(f["data"]["RAND_RA"]),
-            "DEC": np.array(f["data"]["RAND_DEC"]),
-            "Z": np.array(f["data"]["RAND_Z"]),
-        }
+        names = ("RA", "DEC", "Z")
+        with fitsio.FITS(str(path)) as f:
+            rows = None if row_range is None else np.arange(*row_range)
+            raw = f[1].read(columns=list(names), rows=rows)
+        data = {name: raw[name] for name in names}
 
     if z_range is not None:
         z_min, z_max = z_range

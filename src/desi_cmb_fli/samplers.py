@@ -450,27 +450,6 @@ def get_mclmc_warmup(
     )
 
 
-def scalar_precond_mass(logdf, pos0, scalar_keys, verbose=True):
-    """Diagonal inverse-mass that isotropizes stiff scalar latents. See docs/pipeline.md."""
-    import jax
-
-    curv = {}
-    for k in scalar_keys:
-        def f(x, k=k):
-            return logdf({**pos0, k: x})
-        curv[k] = jnp.abs(jit(jax.grad(jax.grad(f)))(pos0[k]))
-    inv_mass = {
-        k: (1.0 / jnp.maximum(curv[k], 1e-30) if k in scalar_keys else jnp.ones_like(v))
-        for k, v in pos0.items()
-    }
-    flat, _ = ravel_pytree(inv_mass)
-    if verbose:
-        for k in scalar_keys:
-            print(f"  [scalar-precond] {k:10s} curv={float(curv[k]):.3e}  "
-                  f"inv_mass={float(1.0 / jnp.maximum(curv[k], 1e-30)):.3e}")
-    return flat, {k: float(curv[k]) for k in scalar_keys}
-
-
 def get_mclmc_run(logdf, n_samples, transform=None, thinning=1, progress_bar=True):
     return partial(
         mclmc_run,

@@ -3,7 +3,7 @@
 
 # SLURM configuration for NERSC Perlmutter
 slurm:
-  job_name: fNL_joint_closure
+  job_name: fNL_joint_abacushuge_universality_cut03_ngbarsfixed
   account: desi
   qos: regular
   constraint: gpu
@@ -13,8 +13,8 @@ slurm:
 
 # Model configuration
 model:
-  cell_size: 62.5  # Mpc/hs
-  box_shape: [2000.0, 2000.0, 2000.0]  # Mpc/h
+  cell_size: 93.75  # Mpc/h
+  box_shape: [7500.0, 7500.0, 7500.0]  # Mpc/h
   galaxies_enabled: true  # Set to false for cmb-only runs
   gxy_stoch_noise: false  # false : s_e fixed to 1 (pure Poisson), true : s_e inferred
   gxy_ngbar_free: false  # Free per-z-shell mean density -> marginalise the integral constraint
@@ -25,10 +25,10 @@ model:
   evolution: lpt # lpt or nbody
   lpt_order: 2
   precond: kaiser  # kaiser or kaiser_dyn
-  init_oversamp: 1.0   # inferred linear field grid; enlarges the inferred field
-  evol_oversamp: 1.0  # LPT evolution + bias-product mesh; add_png runs here too
-  ptcl_oversamp: 1.0  # particle cloud density
-  paint_oversamp: 1.5  # CIC paint mesh
+  init_oversamp: 1.5   # inferred linear field grid; enlarges the inferred field
+  evol_oversamp: 1.75  # LPT evolution + bias-product mesh; add_png runs here too
+  ptcl_oversamp: 1.75  # particle cloud density
+  paint_oversamp: 1.75  # CIC paint mesh
   gxy_density: 8.43318125e-4 # used only in closure mode; overwritten by load_abacus_galaxy_observation in abacus mode
   # los: null  # Disable RSD (comment out to enable RSD)
   png_type: fNL  # 'fNL' = universality (b_phi/b_phi_delta derived from b1/b2); 'fNL_bias' = infer fNL, fNL*b_phi, fNL*b_phi_delta as free params. null/omit = Gaussian
@@ -39,13 +39,16 @@ cmb_lensing:
   z_source: 1089.28   # CMB redshift
   nside: 32          # HEALPix nside for curved-sky convergence map
   n_shells: 32      # number of radial Born integration shells
+  chi_min: 350  # Mpc/h; Born integration starts here, C_l of chi<chi_min added to the noise
+  shell_weights: linear  # nearest (hard shell bins) | linear (particle split between the two bracketing shells; kappa continuous in the radii)
+  proj_oversamp: 2  # power of two; particles scattered at nside*proj_oversamp so sub-pixel discreteness stays out of the observable band instead of aliasing into it
   cmb_noise_nell: "/global/homes/j/jhawla/thesis-desi-cmb-fli/data/N_L_kk_act_dr6_lensing_v1_baseline.txt"
   cmb_noise_scaling: 1.0  # Artificial scaling factor (0.01 = divide N_l by 100)
   full_los_correction: true
   high_z_mode: fixed # fixed, taylor, exact_linear or exact
   likelihood_mode: diagonal # diagonal (fast; exact on full sky; over-confident on cut sky) | pixel_exact (exact cut-sky via signal-eigenmode/KL: diagonalises the observed-pixel covariance once, keeps the supported Slepian subspace; full mask coupling kept exactly; requires fixed cosmo + high_z_mode=fixed)
   kl_rcond: 1e-2  # pixel_exact: keep eigenmodes with lambda > kl_rcond*lambda_max (default 1e-6; lower=more complete but more fragile in float32)
-  # chi_high_z_max: 3942  # chi_max for the full LOS high-z correction in Mpc/h. Comment for cmb source plane comoving distance (real data). For AbacusSummit runs with base z_max=2.45, set this to 3990 Mpc/h. For AbacusSummit runs with HUGE, set this to 3942 Mpc/h.
+  chi_high_z_max: 3942  # chi_max for the full LOS high-z correction in Mpc/h. Comment for cmb source plane comoving distance (real data). For AbacusSummit runs with base z_max=2.45, set this to 3990 Mpc/h. For AbacusSummit runs with HUGE, set this to 3942 Mpc/h.
   observer_mode: center # center, face, or corner. Use 'corner' for AbacusSummit base-box (octant footprint); 'center' for full-sky closure / huge-box.
   # mask: data/abacus_kappa_mask_00047.npy # External HEALPix footprint mask (npy/FITS). For AbacusSummit base-box abacus runs, set to data/abacus_kappa_mask_00047.npy (built by scripts/make_abacus_kappa_mask.py).
 
@@ -65,7 +68,17 @@ latents:
   fNL:
     loc: 0.0
     scale: 10000.0
-    scale_fid: 2.0
+    scale_fid: 2.0  # Use 2.0 for png_type: fNL and 100.0 for png_type: fNL_bias
+    loc_fid: 0.0
+  fNL_bp:
+    loc: 0.0
+    scale: 10000.0
+    scale_fid: 30.0
+    loc_fid: 0.0
+  fNL_bpd:
+    loc: 0.0
+    scale: 10000.0
+    scale_fid: 300.0
     loc_fid: 0.0
   Omega_m:
     loc: 0.315192
@@ -105,7 +118,7 @@ latents:
     loc: 0.0
     scale: 100.0
     scale_fid: 1.0
-    loc_fid: -63.5
+    loc_fid: 0.0
 
 # MCMC configuration
 mcmc:
@@ -116,20 +129,20 @@ mcmc:
 
   # Sampling
   num_samples: 50
-  num_batches: 260
+  num_batches: 140
   num_chains: 4
 
   save_large_fields: false
 
-  scalar_precond: true
+  mesh_desired_energy_var: 0.00001  # STEP 1 (mesh only)
 
   mclmc:
-    desired_energy_var: 0.0000005 # Value which work well for runs with realistic noise : 0.0000005
+    desired_energy_var: 0.0000001 # STEP 2/3
     diagonal_preconditioning: true
     thinning: 5
 
 # Observation mode: "closure" or "abacus"
-observation_mode: closure
+observation_mode: abacus
 
 # AbacusSummit c000 true cosmology (used as corner-plot markers in abacus mode)
 abacus_truth_params:
@@ -142,20 +155,20 @@ abacus_truth_params:
 
 abacus_kappa:
   # file: "/global/cfs/cdirs/desi/cosmosim/AbacusLensing/v1/AbacusSummit_base_c000_ph000/kappa_00047.asdf" # AbacusSummit base-box kappa map
-  file: "/global/cfs/cdirs/desi/cosmosim/AbacusLensing/v1/AbacusSummit_huge_c000_ph201/kappa_00045.asdf" # AbacusSummit huge-box kappa map (full-sky, cmb-only because there are no galaxies in the huge simulation)
+  file: "/global/cfs/cdirs/desi/cosmosim/AbacusLensing/v1/AbacusSummit_huge_c000_ph201/kappa_00045.asdf" # AbacusSummit huge-box kappa map
   noise_seed: 6482  # seed for the random noise realization added to the kappa map
 
 # Abacus galaxy catalog
 abacus_galaxy:
-  file: # "/dvs_ro/cfs/cdirs/desi/cosmosim/SecondGenMocks/CubicBox/LRG/z0.800/AbacusSummit_base_c000_ph000/LRG_real_space.fits" #snapshot (galaxy-only because no CMB lensing in the snapshot simulation)
-    # AbacusSummit base-box lightcone galaxy catalogs
-    - "/global/cfs/cdirs/desi/cosmosim/AbacusLensing/mocks/DESI/AbacusSummit_base_c000_ph000/z0.400/catalog_DESI_LRG.asdf"
-    - "/global/cfs/cdirs/desi/cosmosim/AbacusLensing/mocks/DESI/AbacusSummit_base_c000_ph000/z0.450/catalog_DESI_LRG.asdf"
-    - "/global/cfs/cdirs/desi/cosmosim/AbacusLensing/mocks/DESI/AbacusSummit_base_c000_ph000/z0.500/catalog_DESI_LRG.asdf"
-    - "/global/cfs/cdirs/desi/cosmosim/AbacusLensing/mocks/DESI/AbacusSummit_base_c000_ph000/z0.575/catalog_DESI_LRG.asdf"
-    - "/global/cfs/cdirs/desi/cosmosim/AbacusLensing/mocks/DESI/AbacusSummit_base_c000_ph000/z0.650/catalog_DESI_LRG.asdf"
-    - "/global/cfs/cdirs/desi/cosmosim/AbacusLensing/mocks/DESI/AbacusSummit_base_c000_ph000/z0.725/catalog_DESI_LRG.asdf"
-    - "/global/cfs/cdirs/desi/cosmosim/AbacusLensing/mocks/DESI/AbacusSummit_base_c000_ph000/z0.800/catalog_DESI_LRG.asdf"
+  file: "/global/cfs/projectdirs/desi/mocks/cai/abacus_HF_lightcones/DR2/mock_catalogs/lrg_huge/LRG_AbacusSummit_huge_c000_ph201_base_cmaes_opt_0_fit_DESI_nz_data.fits"
+  randoms: "/global/cfs/projectdirs/desi/mocks/cai/abacus_HF_lightcones/DR2/mock_catalogs/lrg_huge/LRG_AbacusSummit_huge_c000_ph201_base_cmaes_opt_0_fit_DESI_nz_randoms_100x.fits"
+  z_range: [0.4, 1.1]
+  randoms_chunk_rows: 50000000
+  completeness_min: 0.3
+
+abacus_ic:
+  file: "/global/cfs/cdirs/desi/public/cosmosim/AbacusSummit/ic/AbacusSummit_huge_c000_ph201/ic_dens_N576.asdf"
+
 
 # Random seed
 seed: 77

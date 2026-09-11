@@ -67,6 +67,60 @@ def _project_full_healpix(kappa_full, cmb_mask=None, cmb_nside=None, xsize=1200)
     return proj
 
 
+def _galaxy_healpix_proxy(model, chi_range):
+    """Stand-in model exposing the HEALPix geometry when the CMB is disabled.
+
+    Curved-sky lightcone galaxies still need a spherical projection: the flat-sky
+    fallback averages along the box z-axis, which for a centred observer runs
+    through the empty interior and merges opposite sides of the sky.  nside is
+    matched to the cell size seen at the mid-survey distance.
+    """
+    from desi_cmb_fli.cmb_lensing import compute_healpix_mask
+
+    chi_mid = 0.5 * (float(chi_range[0]) + float(chi_range[1]))
+    cell = float(np.min(np.asarray(model.box_shape, dtype=float) / np.asarray(model.mesh_shape)))
+    exponent = int(np.clip(round(np.log2(np.sqrt(np.pi / 3.0) * chi_mid / cell)), 2, 9))
+    nside = 2 ** exponent
+    attrs = {
+        "cmb_nside": nside,
+        "cmb_mask": np.asarray(
+            compute_healpix_mask(model.observer_position, model.box_shape, nside), dtype=bool
+        ),
+        "box_shape": np.asarray(model.box_shape, dtype=float),
+        "observer_position": np.asarray(model.observer_position, dtype=float),
+        "chi_boundary": float(getattr(model, "chi_boundary", model.box_shape[2])),
+    }
+    return type("ValidationModelProxy", (), attrs)(), 3 * nside - 1
+
+
+def _truth_as_overdensity(truth, model=None):
+    """Return ``truth`` with 'obs' converted from galaxy counts to 1 + delta_g.
+
+    The likelihood works on counts; every plot below reads an overdensity. The mean density
+    n̄·S comes from truth.npz when it carries the model state, otherwise from ``model``.
+
+    Idempotent: converting twice would divide by n̄·S twice and silently shrink every spectrum,
+    so the result is tagged and a second call is a no-op.
+    """
+    if "obs" not in truth or "_obs_overdensity" in truth:
+        return truth
+
+    def _get(key):
+        v = truth[key] if key in truth else None
+        return getattr(model, key, None) if v is None else v
+
+    gxy_count = _get("gxy_count")
+    if gxy_count is None:
+        return truth
+    selec = _get("selec_mesh")
+    nbar = float(gxy_count) * (1.0 if selec is None else np.asarray(selec, dtype=float))
+    dens = np.asarray(truth["obs"], dtype=float) / np.maximum(nbar, 1e-10)
+    mask = _get("gxy_occ_mask3d")
+    if mask is not None:
+        dens = np.where(np.asarray(mask).astype(bool), dens, 1.0)
+    return dict(truth) | {"obs": dens, "_obs_overdensity": True}
+
+
 def _project_galaxy_mesh_to_healpix(truth, model, model_config):
     """Project the galaxy field onto the CMB HEALPix footprint for pseudo-C_ell."""
     support3d = np.asarray(
@@ -150,6 +204,7 @@ def plot_field_slices(
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    truth = _truth_as_overdensity(truth)  # counts -> 1 + delta_g
 
     # 1. Galaxy Field Slices (XY, XZ, YZ) - only if obs is available
     if "obs" in truth:
@@ -331,6 +386,7 @@ def measure_spectra(truth, model, model_config=None):
     """
     if model_config is None:
         model_config = getattr(model, "config", {})
+    truth = _truth_as_overdensity(truth, model)  # counts -> 1 + delta_g
 
     cmb_enabled = model.cmb_enabled
     has_kappa_pred = "kappa_pred" in truth
@@ -420,13 +476,19 @@ def measure_spectra(truth, model, model_config=None):
     # Galaxy spectra
     f_sky_gxy = 1.0
     if has_galaxies:
+        gxy_model, gxy_lmax = None, lmax_hp
         if cmb_enabled and np.ndim(truth.get("kappa_pred", truth.get("kappa_obs"))) == 1:
-            gxy_hp = _project_galaxy_mesh_to_healpix(truth, model, model_config)
+            gxy_model = model
+        elif getattr(model, "curved_sky", False) and truth.get("chi_range_gxy") is not None:
+            gxy_model, gxy_lmax = _galaxy_healpix_proxy(model, truth["chi_range_gxy"])
+
+        if gxy_model is not None:
+            gxy_hp = _project_galaxy_mesh_to_healpix(truth, gxy_model, model_config)
             if gxy_hp is not None:
                 ell_tmp, cl_gg, info_gg = get_cl_healpix(
                     gxy_hp["delta_masked"],
                     gxy_hp["mask_full"],
-                    lmax=lmax_hp,
+                    lmax=gxy_lmax,
                 )
                 cl_gg = np.asarray(cl_gg)
                 f_sky_gxy = float(info_gg["norm"])
@@ -495,6 +557,59 @@ def measure_spectra(truth, model, model_config=None):
             # binned versions
             "ell_b": ell_b, "cl_kk_pred_b": cl_kk_pred_b, "cl_kk_obs_b": cl_kk_obs_b,
             "cl_gg_b": cl_gg_b, "cl_kg_b": cl_kg_b, "n_modes_b": n_modes_b}
+
+
+def conditioning_params(model, *param_dicts):
+    """Fiducial value for every latent, overridden by the given config truth dicts.
+
+    ``predict`` draws any latent missing from ``samples`` straight from its prior, so a
+    partial dict silently randomises the model: with ``png_type: fNL_bias`` that means
+    fNL_bp and fNL_bpd at scale 1e4, whose 1/k^2 scale-dependent bias swamps P(k).
+    """
+    samples = dict(model.loc_fid)
+    given = set()
+    for d in param_dicts:
+        for k, v in (d or {}).items():
+            if k in samples:
+                samples[k] = v
+                given.add(k)
+    filled = sorted(set(samples) - given)
+    if filled:
+        print(f"  [conditioning] not in config truth, held at loc_fid: "
+              f"{ {k: samples[k] for k in filled} }")
+    return samples
+
+
+def _survey_solid_angle_and_count(model):
+    """Sky area and galaxy count of the loaded survey, or (None, None) in closure mode.
+
+    ``gxy_density`` is a closure-mode config value that the Abacus loader does not
+    overwrite (it sets the per-cell ``gxy_count``), so the shot noise is taken from
+    the survey geometry instead: Omega = V_survey / int chi^2 dchi over the occupied
+    radial range, which is geometry-agnostic (4pi for a full-sky shell, the octant
+    solid angle for the base box).
+    """
+    selec = getattr(model, "selec_mesh", None)
+    mask = getattr(model, "gxy_occ_mask3d", None)
+    count = float(getattr(model, "gxy_count", 0.0) or 0.0)
+    if selec is None or mask is None or count <= 0.0:
+        return None, None
+
+    from desi_cmb_fli.bricks import radius_mesh
+
+    mask = np.asarray(mask, dtype=bool)
+    if not mask.any():
+        return None, None
+
+    mesh_shape = tuple(int(s) for s in model.mesh_shape)
+    n_gal = count * float(np.sum(np.asarray(selec)[mask]))
+    cell_volume = float(np.prod(np.asarray(model.box_shape, dtype=float) / np.asarray(mesh_shape)))
+    radii = np.asarray(radius_mesh(model.box_center, model.box_shape, mesh_shape,
+                                   curved_sky=model.curved_sky, los=model.los))[mask]
+    shell = (float(radii.max()) ** 3 - float(radii.min()) ** 3) / 3.0
+    if shell <= 0.0:
+        return None, None
+    return float(mask.sum()) * cell_volume / shell, n_gal
 
 
 def compute_cl_theory(model, cosmo_val, ell_theory,
@@ -615,23 +730,22 @@ def compute_cl_theory(model, cosmo_val, ell_theory,
         cl_gg_theory_full = np.asarray(compute_theoretical_cl_gg(
             cosmo_val, jnp.array(ell_theory), chi_min_gg, chi_max_gg, bE
         ))
-        # Shot noise: use effective chi range when catalog covers only part of the box
-        if cmb_enabled and getattr(model, "cmb_mask", None) is not None:
-            _field_area_sr = 4.0 * np.pi * float(np.mean(np.asarray(model.cmb_mask, dtype=float)))
-        else:
-            _field_size_deg, _ = _infer_box_field_geometry(model.box_shape, model.mesh_shape)
-            _field_area_sr = (_field_size_deg * np.pi / 180.0) ** 2
-        # Volume seen by the projection: inscribed sphere when no explicit range given
-        if chi_range_gxy is not None:
-            _v_eff = float(model.box_shape[0]) * float(model.box_shape[1]) * (chi_max_gg - chi_min_gg)
-        else:
-            # Cone of solid angle _field_area_sr (N_ell = Omega / N_gal_in_Omega, so f_sky cancels)
-            _v_eff = _field_area_sr / 3.0 * (chi_max_gg**3 - chi_min_gg**3)
-        _n_gal = float(model.gxy_density) * _v_eff
+        _field_area_sr, _n_gal = _survey_solid_angle_and_count(model)
+        if _field_area_sr is None:
+            if cmb_enabled and getattr(model, "cmb_mask", None) is not None:
+                _field_area_sr = 4.0 * np.pi * float(np.mean(np.asarray(model.cmb_mask, dtype=float)))
+            else:
+                _field_size_deg, _ = _infer_box_field_geometry(model.box_shape, model.mesh_shape)
+                _field_area_sr = (_field_size_deg * np.pi / 180.0) ** 2
+            if chi_range_gxy is not None:
+                _v_eff = float(model.box_shape[0]) * float(model.box_shape[1]) * (chi_max_gg - chi_min_gg)
+            else:
+                _v_eff = _field_area_sr / 3.0 * (chi_max_gg**3 - chi_min_gg**3)
+            _n_gal = float(model.gxy_density) * _v_eff
         cl_gg_shot = _field_area_sr / _n_gal
         print(f"  Galaxy shot noise: N_ell = {cl_gg_shot:.3e} sr"
-              f"  (n_bar={model.gxy_density:.2e} (Mpc/h)^-3, "
-              f"N_gal~{_n_gal:.0f}, Omega={_field_area_sr*1e4:.2f}e-4 sr)")
+              f"  (N_gal~{_n_gal:.3e}, Omega={_field_area_sr:.3f} sr, "
+              f"f_sky={_field_area_sr / (4.0 * np.pi):.3f})")
         if cmb_enabled:
             cl_kg_theory = np.asarray(compute_theoretical_cl_kg(
                 cosmo_val, jnp.array(ell_theory), chi_min_gg, chi_max_gg, z_source, bE,
@@ -984,6 +1098,7 @@ def plot_warmup_diagnostics(model, state, init_params, truth, output_dir, show=F
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    truth = _truth_as_overdensity(truth, model)  # counts -> 1 + delta_g
 
     print("VALIDATION: Warmup Diagnostics (Power/Transfer/Coherence)")
 

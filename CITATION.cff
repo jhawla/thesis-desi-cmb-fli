@@ -4,8 +4,8 @@ authors:
 - family-names: Hawla
   given-names: Jonathan
 title: "thesis-desi-cmb-fli: Galaxy clustering \xD7 CMB lensing field-level inference"
-version: 0.3.0
-date-released: '2026-08-31 '
+version: 0.4.0
+date-released: '2026-09-11'
 license: MIT
 repository-code: https://github.com/jhawla/thesis-desi-cmb-fli
 keywords:

@@ -33,7 +33,7 @@ Git hooks automatically format code on commit. CI runs tests on push.
 **✅ Completed:** Initial conditions, gravitational evolution, galaxy bias (+ PNG / local f_NL) and
 RSD modeling, curved-sky Born CMB-lensing modeling, and field-level inference validated both on
 synthetic **closure** data and on **AbacusSummit** N-body data (galaxy-only, CMB-only, and joint
-galaxy × κ). The current headline configuration is the **joint analysis on the AbacusSummit base box**
+galaxy × κ). The current headline configuration is the **joint analysis on the AbacusSummit huge box**
 (both probes), with cosmology fixed to focus the constraint on the primordial non-Gaussianity
 parameters.
 

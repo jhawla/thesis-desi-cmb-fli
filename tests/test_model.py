@@ -89,7 +89,7 @@ def test_kaiser_posterior_init(small_model):
 
     # Get Kaiser posterior samples
     rng = jr.key(0)
-    init_params = small_model.kaiser_post(rng, truth["obs"], base=True)
+    init_params = small_model.kaiser_post(rng, small_model.obs_to_delta(truth["obs"]), base=True)
 
     assert "init_mesh" in init_params
     assert init_params["init_mesh"].shape == (16, 16, 9)  # Hermitian symmetry

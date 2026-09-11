@@ -27,13 +27,16 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-import numpy as np
 import numpyro
 from blackjax.adaptation.mclmc_adaptation import MCLMCAdaptationState
 from jax import jit, pmap
 
 from desi_cmb_fli import utils
-from desi_cmb_fli.cmb_lensing import load_abacus_galaxy_observation, load_abacus_kappa_observation
+from desi_cmb_fli.cmb_lensing import (
+    load_abacus_galaxy_observation,
+    load_abacus_ic_truth,
+    load_abacus_kappa_observation,
+)
 from desi_cmb_fli.model import get_model_from_config
 from desi_cmb_fli.samplers import get_mclmc_run, get_mclmc_warmup
 from desi_cmb_fli.utils import (
@@ -190,6 +193,11 @@ else:
     elif observation_mode == ObservationMode.ABACUS:
         truth = {}
 
+        # ── Initial-conditions truth (validation reference only) ────────
+        abacus_ic_cfg = cfg.get("abacus_ic") or {}
+        if abacus_ic_cfg.get("file"):
+            truth.update(load_abacus_ic_truth(abacus_ic_cfg, model))
+
         # ── Galaxy observation ──────────────────────────────────────────
         if model.galaxies_enabled:
             abacus_gxy_cfg = cfg.get("abacus_galaxy", None)
@@ -213,7 +221,7 @@ else:
             truth.update(truth_cmb)
             truth["kappa_obs_packed"] = model.pack_kappa_obs(jnp.asarray(truth["kappa_obs"]))
 
-        if not truth:
+        if not model.galaxies_enabled and not model.cmb_enabled:
             raise ValueError(
                 "observation_mode='abacus' but neither galaxies_enabled nor "
                 "cmb_enabled is True — nothing to load."
@@ -241,9 +249,11 @@ else:
         yaml.dump(effective_cfg, _f, default_flow_style=False, sort_keys=False)
 
     if model.galaxies_enabled and 'obs' in truth:
-        print(f"\nGalaxy obs shape: {truth['obs'].shape}")
-        print(f"Mean count: {float(jnp.mean(truth['obs'])):.4f}")
-        print(f"Std: {float(jnp.std(truth['obs'])):.4f}")
+        _occ = jnp.asarray(model.gxy_occ_mask3d) if getattr(model, "gxy_occ_mask3d", None) is not None else None
+        _in = truth["obs"] if _occ is None else truth["obs"][_occ]
+        print(f"\nGalaxy obs shape: {truth['obs'].shape} (counts per cell)")
+        print(f"Mean count in survey: {float(jnp.mean(_in)):.4f} (n_bar={float(model.gxy_count):.4f})")
+        print(f"Std: {float(jnp.std(_in)):.4f}")
 
     if model.cmb_enabled and 'kappa_obs' in truth:
         print(f"\nCMB kappa obs shape: {truth['kappa_obs'].shape}")
@@ -332,7 +342,7 @@ _restored = restore_model_state_from_truth(model, truth)
 if RESUME_MODE:
     print(f"\n🔄 Restored from truth.npz: {_restored}")
     print(f"   gxy_count={float(model.gxy_count):.4f} gxy/cell, a_fid={model.a_fid:.4f}")
-check_model_state(model, observation_mode, _restored)
+check_model_state(model, observation_mode, _restored, truth=truth)
 
 # Condition model on observations
 condition_dict = {}
@@ -387,7 +397,7 @@ if not RESUME_MODE:
     # Initialize (multi-chains)
     if model.galaxies_enabled and "obs" in truth:
         # Use galaxy overdensity for initialization
-        delta_obs = truth["obs"] - 1
+        delta_obs = model.obs_to_delta(truth["obs"])
         rngs = jr.split(jr.key(45), num_chains)
         scale_field = 2/3
 
@@ -426,8 +436,8 @@ if not RESUME_MODE:
         model.logpdf,
         n_steps=cfg["mcmc"].get("mesh_warmup_steps", 2**13),
         config=None,
-        desired_energy_var=1e-6,
-        diagonal_preconditioning=True,
+        desired_energy_var=cfg["mcmc"].get("mesh_desired_energy_var", 1e-5),
+        diagonal_preconditioning=False,
     )))
 
     _t0 = _time.time()
@@ -465,33 +475,13 @@ if not RESUME_MODE:
         "b2/bs2/bn2 from latents)",
         flush=True,
     )
-    _t0 = _time.time()
-    if bool(cfg["mcmc"].get("scalar_precond", False)):
-        from desi_cmb_fli.samplers import scalar_precond_mass
-        _pos0 = {k: jax.device_put(np.asarray(v)[0]) for k, v in init_params_.items()}
-        _scalar_keys = [k for k in _pos0 if k != "init_mesh_"]
-        print("Building scalar-curvature preconditioner (mesh=1, scalars=1/curv)...", flush=True)
-        _inv_mass, _ = scalar_precond_mass(model.logpdf, _pos0, _scalar_keys)
-        _init_config = {
-            "L": float(jnp.median(config_mesh.L)),
-            "step_size": float(jnp.median(config_mesh.step_size)),
-            "inverse_mass_matrix": _inv_mass,
-        }
-        warmup_all_fn = pmap(jit(get_mclmc_warmup(
-            model.logpdf,
-            n_steps=num_warmup,
-            config=_init_config,
-            desired_energy_var=desired_energy_var,
-            diagonal_preconditioning=True,
-        )))
-    else:
-        warmup_all_fn = pmap(jit(get_mclmc_warmup(
-            model.logpdf,
-            n_steps=num_warmup,
-            config=None,
-            desired_energy_var=desired_energy_var,
-            diagonal_preconditioning=diagonal_precond,
-        )))
+    warmup_all_fn = pmap(jit(get_mclmc_warmup(
+        model.logpdf,
+        n_steps=num_warmup,
+        config=None,
+        desired_energy_var=desired_energy_var,
+        diagonal_preconditioning=diagonal_precond,
+    )))
 
     _t0 = _time.time()
     state, config = warmup_all_fn(jr.split(jr.key(43), num_chains), init_params_)
@@ -613,7 +603,9 @@ model.reset()
 apply_conditioning()
 
 # Setup sampling function (pmap for parallel chains)
-run_fn = pmap(jit(get_mclmc_run(model.logpdf, n_samples=num_samples, thinning=thinning, progress_bar=False)))
+run_fn = pmap(jit(get_mclmc_run(
+    model.logpdf, n_samples=num_samples, thinning=thinning, progress_bar=False,
+)))
 
 print(f"\nRunning {num_chains} chains in parallel, each with {num_batches} sequential batches")
 print(f"   Samples per batch: {num_samples}")
@@ -717,7 +709,7 @@ for batch_idx in range(start_batch, num_batches):
         diag_lines = []
         for i, mse_val in enumerate(mse_per_chain):
             ratio = float(mse_val) / desired_energy_var
-            status = "✓" if ratio < 2.0 else "⚠️"
+            status = "✓" if 0.1 < ratio < 2.0 else "⚠️"
             line = f"\n  📊 Chain {i} Energy Variance: {float(mse_val):.2e} (ratio: {ratio:.2f}) {status}"
             print(line)
             diag_lines.append(line)
@@ -727,10 +719,14 @@ for batch_idx in range(start_batch, num_batches):
         line = f"\n  📊 Overall (median): {median_mse:.2e}, Desired: {desired_energy_var:.2e}, Ratio: {median_ratio:.2f}"
         print(line)
         diag_lines.append(line)
-        if median_ratio < 2.0:
-            line = "     ✓ PASS: Energy variance matches desired"
+        if median_ratio > 2.0:
+            line = f"     ⚠️  WARN: Ratio = {median_ratio:.1f}x - step size too large, reduce desired_energy_var"
+        elif median_ratio < 0.1:
+            # Var[E] = O(step_size^6), so the step size is short by ratio^(-1/6).
+            line = (f"     ⚠️  WARN: Ratio = {median_ratio:.4f} - step size ~{median_ratio ** (-1 / 6):.1f}x "
+                    "too small (adaptation failed); compute is being wasted")
         else:
-            line = f"     ⚠️  WARN: Ratio = {median_ratio:.1f}x - consider reducing desired_energy_var"
+            line = "     ✓ PASS: Energy variance matches desired"
         print(line)
         diag_lines.append(line)
 

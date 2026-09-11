@@ -42,7 +42,7 @@ from desi_cmb_fli.cmb_lensing import (
 )
 from desi_cmb_fli.metrics import spectrum as spectrum_3d
 from desi_cmb_fli.model import get_model_from_config
-from desi_cmb_fli.validation import compute_cl_theory, measure_spectra
+from desi_cmb_fli.validation import compute_cl_theory, conditioning_params, measure_spectra
 
 jax.config.update("jax_enable_x64", True)
 
@@ -202,10 +202,12 @@ def main():
         # Closure: N independent LPT realizations
         print(f"\n[Closure mode] Generating {n_real} realization(s)...")
 
+        cond_params = conditioning_params(model, truth_params)
+
         @jax.jit
         def run_one_realization(seed):
             return model.predict(
-                samples=truth_params,
+                samples=cond_params,
                 hide_base=False,
                 hide_samp=False,
                 hide_det=False,
