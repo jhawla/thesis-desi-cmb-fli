@@ -43,7 +43,7 @@ cmb_lensing:
   shell_weights: linear  # nearest (hard shell bins) | linear (particle split between the two bracketing shells; kappa continuous in the radii)
   proj_oversamp: 2  # power of two; particles scattered at nside*proj_oversamp so sub-pixel discreteness stays out of the observable band instead of aliasing into it
   cmb_noise_nell: "/global/homes/j/jhawla/thesis-desi-cmb-fli/data/N_L_kk_act_dr6_lensing_v1_baseline.txt"
-  cmb_noise_scaling: 1.0  # Artificial scaling factor (0.01 = divide N_l by 100)
+  cmb_noise_scaling: 0.4  # Artificial scaling factor (0.01 = divide N_l by 100). 0.4 times the ACT DR6 baseline is an approximation to the expected Simons Observatory baseline noise.
   full_los_correction: true
   high_z_mode: fixed # fixed, taylor, exact_linear or exact
   likelihood_mode: diagonal # diagonal (fast; exact on full sky; over-confident on cut sky) | pixel_exact (exact cut-sky via signal-eigenmode/KL: diagonalises the observed-pixel covariance once, keeps the supported Slepian subspace; full mask coupling kept exactly; requires fixed cosmo + high_z_mode=fixed)
