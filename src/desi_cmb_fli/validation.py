@@ -420,6 +420,17 @@ def measure_spectra(truth, model, model_config=None):
                 "kappa_obs": np.asarray(model.unpack_kappa_obs_to_map(jnp.asarray(_ko))),
             }
 
+    if cmb_enabled and has_kappa_pred and np.ndim(truth["kappa_pred"]) == 1:
+        _kp = np.asarray(truth["kappa_pred"])
+        if npix_hp is not None and _kp.size != npix_hp and getattr(model, "cmb_proj_nside", None):
+            if _kp.size == 12 * int(model.cmb_proj_nside) ** 2:
+                truth = {
+                    **truth,
+                    "kappa_pred": np.asarray(
+                        model.unpack_to_map(model.pack_kappa_map(jnp.asarray(_kp)))
+                    ),
+                }
+
     # Kappa spectra
     if cmb_enabled and has_kappa_obs and np.ndim(truth["kappa_obs"]) == 1:
         kappa_obs = np.asarray(truth["kappa_obs"])
