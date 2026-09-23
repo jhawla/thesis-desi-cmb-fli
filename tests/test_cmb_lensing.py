@@ -401,3 +401,23 @@ def test_prepare_abacus_kappa_hp_values():
     out = prepare_abacus_kappa_hp(healpix_map, nside, mask)
     expected = healpix_map[mask]
     np.testing.assert_array_equal(out, expected)
+
+
+def test_project_mesh_to_healpix_uses_the_model_grid_convention():
+    """Mesh node i sits at i * dx (painting, Born projector); the galaxy projection must agree,
+    or the galaxy map is displaced from the kappa map by half a cell per axis. On the field
+    f = x - x_obs the projection is then exactly odd under n -> -n."""
+    import healpy as hp
+
+    from desi_cmb_fli.cmb_lensing import project_mesh_to_healpix
+
+    n, L, nside = 16, 1600.0, 4
+    dx = L / n
+    x = np.arange(n) * dx - L / 2
+    mesh = np.broadcast_to(x[:, None, None], (n, n, n)).copy()
+    box = np.full(3, L)
+    npix = hp.nside2npix(nside)
+    proj = project_mesh_to_healpix(mesh, box, box / 2, nside, np.ones(npix, bool),
+                                   chi_max=L / 2 - 2 * dx)
+    antipode = hp.vec2pix(nside, *(-np.array(hp.pix2vec(nside, np.arange(npix)))))
+    np.testing.assert_allclose(proj + proj[antipode], 0.0, atol=1e-6 * np.abs(proj).max())

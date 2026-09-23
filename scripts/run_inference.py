@@ -176,6 +176,23 @@ else:
         print(f"[Closure test] Truth params: {truth_params}")
         print(f"Seed: {seed}")
 
+        closure_geom_keys = {}
+        if cfg.get("closure_geometry_from_abacus", False) and model.galaxies_enabled:
+            abacus_gxy_cfg = cfg.get("abacus_galaxy")
+            if abacus_gxy_cfg is None:
+                raise ValueError(
+                    "closure_geometry_from_abacus=True requires an 'abacus_galaxy' section "
+                    "in config.yaml (the randoms define the selection)."
+                )
+            geom = load_abacus_galaxy_observation(abacus_gxy_cfg=abacus_gxy_cfg, model=model)
+            dscale = float(cfg.get("closure_gxy_density_scale", 1.0))
+            model.gxy_count = float(model.gxy_count) * dscale
+            closure_geom_keys = {k: v for k, v in geom.items() if k != "obs"}
+            print(
+                f"[Closure test] Survey geometry from Abacus randoms; "
+                f"gxy_count = {model.gxy_count:.6g} (catalog n̄ x {dscale})"
+            )
+
         truth = model.predict(
             samples=truth_params,
             hide_base=False,
@@ -185,6 +202,8 @@ else:
             rng=jr.key(seed),
         )
         print("[Closure test] kappa_obs generated synthetically from truth_params")
+
+        truth.update(closure_geom_keys)
 
         if model.cmb_enabled and "kappa_obs" in truth:
             truth["kappa_obs_packed"] = truth["kappa_obs"]
@@ -279,6 +298,7 @@ else:
         cmb_nside=getattr(model, "cmb_nside", None),
         observer_position=getattr(model, "observer_position", None),
         chi_boundary=getattr(model, "chi_boundary", None),
+        model=model,
     )
     print(f"✓ Saved field slices to {fig_dir}")
 

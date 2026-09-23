@@ -55,7 +55,7 @@ squeue -u $USER
 ### Interactive job
 
 ```bash
-salloc --nodes 1 --qos interactive --time 02:00:00 --constraint gpu --gpus 4 --account=desi
+salloc --nodes 1 --qos interactive --time 04:00:00 --constraint gpu --gpus 4 --account=desi
 module load cudatoolkit/12.4
 source /global/common/software/desi/users/adematti/perlmutter/cosmodesiconda/20251214-1.0.0/conda/etc/profile.d/conda.sh
 conda activate ${SCRATCH}/envs/desi-cmb-fli

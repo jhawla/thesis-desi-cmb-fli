@@ -52,6 +52,21 @@ def _project_masked_healpix(kappa_mask, cmb_mask, cmb_nside, xsize=1200):
     return proj
 
 
+def kappa_pred_on_obs_sphere(kappa_pred, model):
+    """Bring a predict() kappa map from the projection sphere to the observable one.
+
+    With cmb_lensing.proj_oversamp > 1 the model scatters kappa at nside * proj_oversamp; this
+    band-limits it through the likelihood's own packing and resynthesises it at cmb_nside. Any
+    other input is returned unchanged.
+    """
+    kp = np.asarray(kappa_pred)
+    proj_nside = getattr(model, "cmb_proj_nside", None) if model is not None else None
+    if (kp.ndim == 1 and proj_nside and proj_nside != model.cmb_nside
+            and kp.size == 12 * int(proj_nside) ** 2):
+        return np.asarray(model.unpack_to_map(model.pack_kappa_map(jnp.asarray(kp))))
+    return kp
+
+
 def _project_full_healpix(kappa_full, cmb_mask=None, cmb_nside=None, xsize=1200):
     import healpy as hp
 
@@ -187,6 +202,7 @@ def plot_field_slices(
     cmb_nside=None,
     observer_position=None,
     chi_boundary=None,
+    model=None,
 ):
     """
     Plot 2D slices of the generated fields (obs, kappa_obs, kappa_pred).
@@ -201,6 +217,7 @@ def plot_field_slices(
         field_npix (int): Number of pixels for projection.
         chi_center (float): Comoving distance to box center (for galaxy projection).
         observation_mode (str): 'closure' or 'abacus' (adjusts panel titles).
+        model (FieldLevelModel): needed to bring a proj_oversamp > 1 kappa_pred to cmb_nside.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -294,7 +311,7 @@ def plot_field_slices(
         _pred_title = ("κ Abacus (noiseless)" if observation_mode == "abacus"
                        else "CMB Convergence κ (predicted)")
         if has_kappa_pred:
-            _pred_arr = np.asarray(truth["kappa_pred"])
+            _pred_arr = kappa_pred_on_obs_sphere(truth["kappa_pred"], model)
             _pred_plot = _pred_arr
             _pred_xlabel = "x [pix]"
             _pred_ylabel = "y [pix]"
@@ -420,16 +437,8 @@ def measure_spectra(truth, model, model_config=None):
                 "kappa_obs": np.asarray(model.unpack_kappa_obs_to_map(jnp.asarray(_ko))),
             }
 
-    if cmb_enabled and has_kappa_pred and np.ndim(truth["kappa_pred"]) == 1:
-        _kp = np.asarray(truth["kappa_pred"])
-        if npix_hp is not None and _kp.size != npix_hp and getattr(model, "cmb_proj_nside", None):
-            if _kp.size == 12 * int(model.cmb_proj_nside) ** 2:
-                truth = {
-                    **truth,
-                    "kappa_pred": np.asarray(
-                        model.unpack_to_map(model.pack_kappa_map(jnp.asarray(_kp)))
-                    ),
-                }
+    if cmb_enabled and has_kappa_pred:
+        truth = {**truth, "kappa_pred": kappa_pred_on_obs_sphere(truth["kappa_pred"], model)}
 
     # Kappa spectra
     if cmb_enabled and has_kappa_obs and np.ndim(truth["kappa_obs"]) == 1:

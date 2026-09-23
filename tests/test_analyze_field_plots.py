@@ -117,6 +117,20 @@ def test_the_convergence_figure_compares_maps_in_the_likelihood_band(proj_oversa
     assert out.exists() and out.stat().st_size > 0
 
 
+@pytest.mark.parametrize("proj_oversamp", [1, 2])
+def test_the_startup_slices_accept_a_refined_convergence_map(proj_oversamp, tmp_path):
+    """In closure kappa_pred comes out of predict() on the refined sphere; the startup figure of
+    run_inference must bring it to cmb_nside rather than scatter it into the observable mask."""
+    from desi_cmb_fli.validation import plot_field_slices
+
+    model = FieldLevelModel(**_cfg(cmb_proj_oversamp=proj_oversamp, cmb_shell_weights="linear"))
+    truth, _ = _run(model)
+    truth["kappa_obs"] = np.asarray(model.unpack_kappa_obs_to_map(truth["kappa_obs"]))
+    plot_field_slices(truth, output_dir=tmp_path, box_shape=model.box_shape,
+                      cmb_mask=model.cmb_mask, cmb_nside=model.cmb_nside, model=model)
+    assert (tmp_path / "kappa_maps.png").exists()
+
+
 def test_the_convergence_figure_is_skipped_without_a_map(tmp_path, capsys):
     model = FieldLevelModel(**_cfg())
     truth, positions = _run(model)

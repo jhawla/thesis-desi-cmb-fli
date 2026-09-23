@@ -89,9 +89,8 @@ def project_mesh_to_healpix(mesh, box_shape, observer_position, nside, mask,
         )
         if not np.any(valid):
             continue
-        coords = np.stack(
-            [x[valid] / dx - 0.5, y[valid] / dy - 0.5, z[valid] / dz - 0.5], axis=0
-        )
+        # Mesh node i sits at i * dx, as in the painting and the Born projector.
+        coords = np.stack([x[valid] / dx, y[valid] / dy, z[valid] / dz], axis=0)
         vals = map_coordinates(mesh, coords, order=order, mode="constant", cval=0.0)
         proj_map[valid] += vals * step_size
     return proj_map
