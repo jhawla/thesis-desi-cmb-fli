@@ -10,7 +10,6 @@ import numpy as np
 from desi_cmb_fli import metrics, plot
 from desi_cmb_fli.bricks import get_cosmology
 from desi_cmb_fli.cmb_lensing import (
-    compute_cl_high_z,
     compute_shell_support_fractions,
     compute_theoretical_cl_gg,
     compute_theoretical_cl_kappa,
@@ -18,7 +17,7 @@ from desi_cmb_fli.cmb_lensing import (
     compute_theoretical_cl_kg,
     project_mesh_to_healpix,
 )
-from desi_cmb_fli.metrics import bin_cl_log, get_cl_healpix
+from desi_cmb_fli.metrics import bin_cl_log, get_cl_healpix, masked_healpix_to_full
 from desi_cmb_fli.utils import chreshape, r2chshape
 
 
@@ -386,6 +385,105 @@ def plot_field_slices(
         plt.close()
 
 
+def _expected_hp_map(truth, model, nside, chi_max):
+    """Unclustered expectation of the galaxy angular map, and its radial kernel.
+
+    The survey selection (x the survey mask) is integrated along each pixel centre with the r^2
+    volume weight; the same samples summed over the sky give dN/dchi. The expectation is smooth,
+    so casting rays through the selection grid costs no resolution.
+    """
+    import healpy as hp
+    from scipy.ndimage import map_coordinates
+
+    box = np.asarray(model.box_shape, dtype=float)
+    obs_pos = np.asarray(model.observer_position, dtype=float)
+    occ = truth.get("gxy_occ_mask3d", getattr(model, "gxy_occ_mask3d", None))
+    selp = truth.get("selec_paint", getattr(model, "selec_paint", None))
+    occ = None if occ is None else np.asarray(occ, dtype=float)
+    selp = None if selp is None else np.asarray(selp, dtype=float)
+
+    npix = hp.nside2npix(nside)
+    nvec = np.array(hp.pix2vec(nside, np.arange(npix))).T
+    step = float(np.min(box / np.asarray(model.paint_shape))) / 2.0
+    r = np.arange(step / 2.0, chi_max, step)
+    E, nz = np.zeros(npix), np.zeros(r.size)
+    for i, ri in enumerate(r):
+        x = obs_pos + ri * nvec
+        w = np.ones(npix)
+        if selp is not None:
+            w *= map_coordinates(selp, (x / (box / selp.shape)).T, order=1, mode="grid-wrap")
+        if occ is not None:
+            w *= map_coordinates(occ, (x / (box / occ.shape)).T, order=0, mode="grid-wrap")
+        E += w * ri**2 * step
+        nz[i] = w.sum() * ri**2
+    return E, (r, nz)
+
+
+def _particle_hp_counts(truth, model, nside, chi_max):
+    """Galaxy counts per pixel from the model's particles: bias weight x selection x survey mask."""
+    from scipy.ndimage import map_coordinates
+
+    from desi_cmb_fli.cmb_lensing import healpix_counts
+
+    box = np.asarray(model.box_shape, dtype=float)
+    x = np.asarray(truth["rsd_pos"], dtype=float) * box / np.asarray(model.evol_shape)
+    w = np.asarray(truth["gxy_weights"], dtype=float).ravel()
+    for key, order in (("selec_paint", 1), ("gxy_occ_mask3d", 0)):
+        grid = truth.get(key, getattr(model, key, None))
+        if grid is not None:
+            grid = np.asarray(grid, dtype=float)
+            w = w * map_coordinates(grid, (x / (box / grid.shape)).T, order=order, mode="grid-wrap")
+    rel = x - np.asarray(model.observer_position, dtype=float)
+    r = np.linalg.norm(rel, axis=1)
+    keep = (r > 0) & (r <= chi_max)
+    return healpix_counts(rel[keep], nside, weights=w[keep], bilinear=True)
+
+
+def galaxy_healpix_delta(truth, model, nside, chi_max):
+    """Galaxy overdensity on HEALPix pixels, built from galaxies rather than from the mesh.
+
+    Data: the catalogue count map the Abacus loader stores (``gxy_hp_counts``), summed down to
+    ``nside``. Model: its particles weighted like the painted galaxy field, spread bilinearly over
+    the pixels as the Born projector spreads them for kappa. Both are divided by the unclustered
+    expectation of ``_expected_hp_map``. No mesh interpolation enters, so the only window is the
+    HEALPix pixel. Returns None when neither source is in ``truth``.
+    """
+    import healpy as hp
+
+    if "gxy_hp_counts" in truth:
+        G = hp.ud_grade(np.asarray(truth["gxy_hp_counts"], dtype=float), nside, power=-2)
+        poisson = True
+    elif "rsd_pos" in truth and "gxy_weights" in truth:
+        G = _particle_hp_counts(truth, model, nside, chi_max)
+        poisson = False  # the particles are a displaced lattice, not a Poisson sample
+    elif "obs" in truth:
+        # Fallback (kaiser evolution, truths without particles): the mesh nodes as points. The
+        # cell window is then left in the map.
+        from desi_cmb_fli.cmb_lensing import healpix_counts
+
+        print("  [validation] galaxy map from mesh nodes: cell window not removed")
+        obs = np.asarray(truth["obs"], dtype=float)
+        w = obs.copy()
+        for key in ("selec_mesh", "gxy_occ_mask3d"):
+            grid = truth.get(key, getattr(model, key, None))
+            if grid is not None:
+                w = w * np.asarray(grid, dtype=float)
+        cell = np.asarray(model.box_shape, dtype=float) / np.asarray(obs.shape)
+        rel = np.indices(obs.shape).reshape(3, -1).T * cell - np.asarray(model.observer_position)
+        r = np.linalg.norm(rel, axis=1)
+        keep = (r > 0) & (r <= chi_max)
+        G = healpix_counts(rel[keep], nside, weights=w.ravel()[keep], bilinear=True)
+        poisson = False
+    else:
+        return None
+    E, kernel = _expected_hp_map(truth, model, nside, chi_max)
+    mask = E > 1e-6 * E.max()
+    g_exp = E / E[mask].sum() * G[mask].sum()
+    shot = 4 * np.pi / E.size * float(np.mean(1.0 / g_exp[mask])) if poisson else 0.0
+    return {"delta_masked": G[mask] / g_exp[mask] - 1.0, "mask_full": mask,
+            "kernel": kernel, "shot": shot}
+
+
 def measure_spectra(truth, model, model_config=None):
     """
     Measure Cℓ spectra on the maps in `truth`.
@@ -493,48 +591,49 @@ def measure_spectra(truth, model, model_config=None):
         if ell is None:
             ell = np.asarray(ell_tmp)
 
-    # Galaxy spectra
-    f_sky_gxy = 1.0
+    # Galaxy spectra: map from the galaxies themselves (catalogue or particles), pixel window
+    # removed, shot noise subtracted, so it compares directly with Limber.
+    f_sky_gxy, gxy_kernel, gxy_shot = 1.0, None, None
     if has_galaxies:
+        import healpy as hp
+
         gxy_model, gxy_lmax = None, lmax_hp
         if cmb_enabled and np.ndim(truth.get("kappa_pred", truth.get("kappa_obs"))) == 1:
             gxy_model = model
         elif getattr(model, "curved_sky", False) and truth.get("chi_range_gxy") is not None:
             gxy_model, gxy_lmax = _galaxy_healpix_proxy(model, truth["chi_range_gxy"])
 
+        gmap = None
         if gxy_model is not None:
-            gxy_hp = _project_galaxy_mesh_to_healpix(truth, gxy_model, model_config)
-            if gxy_hp is not None:
-                ell_tmp, cl_gg, info_gg = get_cl_healpix(
-                    gxy_hp["delta_masked"],
-                    gxy_hp["mask_full"],
-                    lmax=gxy_lmax,
-                )
-                cl_gg = np.asarray(cl_gg)
-                f_sky_gxy = float(info_gg["norm"])
-                if ell is None:
-                    ell = np.asarray(ell_tmp)
-                cl_mode = "healpix"
+            nside_g = 2 * int(gxy_model.cmb_nside)
+            chi_max_g = float(getattr(model, "chi_boundary", np.min(model.box_shape) / 2))
+            gmap = galaxy_healpix_delta(truth, model, nside_g, chi_max_g)
+        if gmap is not None:
+            wpix = hp.pixwin(nside_g, lmax=gxy_lmax)
+            ell_tmp, cl_gg, info_gg = get_cl_healpix(
+                gmap["delta_masked"], gmap["mask_full"], lmax=gxy_lmax)
+            gxy_shot = gmap["shot"]
+            wpix = wpix[np.asarray(ell_tmp, dtype=int)]
+            cl_gg = (np.asarray(cl_gg) - gxy_shot) / wpix**2
+            f_sky_gxy = float(info_gg["norm"])
+            gxy_kernel = gmap["kernel"]
+            if ell is None:
+                ell = np.asarray(ell_tmp)
+            cl_mode = "healpix"
 
-                if has_kappa_pred:
-                    kappa_pred = np.asarray(truth["kappa_pred"])
-                    if cmb_mask_eff is not None and kappa_pred.size == npix_hp:
-                        kappa_masked = kappa_pred[cmb_mask_eff]
-                        kappa_mask_full = cmb_mask_eff
-                    else:
-                        kappa_masked = truth["kappa_pred"]
-                        kappa_mask_full = model.cmb_mask
-                    _, cl_kg, _ = get_cl_healpix(
-                        kappa_masked,
-                        kappa_mask_full,
-                        gxy_hp["delta_masked"],
-                        gxy_hp["mask_full"],
-                        lmax=lmax_hp,
-                    )
-                    cl_kg = np.asarray(cl_kg)
-            else:
-                print("  [validation] Skipping galaxy HEALPix spectra: projected survey footprint is empty.")
-        else:
+            if cmb_enabled and has_kappa_pred and np.ndim(truth["kappa_pred"]) == 1:
+                # kappa is band-limited to lmax, so moving it to the galaxy nside loses nothing.
+                kmask = np.asarray(model.cmb_mask, dtype=bool)
+                kfull = np.asarray(truth["kappa_pred"], dtype=float)
+                if kfull.size != kmask.size:
+                    kfull = masked_healpix_to_full(kfull, kmask, fill_value=0.0)
+                k_up = hp.alm2map(hp.map2alm(kfull * kmask, lmax=lmax_hp), nside_g, lmax=lmax_hp)
+                kmask_up = hp.ud_grade(kmask.astype(float), nside_g) > 0.5
+                ell_kg, cl_kg, _ = get_cl_healpix(
+                    k_up[kmask_up], kmask_up, gmap["delta_masked"], gmap["mask_full"],
+                    lmax=lmax_hp)
+                cl_kg = np.asarray(cl_kg) / wpix[: len(ell_kg)]
+        elif gxy_model is None:
             gxy_field = np.array(truth["obs"])
             mask3d = truth.get("gxy_occ_mask3d", None)
             if mask3d is not None:
@@ -553,6 +652,8 @@ def measure_spectra(truth, model, model_config=None):
                 if cmb_enabled and has_kappa_pred and np.ndim(truth["kappa_pred"]) == 2:
                     _, cl_kg = metrics.get_cl_2d(truth["kappa_pred"], gxy_proj, field_size_deg=field_size)
                     cl_kg = np.asarray(cl_kg)
+        else:
+            print("  [validation] No galaxy catalogue map or particles in truth: galaxy spectra skipped.")
 
     # ── Log-binned versions ────────────────────────────────────────────────
     ell_b, cl_kk_pred_b, cl_kk_obs_b, cl_gg_b, cl_kg_b = (None,) * 5
@@ -573,7 +674,7 @@ def measure_spectra(truth, model, model_config=None):
 
     return {"ell": ell, "cl_kk_pred": cl_kk_pred, "cl_kk_obs": cl_kk_obs,
             "cl_gg": cl_gg, "cl_kg": cl_kg, "f_sky_gxy": f_sky_gxy,
-            "cl_mode": cl_mode,
+            "cl_mode": cl_mode, "gxy_kernel": gxy_kernel, "gxy_shot": gxy_shot,
             # binned versions
             "ell_b": ell_b, "cl_kk_pred_b": cl_kk_pred_b, "cl_kk_obs_b": cl_kk_obs_b,
             "cl_gg_b": cl_gg_b, "cl_kg_b": cl_kg_b, "n_modes_b": n_modes_b}
@@ -600,449 +701,147 @@ def conditioning_params(model, *param_dicts):
     return samples
 
 
-def _survey_solid_angle_and_count(model):
-    """Sky area and galaxy count of the loaded survey, or (None, None) in closure mode.
-
-    ``gxy_density`` is a closure-mode config value that the Abacus loader does not
-    overwrite (it sets the per-cell ``gxy_count``), so the shot noise is taken from
-    the survey geometry instead: Omega = V_survey / int chi^2 dchi over the occupied
-    radial range, which is geometry-agnostic (4pi for a full-sky shell, the octant
-    solid angle for the base box).
-    """
-    selec = getattr(model, "selec_mesh", None)
-    mask = getattr(model, "gxy_occ_mask3d", None)
-    count = float(getattr(model, "gxy_count", 0.0) or 0.0)
-    if selec is None or mask is None or count <= 0.0:
-        return None, None
-
-    from desi_cmb_fli.bricks import radius_mesh
-
-    mask = np.asarray(mask, dtype=bool)
-    if not mask.any():
-        return None, None
-
-    mesh_shape = tuple(int(s) for s in model.mesh_shape)
-    n_gal = count * float(np.sum(np.asarray(selec)[mask]))
-    cell_volume = float(np.prod(np.asarray(model.box_shape, dtype=float) / np.asarray(mesh_shape)))
-    radii = np.asarray(radius_mesh(model.box_center, model.box_shape, mesh_shape,
-                                   curved_sky=model.curved_sky, los=model.los))[mask]
-    shell = (float(radii.max()) ** 3 - float(radii.min()) ** 3) / 3.0
-    if shell <= 0.0:
-        return None, None
-    return float(mask.sum()) * cell_volume / shell, n_gal
-
-
-def compute_cl_theory(model, cosmo_val, ell_theory,
-                      chi_range_gxy=None, bE=2.0,
+def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
                       has_galaxies=True, observation_mode="closure"):
+    """The one Limber curve per spectrum that the C_ell diagnostic compares with.
+
+    ``measure_spectra`` returns noiseless maps with the galaxy pixel window removed and the galaxy
+    shot noise subtracted, so no noise term enters here:
+
+    * kappa-kappa, closure: the model's Born shells, chi_min to chi_boundary, with k_perp below the
+      init-grid Nyquist -- the inferred linear field has no power above it.
+    * kappa-kappa, abacus: the whole line of sight to ``chi_high_z_max`` at full resolution, times
+      the pixel window of the ud_grade that brings the simulation map to ``cmb_nside``.
+    * gg and kappa-g: the survey's dN/dchi (``gxy_kernel``), constant Eulerian bias ``bE``,
+      nonlinear P(k); the same k cut in closure, none on data.
     """
-    Compute all Limber theory curves for C_l diagnostic plots.
+    import healpy as hp
 
-    Single source of truth for theory calculations — called by both plot_spectra
-    (validation.py) and quick_cl_spectra.py so that changes propagate everywhere.
+    ell_j = jnp.asarray(ell_theory, dtype=float)
+    k_cut = None
+    if observation_mode == "closure":
+        init_cell = np.asarray(model.box_shape, dtype=float) / np.asarray(model.init_shape)
+        k_cut = float(np.pi / np.max(init_cell))
+    out = {"cl_kk": None, "cl_gg": None, "cl_kg": None, "k_cut": k_cut}
 
-    Returns dict with keys:
-        cl_kk_theory, cl_kk_theory_coupled,
-        cl_box_highz_theory_coupled, cl_total_theory_coupled,
-        cl_gg_theory, cl_gg_theory_full,
-        cl_kg_theory, cl_kg_theory_full,
-        cl_gg_shot, nell_at_theory, cl_high_z_theory
-    """
-    def _couple_cl_to_mask(cl_values):
-        if (
-            cl_values is None
-            or not cmb_enabled
-            or getattr(model, "cmb_M_ll", None) is None
-        ):
-            return None
-
-        ell_full = np.arange(int(model.cmb_lmax) + 1, dtype=float)
-        cl_full = np.zeros_like(ell_full, dtype=float)
-        valid = np.isfinite(cl_values)
-        if np.any(valid):
-            cl_full = np.interp(
-                ell_full,
-                np.asarray(ell_theory, dtype=float)[valid],
-                np.asarray(cl_values, dtype=float)[valid],
-                left=0.0,
-                right=0.0,
+    if model.cmb_enabled:
+        z_source = model.cmb_z_source
+        if observation_mode == "closure":
+            support = compute_shell_support_fractions(
+                model.observer_position, model.box_shape, model.cmb_nside,
+                model.cmb_r_shells, model.cmb_d_r, final_mask=model.cmb_mask,
             )
-        cl_coupled_full = np.asarray(model.cmb_M_ll) @ cl_full
-        return np.interp(
-            np.asarray(ell_theory, dtype=float),
-            ell_full,
-            cl_coupled_full,
-            left=0.0,
-            right=0.0,
-        )
-
-    cmb_enabled = model.cmb_enabled
-    z_source = model.cmb_z_source
-    chi_min = 1.0
-    # chi_boundary = radius of the inscribed sphere (box face to observer along each axis)
-    chi_max = float(getattr(model, "chi_boundary", float(model.box_shape[2]) - float(model.observer_position[2])))
-    chi_min_gg = float(chi_range_gxy[0]) if chi_range_gxy is not None else chi_min
-    chi_max_gg = float(chi_range_gxy[1]) if chi_range_gxy is not None else chi_max
-    dx_mesh = float(model.box_shape[0]) / float(model.mesh_shape[0])
-    k_nyq_mesh = np.pi / dx_mesh
-
-    cl_kk_theory = None
-    cl_kk_theory_coupled = None
-    cl_box_highz_theory_coupled = None
-    cl_total_theory_coupled = None
-    cl_gg_theory = cl_gg_theory_full = cl_kg_theory = cl_kg_theory_full = None
-    cl_gg_shot = None
-    nell_at_theory = np.zeros_like(ell_theory)
-    cl_high_z_theory = np.zeros_like(ell_theory)
-
-    if cmb_enabled:
-        if observation_mode == "closure" and hasattr(model, "cmb_r_shells"):
-            shell_weights = compute_shell_support_fractions(
-                model.observer_position,
-                model.box_shape,
-                model.cmb_nside,
-                model.cmb_r_shells,
-                model.cmb_d_r,
-                final_mask=model.cmb_mask,
-            )
-            cl_kk_theory = np.asarray(
-                compute_theoretical_cl_kappa_windowed(
-                    cosmo_val,
-                    jnp.array(ell_theory),
-                    model.cmb_r_shells,
-                    model.cmb_a_shells,
-                    model.cmb_d_r,
-                    z_source,
-                    shell_weights=shell_weights,
-                    k_nyq=k_nyq_mesh,
-                )
-            )
+            out["cl_kk"] = np.asarray(compute_theoretical_cl_kappa_windowed(
+                cosmo_val, ell_j, model.cmb_r_shells, model.cmb_a_shells, model.cmb_d_r,
+                z_source, shell_weights=support, k_nyq=k_cut,
+            ))
         else:
-            cl_kk_theory = np.asarray(compute_theoretical_cl_kappa(
-                cosmo_val, jnp.array(ell_theory), chi_min, chi_max, z_source
-            ))
-        ell_noise = np.asarray(model.ell_1d, dtype=float)
-        nell_noise = np.asarray(model.nell_1d, dtype=float)
-        valid_noise = (ell_noise > 0) & np.isfinite(ell_noise) & np.isfinite(nell_noise) & (nell_noise > 0)
-        nell_at_theory = np.exp(np.interp(
-            np.log(np.maximum(ell_theory, 1e-5)),
-            np.log(np.maximum(ell_noise[valid_noise], 1e-5)),
-            np.log(nell_noise[valid_noise]),
-        ))
-        if model.full_los_correction:
-            _high_z_mode = 'exact' if observation_mode == 'abacus' else model.high_z_mode
-            cl_high_z_1d = compute_cl_high_z(
-                cosmo_val, ell_noise, model.chi_boundary, model.chi_high_z_max,
-                z_source, mode=_high_z_mode, cl_cached=model.cl_high_z_cached,
-                gradients=model.high_z_gradients, loc_fid=model.loc_fid,
-            )
-            cl_high_z_theory = np.interp(
-                ell_theory, ell_noise, np.asarray(cl_high_z_1d)
-            )
-        cl_kk_theory_coupled = _couple_cl_to_mask(cl_kk_theory)
-        cl_box_highz_theory_coupled = _couple_cl_to_mask(cl_kk_theory + cl_high_z_theory)
-        cl_total_theory_coupled = _couple_cl_to_mask(cl_kk_theory + cl_high_z_theory + nell_at_theory)
+            wpix = hp.pixwin(int(model.cmb_nside), lmax=int(np.ceil(np.max(ell_theory))) + 1)
+            out["cl_kk"] = np.asarray(compute_theoretical_cl_kappa(
+                cosmo_val, ell_j, 1.0, float(model.chi_high_z_max), z_source,
+            )) * np.interp(ell_theory, np.arange(wpix.size), wpix) ** 2
 
-    if has_galaxies:
-        cl_gg_theory = np.asarray(compute_theoretical_cl_gg(
-            cosmo_val, jnp.array(ell_theory), chi_min_gg, chi_max_gg, bE, k_nyq=k_nyq_mesh
-        ))
-        cl_gg_theory_full = np.asarray(compute_theoretical_cl_gg(
-            cosmo_val, jnp.array(ell_theory), chi_min_gg, chi_max_gg, bE
-        ))
-        _field_area_sr, _n_gal = _survey_solid_angle_and_count(model)
-        if _field_area_sr is None:
-            if cmb_enabled and getattr(model, "cmb_mask", None) is not None:
-                _field_area_sr = 4.0 * np.pi * float(np.mean(np.asarray(model.cmb_mask, dtype=float)))
-            else:
-                _field_size_deg, _ = _infer_box_field_geometry(model.box_shape, model.mesh_shape)
-                _field_area_sr = (_field_size_deg * np.pi / 180.0) ** 2
-            if chi_range_gxy is not None:
-                _v_eff = float(model.box_shape[0]) * float(model.box_shape[1]) * (chi_max_gg - chi_min_gg)
-            else:
-                _v_eff = _field_area_sr / 3.0 * (chi_max_gg**3 - chi_min_gg**3)
-            _n_gal = float(model.gxy_density) * _v_eff
-        cl_gg_shot = _field_area_sr / _n_gal
-        print(f"  Galaxy shot noise: N_ell = {cl_gg_shot:.3e} sr"
-              f"  (N_gal~{_n_gal:.3e}, Omega={_field_area_sr:.3f} sr, "
-              f"f_sky={_field_area_sr / (4.0 * np.pi):.3f})")
-        if cmb_enabled:
-            cl_kg_theory = np.asarray(compute_theoretical_cl_kg(
-                cosmo_val, jnp.array(ell_theory), chi_min_gg, chi_max_gg, z_source, bE,
-                k_nyq=k_nyq_mesh
-            ))
-            cl_kg_theory_full = np.asarray(compute_theoretical_cl_kg(
-                cosmo_val, jnp.array(ell_theory), chi_min_gg, chi_max_gg, z_source, bE
-            ))
+    if has_galaxies and gxy_kernel is not None:
+        r, nz = (np.asarray(a, dtype=float) for a in gxy_kernel)
+        occupied = r[nz > 0]
+        chi0, chi1 = float(occupied.min()), float(occupied.max())
+        out["cl_gg"] = np.asarray(compute_theoretical_cl_gg(
+            cosmo_val, ell_j, chi0, chi1, bE, n_steps=400, k_nyq=k_cut, nz=(r, nz)))
+        if model.cmb_enabled:
+            out["cl_kg"] = np.asarray(compute_theoretical_cl_kg(
+                cosmo_val, ell_j, chi0, chi1, model.cmb_z_source, bE, n_steps=400,
+                k_nyq=k_cut, nz=(r, nz)))
+    return out
 
-    return {
-        "cl_kk_theory": cl_kk_theory,
-        "cl_kk_theory_coupled": cl_kk_theory_coupled,
-        "cl_box_highz_theory_coupled": cl_box_highz_theory_coupled,
-        "cl_total_theory_coupled": cl_total_theory_coupled,
-        "cl_gg_theory": cl_gg_theory,
-        "cl_gg_theory_full": cl_gg_theory_full,
-        "cl_kg_theory": cl_kg_theory,
-        "cl_kg_theory_full": cl_kg_theory_full,
-        "cl_gg_shot": cl_gg_shot,
-        "nell_at_theory": nell_at_theory,
-        "cl_high_z_theory": cl_high_z_theory,
-    }
+
+def plot_cl_figure(spectra_list, model, cosmo_params, observation_mode, outfile, show=False):
+    """Binned C_ell of one or several realisations against the Limber curve of each spectrum.
+
+    Points are the mean over realisations with the error of that mean (none for a single
+    realisation). Also prints measured/theory per bin. Returns the theory dict.
+    """
+    sp0 = spectra_list[0]
+    ell_b = np.asarray(sp0["ell_b"])
+    ell_theory = np.geomspace(2.0, float(np.max(sp0["ell"])), 100)
+    b1 = (cosmo_params or {}).get("b1", model.loc_fid.get("b1", 1.0))
+    cosmo = {k: v for k, v in (cosmo_params or model.loc_fid).items() if k in ("Omega_m", "sigma8")}
+    theory = compute_cl_theory(
+        model, get_cosmology(**cosmo), ell_theory, bE=1.0 + float(b1),
+        gxy_kernel=sp0.get("gxy_kernel"), has_galaxies=sp0.get("cl_gg") is not None,
+        observation_mode=observation_mode,
+    )
+
+    n = len(spectra_list)
+
+    def stack(key):
+        arrs = [np.asarray(sp[key]) for sp in spectra_list if sp.get(key) is not None]
+        if not arrs:
+            return None, None
+        a = np.array(arrs)
+        return a.mean(0), (a.std(0, ddof=1) / np.sqrt(n) if n > 1 else None)
+
+    src = "model" if observation_mode == "closure" else "Abacus"
+    series = [
+        ("kk", "cl_kk_pred_b", "cl_kk", "C0", rf"$C_\ell^{{\kappa\kappa}}$ ({src})"),
+        ("gal", "cl_gg_b", "cl_gg", "C2", rf"$C_\ell^{{gg}}$ ({src})"),
+        ("gal", "cl_kg_b", "cl_kg", "C3", rf"$C_\ell^{{\kappa g}}$ ({src})"),
+    ]
+    panels = [p for p in ("kk", "gal")
+              if any(pan == p and stack(k)[0] is not None and theory[t] is not None
+                     for pan, k, t, _, _ in series)]
+    if not panels:
+        print("  Nothing to plot.")
+        return theory
+    fig, axes = plt.subplots(1, len(panels), figsize=(6.5 * len(panels), 5), squeeze=False)
+    ax_of = dict(zip(panels, axes[0], strict=True))
+    vb = (ell_b >= 2) & (ell_b <= ell_theory.max())
+
+    print(f"  measured / Limber per bin ({n} realisation(s), {src}):")
+    for pan, key, tkey, color, label in series:
+        mean, err = stack(key)
+        if mean is None or theory[tkey] is None:
+            continue
+        ax = ax_of[pan]
+        ax.errorbar(ell_b[vb], mean[vb], yerr=None if err is None else err[vb], fmt="o",
+                    color=color, ms=4, capsize=2, label=label)
+        ax.plot(ell_theory, theory[tkey], color=color, lw=1.5)
+        th_b = np.interp(ell_b[vb], ell_theory, theory[tkey])
+        print(f"    {tkey[3:]:>3s}: " + " ".join(f"{x:.2f}" for x in mean[vb] / th_b))
+
+    for pan, ax in ax_of.items():
+        ax.plot([], [], color="k", lw=1.5, label="Limber")
+        ax.set(xscale="log", yscale="log", xlabel=r"$\ell$", ylabel=r"$C_\ell$",
+               title=r"$\kappa\kappa$" if pan == "kk" else r"galaxies: $gg$ and $\kappa g$")
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.2)
+    nside = f", nside {model.cmb_nside}" if model.cmb_enabled else ""
+    fig.suptitle(f"{src}, box {model.box_shape[0]:.0f} Mpc/h, cell {float(model.cell_shape[0]):.1f}"
+                 f" Mpc/h{nside}, {n} realisation(s)", fontsize=10)
+    fig.tight_layout()
+    fig.savefig(outfile, dpi=150, bbox_inches="tight")
+    print(f"  ✓ Saved: {outfile}")
+    if show:
+        plt.show()
+    plt.close(fig)
+    return theory
 
 
 def plot_spectra(truth, model, output_dir, cosmo_params=None, model_config=None,
                  observation_mode="closure", show=False, suffix=""):
-    """
-    Measure and plot Cℓ spectra from the maps in `truth`, compared to Limber theory.
-
-    Works for any observation mode (closure, Abacus, real data).
-    Measures spectra on the provided maps — does NOT generate new realizations.
-
-    Panels:
-        - κκ auto-spectrum:
-            closure: 3 pairs (grey=obs, purple=pred+highz, blue=pred)
-            abacus:  2 pairs (grey=obs, purple=pred which is full LOS)
-        - Galaxy auto + κg cross-spectrum (if obs present)
-
-    Args:
-        truth (dict): Map dictionary. Recognized keys:
-            'kappa_pred' (2D, noiseless κ), 'kappa_obs' (2D, with noise),
-            'obs' (3D galaxy field), 'matter_mesh' (3D matter field).
-        model (FieldLevelModel): Initialized model (for field geometry, N_ell, etc.).
-        output_dir (Path or str): Output directory for the plot.
-        cosmo_params (dict, optional): Cosmology for Limber curves {Omega_m, sigma8, ...}.
-            If None, uses model.loc_fid.
-        model_config (dict, optional): Model config dict (for box_shape in galaxy projection).
-        observation_mode (str): 'closure' or 'abacus'. Controls which curves are shown.
-        show (bool): Whether to show the plot interactively.
-        suffix (str): Suffix for the output filename.
-
-    Returns:
-        dict: Measured spectra {ell, cl_kk_pred, cl_kk_obs, cl_gg, cl_kg}.
-    """
+    """Startup C_ell check of one truth: see ``plot_cl_figure``."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    if model_config is None:
-        model_config = getattr(model, "config", {})
-
     print("=" * 80)
     print("VALIDATION: Power Spectra")
     print("=" * 80)
-
-    cmb_enabled = model.cmb_enabled
-    has_kappa_obs = "kappa_obs" in truth
-    has_galaxies = "obs" in truth
-
-    if not has_kappa_obs and not has_galaxies:
+    spectra = measure_spectra(truth, model, model_config)
+    if spectra["ell"] is None:
         print("  No maps to measure spectra on, skipping.")
         return {}
-
-    # ── Cosmology for Limber theory ──────────────────────────────────────────
-    if cosmo_params is None:
-        cosmo_params = {k: v for k, v in model.loc_fid.items()
-                        if k in ("Omega_m", "sigma8")}
-    cosmo_val = get_cosmology(**cosmo_params)
-
-    # ── Field geometry ───────────────────────────────────────────────────────
-    field_size, _ = _infer_box_field_geometry(model.box_shape, model.mesh_shape)
-    ell_max = _diagnostic_ell_limit(model, cmb_enabled)
-
-    # ── Theoretical Limber spectra ───────────────────────────────────────────
-    b1_lag = cosmo_params.get("b1", model.loc_fid.get("b1", 1.0))
-    bE = 1.0 + b1_lag
-    chi_range_gxy = truth.get("chi_range_gxy", None) if has_galaxies else None
-
-    ell_theory = np.geomspace(10, ell_max, 100)
-
-    theory = compute_cl_theory(
-        model, cosmo_val, ell_theory,
-        chi_range_gxy=chi_range_gxy, bE=bE,
-        has_galaxies=has_galaxies, observation_mode=observation_mode,
-    )
-    cl_kk_theory      = theory["cl_kk_theory"]
-    cl_gg_theory      = theory["cl_gg_theory"]
-    cl_gg_theory_full = theory.get("cl_gg_theory_full")
-    cl_kg_theory      = theory["cl_kg_theory"]
-    cl_kg_theory_full = theory.get("cl_kg_theory_full")
-    cl_gg_shot        = theory["cl_gg_shot"]
-    nell_at_theory    = theory["nell_at_theory"]
-    cl_high_z_theory  = theory["cl_high_z_theory"]
-
-    # ── Measure spectra on the provided maps ─────────────────────────────────
-    spectra = measure_spectra(truth, model, model_config)
-    ell          = spectra["ell"]
-    cl_kk_pred   = spectra["cl_kk_pred"]
-    cl_kk_obs    = spectra["cl_kk_obs"]
-    cl_gg        = spectra["cl_gg"]
-    cl_kg        = spectra["cl_kg"]
-    ell_b        = spectra["ell_b"]
-    cl_kk_pred_b = spectra["cl_kk_pred_b"]
-    cl_kk_obs_b  = spectra["cl_kk_obs_b"]
-    cl_gg_b      = spectra["cl_gg_b"]
-    cl_kg_b      = spectra["cl_kg_b"]
-    valid_b = ell_b is not None and len(ell_b) > 0
-
-    # ── Plot ─────────────────────────────────────────────────────────────────
-    print("  Generating plot...")
-    has_cmb_panel = cmb_enabled and (cl_kk_pred is not None or cl_kk_obs is not None)
-    has_gxy_panel = cl_gg is not None
-
-    if has_cmb_panel and has_gxy_panel:
-        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-        ax_kk, ax_gg = axes
-    elif has_cmb_panel:
-        fig, ax_kk = plt.subplots(1, 1, figsize=(8, 6))
-        ax_gg = None
-    elif has_gxy_panel:
-        fig, ax_gg = plt.subplots(1, 1, figsize=(8, 6))
-        ax_kk = None
-    else:
-        print("  Nothing to plot.")
-        return {}
-
-    # ── CMB κ panel ──────────────────────────────────────────────────────────
-    if has_cmb_panel:
-        plt.sca(ax_kk)
-        valid = (ell > 10) & (ell < ell_max)
-
-        cl_box_highz_theory = cl_kk_theory + cl_high_z_theory
-        cl_total_theory = cl_box_highz_theory + nell_at_theory
-
-        cl_high_z_on_ell = np.interp(ell, ell_theory, cl_high_z_theory)
-
-        # ── Raw faded lines ───────────────────────────────────────────────────
-        if cl_kk_obs is not None:
-            v_grey = valid & np.isfinite(cl_kk_obs)
-            plt.loglog(ell[v_grey], cl_kk_obs[v_grey], "-", color="grey", lw=0.4, alpha=0.3)
-        if cl_kk_pred is not None:
-            _pred_raw = (cl_kk_pred + cl_high_z_on_ell) if observation_mode == "closure" else cl_kk_pred
-            v_pred_raw = valid & np.isfinite(_pred_raw)
-            _pred_raw_color = "steelblue" if observation_mode == "closure" else "purple"
-            plt.loglog(ell[v_pred_raw], _pred_raw[v_pred_raw], "-", color=_pred_raw_color, lw=0.4, alpha=0.3)
-
-        # ── Binned markers ────────────────────────────────────────────────────
-        if valid_b:
-            vb_mask = (ell_b > 10) & (ell_b < ell_max)
-            if cl_kk_obs_b is not None:
-                vb = vb_mask & np.isfinite(cl_kk_obs_b)
-                plt.errorbar(ell_b[vb], cl_kk_obs_b[vb], fmt="o", color="grey",
-                             ms=4, lw=1.2, capsize=2,
-                             label=r"$C_\ell^{\kappa\kappa}$ (obs, binned)")
-            if cl_kk_pred_b is not None:
-                _pred_b = (cl_kk_pred_b + np.interp(ell_b, ell_theory, cl_high_z_theory)
-                           if observation_mode == "closure" else cl_kk_pred_b)
-                vb = vb_mask & np.isfinite(_pred_b)
-                _pred_b_label = (
-                    r"$C_\ell^{\kappa\kappa}$ (pred + high-$z$, binned)"
-                    if observation_mode == "closure"
-                    else r"$C_\ell^{\kappa\kappa}$ (Abacus, noiseless, binned)"
-                )
-                plt.errorbar(ell_b[vb], _pred_b[vb], fmt="s", color="purple",
-                             ms=4, lw=1.2, capsize=2,
-                             label=_pred_b_label)
-            if observation_mode == "closure" and cl_kk_pred_b is not None:
-                vb = vb_mask & np.isfinite(cl_kk_pred_b)
-                plt.errorbar(ell_b[vb], cl_kk_pred_b[vb], fmt="^", color="steelblue",
-                             ms=4, lw=1, capsize=2,
-                             label=r"$C_\ell^{\kappa\kappa}$ (pred box, binned)")
-
-        # ── Theory dashed lines ───────────────────────────────────────────────
-        plt.plot(ell_theory, cl_total_theory, "--", color="grey", lw=1.5, alpha=0.9,
-                 label=r"Limber (Box + high-$z$ + $N_\ell$)")
-        plt.plot(ell_theory, cl_box_highz_theory, "--", color="purple", lw=1.5, alpha=0.9,
-                 label=r"Limber (Box + high-$z$)")
-        if observation_mode == "closure":
-            plt.plot(ell_theory, cl_kk_theory, "--", color="steelblue", lw=1.5, alpha=0.9,
-                     label=r"Limber (Box)")
-
-        mode_label = "closure" if observation_mode == "closure" else "Abacus"
-        plt.xlabel(r"$\ell$")
-        plt.ylabel(r"$C_\ell$")
-        plt.title(rf"$C_\ell^{{\kappa\kappa}}$ — {mode_label}")
-        plt.legend(fontsize=8)
-        plt.grid(True, alpha=0.2)
-        plt.xlim(10, ell_max)
-
-    # ── Galaxy panel ─────────────────────────────────────────────────────────
-    if has_gxy_panel:
-        plt.sca(ax_gg)
-        valid_gg = (ell > 10) & (ell < ell_max) & np.isfinite(cl_gg)
-        plt.loglog(ell[valid_gg], cl_gg[valid_gg], "-", color="green", lw=0.4, alpha=0.3)
-        if valid_b and cl_gg_b is not None:
-            vb_gg = (ell_b > 10) & (ell_b < ell_max) & np.isfinite(cl_gg_b)
-            plt.errorbar(ell_b[vb_gg], cl_gg_b[vb_gg], fmt="o", color="green",
-                         ms=4, lw=1.2, capsize=2, label=r"$C_\ell^{gg}$ (binned)")
-        if cl_gg_theory is not None:
-            plt.plot(ell_theory, np.array(cl_gg_theory), "--", color="green",
-                     alpha=0.8, lw=2, label=r"Limber $C_\ell^{gg}$ (res.-aware)")
-            plt.plot(ell_theory, np.array(cl_gg_theory) + cl_gg_shot,
-                     "-.", color="darkgreen", alpha=0.8, lw=1.5,
-                     label=r"Limber $C_\ell^{gg}$ + shot noise")
-            plt.axhline(cl_gg_shot, color="gray", lw=0.8, ls=":", alpha=0.6,
-                        label=rf"Shot noise $N_\ell={cl_gg_shot:.1e}$")
-        if cl_gg_theory_full is not None:
-            plt.plot(ell_theory, np.array(cl_gg_theory_full), ":", color="green",
-                     alpha=0.4, lw=1.5, label=r"Limber $C_\ell^{gg}$ (full res.)")
-
-        if cl_kg is not None:
-            valid_kg = (ell > 10) & (ell < ell_max) & np.isfinite(cl_kg)
-            plt.loglog(ell[valid_kg], np.abs(cl_kg[valid_kg]), "-", color="red",
-                       lw=0.4, alpha=0.3)
-            if valid_b and cl_kg_b is not None:
-                vb_kg = (ell_b > 10) & (ell_b < ell_max) & np.isfinite(cl_kg_b)
-                plt.errorbar(ell_b[vb_kg], np.abs(cl_kg_b[vb_kg]), fmt="s", color="red",
-                             ms=4, lw=1.2, capsize=2, label=r"|$C_\ell^{\kappa g}$| (binned)")
-            if cl_kg_theory is not None:
-                plt.plot(ell_theory, np.abs(np.array(cl_kg_theory)), "--", color="red",
-                         alpha=0.8, lw=2, label=r"Limber |$C_\ell^{\kappa g}$| (res.-aware)")
-            if cl_kg_theory_full is not None:
-                plt.plot(ell_theory, np.abs(np.array(cl_kg_theory_full)), ":", color="red",
-                         alpha=0.4, lw=1.5, label=r"Limber |$C_\ell^{\kappa g}$| (full res.)")
-            plt.title(r"Galaxy Auto & Cross Spectra")
-        else:
-            plt.title(r"Galaxy Auto Power Spectrum")
-
-        plt.xlabel(r"$\ell$")
-        plt.ylabel(r"$C_\ell$")
-        plt.legend(fontsize=9)
-        plt.grid(True, alpha=0.2)
-        plt.xlim(10, ell_max)
-
-    plt.tight_layout()
-    plt.subplots_adjust(bottom=0.12)
-
-    # Info box
-    box_x, box_y, box_z = (float(model.box_shape[i]) for i in range(3))
-    mesh_x, mesh_y, mesh_z = (int(model.mesh_shape[i]) for i in range(3))
-    cell_val = float(model.cell_shape[0]) if hasattr(model, "cell_shape") else 0
-    info = (
-        f"Box: [{box_x:.0f}, {box_y:.0f}, {box_z:.0f}] Mpc/h | "
-        f"Mesh: ({mesh_x}, {mesh_y}, {mesh_z}) | Cell: {cell_val:.1f} Mpc/h"
-    )
-    if cmb_enabled:
-        # Curved-sky (HEALPix) run: report the actual sky coverage, not the
-        # flat-sky box FOV (which is meaningless full-sky).
-        cmb_mask = getattr(model, "cmb_mask", None)
-        f_sky = float(np.mean(np.asarray(cmb_mask, dtype=float))) if cmb_mask is not None else 1.0
-        info += f" | f_sky={f_sky:.3f} | nside={model.cmb_nside}"
-    if cosmo_params:
-        info += f" | Ω_m={cosmo_params.get('Omega_m', '?')}, σ₈={cosmo_params.get('sigma8', '?')}"
-    plt.figtext(0.5, 0.02, info, ha="center", fontsize=8,
-                bbox={"facecolor": "oldlace", "alpha": 0.5,
-                      "edgecolor": "grey", "boxstyle": "round,pad=0.5"})
-
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    outfile = output_dir / f"cl_spectra{suffix}_{timestamp}.png"
-    fig.savefig(outfile, dpi=150, bbox_inches="tight")
-    print(f"  ✓ Saved: {outfile}")
-
-    if show:
-        plt.show()
-    plt.close()
-
-    return {"ell": ell, "cl_kk_pred": cl_kk_pred, "cl_kk_obs": cl_kk_obs,
-            "cl_gg": cl_gg, "cl_kg": cl_kg}
+    plot_cl_figure([spectra], model, cosmo_params, observation_mode,
+                   output_dir / f"cl_spectra{suffix}_{timestamp}.png", show=show)
+    return spectra
 
 
 def plot_cmb_noise_spectrum(model, output_dir, show=False):

@@ -30,10 +30,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from desi_cmb_fli import utils
-from desi_cmb_fli.bricks import get_cosmology
+from desi_cmb_fli.bricks import get_cosmology, radius_mesh
 from desi_cmb_fli.cmb_lensing import load_abacus_galaxy_observation
 from desi_cmb_fli.metrics import spectrum
 from desi_cmb_fli.model import get_model_from_config
+from desi_cmb_fli.nbody import a2g, chi2a
 from desi_cmb_fli.validation import conditioning_params
 
 os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
@@ -239,10 +240,21 @@ def _main_closure(args, cfg_dict, output_dir):
     pk_mean = pk_mat.mean(axis=0)
     pk_std  = pk_mat.std(axis=0)
 
-    pk_th = pk_theory_nonlinear(cosmo, k_arr, a_eff)
+    if model.lightcone:
+        # A lightcone box mixes epochs: its power is P_lin(k, a=1) times the volume average of
+        # D(a(chi))^2 over the cells, not the spectrum at any single scale factor.
+        rmesh = np.asarray(radius_mesh(model.box_center, model.box_shape, model.mesh_shape,
+                                       curved_sky=model.curved_sky, los=model.los)).ravel()
+        growth = np.asarray(a2g(cosmo, chi2a(cosmo, jnp.asarray(rmesh))))
+        d2_mean = float(np.mean((growth / float(np.asarray(a2g(cosmo, jnp.array([1.0])))[0])) ** 2))
+        pk_th = pk_theory_linear(cosmo, k_arr, 1.0) * d2_mean
+        th_label = "Linear theory, growth averaged over the lightcone"
+    else:
+        pk_th = pk_theory_nonlinear(cosmo, k_arr, a_eff)
+        th_label = f"Nonlinear theory (jax_cosmo, a={a_eff:.3f})"
 
     print("\n" + "=" * 72)
-    print("P(k) RATIO TABLE:  measured (mean±std) / theory [nonlinear P_mm]")
+    print("P(k) RATIO TABLE:  measured (mean±std) / theory")
     print("=" * 72)
     _print_ratio_table(k_arr, pk_mean, pk_std, pk_th, k_nyq)
     print("  (Should be ~1 everywhere if painting is correct)")
@@ -256,7 +268,7 @@ def _main_closure(args, cfg_dict, output_dir):
 
     _plot_pk(k_arr, pk_mean, pk_std, pk_th, k_nyq,
              label_meas="Measured mean",
-             label_th=f"Nonlinear theory (jax_cosmo, a={a_eff:.3f})",
+             label_th=th_label,
              title=title, outfile=outfile, show=args.show)
 
 

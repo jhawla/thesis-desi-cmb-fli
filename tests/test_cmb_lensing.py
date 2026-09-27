@@ -421,3 +421,14 @@ def test_project_mesh_to_healpix_uses_the_model_grid_convention():
                                    chi_max=L / 2 - 2 * dx)
     antipode = hp.vec2pix(nside, *(-np.array(hp.pix2vec(nside, np.arange(npix)))))
     np.testing.assert_allclose(proj + proj[antipode], 0.0, atol=1e-6 * np.abs(proj).max())
+
+
+def test_healpix_counts_conserves_weight_in_both_assignments():
+    from desi_cmb_fli.cmb_lensing import healpix_counts
+
+    rng = np.random.default_rng(1)
+    pos = rng.normal(size=(5000, 3)) * 100.0
+    w = rng.uniform(0.5, 1.5, size=5000)
+    for bilinear in (False, True):
+        m = healpix_counts(pos, 8, weights=w, bilinear=bilinear)
+        np.testing.assert_allclose(m.sum(), w.sum(), rtol=1e-12)

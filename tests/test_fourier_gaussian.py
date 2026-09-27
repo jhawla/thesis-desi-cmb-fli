@@ -162,7 +162,7 @@ def test_centered_full_sky_kappa_cl_amplitude_regression():
         has_galaxies=False,
         observation_mode="closure",
     )
-    cl_kk_theory_b = np.interp(ell_b, ell_theory, np.asarray(theory["cl_kk_theory"]))
+    cl_kk_theory_b = np.interp(ell_b, ell_theory, np.asarray(theory["cl_kk"]))
 
     ratio = cl_kk_pred_b / cl_kk_theory_b
     valid = (

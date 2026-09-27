@@ -41,6 +41,30 @@ _DEFAULT_RANDOMS_CACHE_DIR = (
 # =========================================================================
 
 
+GXY_HP_NSIDE = 256  # galaxy count map stored by the loader; summed down to any lower nside
+
+
+def healpix_counts(pos_rel, nside, weights=None, bilinear=False):
+    """Histogram of points (Mpc/h, relative to the observer) on the HEALPix pixels.
+
+    ``bilinear`` spreads each point over its four nearest pixels, as the Born projector does.
+    Needed for model particles: they sit on a displaced lattice, and where a pixel is smaller
+    than the lattice spacing, nearest-pixel counts carry a moire pattern at every ell.
+    Catalogue galaxies are Poisson points and take the plain histogram.
+    """
+    import healpy as hp
+
+    pos_rel = np.asarray(pos_rel, dtype=float)
+    npix = hp.nside2npix(nside)
+    w = np.ones(len(pos_rel)) if weights is None else np.asarray(weights, dtype=float)
+    if not bilinear:
+        pix = hp.vec2pix(nside, pos_rel[:, 0], pos_rel[:, 1], pos_rel[:, 2])
+        return np.bincount(pix, weights=w, minlength=npix).astype(float)
+    theta, phi = hp.vec2ang(pos_rel)
+    pix, wts = hp.get_interp_weights(nside, theta, phi)
+    return np.bincount(pix.ravel(), weights=(wts * w).ravel(), minlength=npix).astype(float)
+
+
 def project_mesh_to_healpix(mesh, box_shape, observer_position, nside, mask,
                             chi_max=None, order=1):
     """Integrate a 3D Cartesian mesh along the line of sight onto masked HEALPix pixels.
@@ -609,15 +633,23 @@ def compute_theoretical_cl_kappa_windowed(
     return jax.vmap(get_cl_per_ell)(jnp.asarray(ell, dtype=float))
 
 
+def _galaxy_kernel(chi, chi_min, chi_max, nz):
+    """Normalised radial galaxy kernel on ``chi``: uniform on [chi_min, chi_max], or dN/dchi."""
+    if nz is None:
+        return jnp.ones_like(chi) / (chi_max - chi_min)
+    w = jnp.interp(chi, jnp.asarray(nz[0]), jnp.asarray(nz[1]), left=0.0, right=0.0)
+    return w / jnp.trapezoid(w, chi)
+
+
 def compute_theoretical_cl_gg(
-    cosmo, ell, chi_min, chi_max, b1, n_steps=100, bias_of_a=None, k_nyq=None
+    cosmo, ell, chi_min, chi_max, b1, n_steps=100, bias_of_a=None, k_nyq=None, nz=None
 ):
-    """C_ell^{gg} via Limber approximation (uniform galaxy distribution)."""
+    """C_ell^{gg} via Limber. ``nz = (chi, dN/dchi)`` sets the radial kernel (default uniform
+    in chi); ``k_nyq`` drops the k_perp = (ell+1/2)/chi above it."""
     chi = jnp.linspace(chi_min, chi_max, n_steps)
     a = jc.background.a_of_chi(cosmo, chi)
-    delta_chi = chi_max - chi_min
     bias = jnp.ones_like(a) * b1 if bias_of_a is None else bias_of_a(a)
-    w_g = bias / delta_chi
+    w_g = bias * _galaxy_kernel(chi, chi_min, chi_max, nz)
 
     def get_cl_per_ell(ell_val):
         k = (ell_val + 0.5) / chi
@@ -634,16 +666,15 @@ def compute_theoretical_cl_gg(
 
 
 def compute_theoretical_cl_kg(
-    cosmo, ell, chi_min, chi_max, z_source, b1, n_steps=100, bias_of_a=None, k_nyq=None
+    cosmo, ell, chi_min, chi_max, z_source, b1, n_steps=100, bias_of_a=None, k_nyq=None, nz=None
 ):
-    """C_ell^{kappa g} cross-spectrum via Limber approximation."""
+    """C_ell^{kappa g} cross-spectrum via Limber; ``nz`` and ``k_nyq`` as for C_ell^{gg}."""
     chi_s = jc.background.radial_comoving_distance(cosmo, 1.0 / (1.0 + z_source))[0]
     chi = jnp.linspace(chi_min, chi_max, n_steps)
     a = jc.background.a_of_chi(cosmo, chi)
     w_kappa = lensing_kernel(cosmo, chi, a, chi_s)
-    delta_chi = chi_max - chi_min
     bias = jnp.ones_like(a) * b1 if bias_of_a is None else bias_of_a(a)
-    w_g = bias / delta_chi
+    w_g = bias * _galaxy_kernel(chi, chi_min, chi_max, nz)
 
     def get_cl_per_ell(ell_val):
         k = (ell_val + 0.5) / chi
@@ -1188,8 +1219,6 @@ def load_abacus_galaxy_observation(
     else:
         mesh_count = mesh_plain
 
-    del all_gxy_pos
-
     if n_rand_total == 0:
         raise ValueError(
             "[Abacus-gxy] No randoms found. Set abacus_galaxy.randoms, or use "
@@ -1213,6 +1242,16 @@ def load_abacus_galaxy_observation(
         paint_per_final = float(np.prod(rand_paint_shape) / np.prod(final_shape))
         selec_paint = jnp.asarray(rand_mesh_paint * paint_per_final / norm, dtype=jnp.float32)
     selec_mesh = jnp.where(survey_mask, selec_mesh, 1.0)
+
+    # Angular count map of the galaxies the likelihood keeps (nearest final node in the survey),
+    # straight from the catalogue positions: the diagnostic galaxy map needs no mesh interpolation.
+    gxy_node = np.rint(np.asarray(all_gxy_pos)).astype(np.int64) % np.asarray(final_shape)
+    in_survey = np.asarray(survey_mask)[gxy_node[:, 0], gxy_node[:, 1], gxy_node[:, 2]]
+    gxy_cell = np.asarray(model.box_shape, dtype=float) / np.asarray(final_shape)
+    gxy_hp_counts = healpix_counts(
+        np.asarray(all_gxy_pos)[in_survey] * gxy_cell - observer_pos, GXY_HP_NSIDE
+    )
+    del all_gxy_pos, gxy_node, in_survey
     n_survey_cells = int(jnp.sum(survey_mask))
 
     print(
@@ -1281,6 +1320,7 @@ def load_abacus_galaxy_observation(
         "selec_mesh": selec_mesh,
         "mesh_plain": mesh_plain,
         "rand_mesh_plain": rand_mesh_window,
+        "gxy_hp_counts": np.asarray(gxy_hp_counts, dtype=np.float32),
     }
 
 
