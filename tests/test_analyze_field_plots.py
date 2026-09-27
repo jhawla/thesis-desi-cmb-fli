@@ -146,3 +146,53 @@ def test_the_bands_cover_the_whole_multipole_range():
         bands = _bands(lmax)
         assert bands[0][0] == 2 and bands[-1][1] == lmax + 1
         assert all(b > a for a, b in bands)
+
+
+def _truth_latents(model, truth):
+    """The sampled field at the truth, plus the cosmology the run holds fixed, in latent space."""
+    cosmo = model.reparam({"Omega_m": 0.315192, "sigma8": 0.811355}, inv=True)
+    fixed = {k: np.asarray(cosmo[k]) for k in ("Omega_m_", "sigma8_")}
+    return {"init_mesh_": np.asarray(truth["init_mesh_"])}, fixed
+
+
+def test_the_recorded_convergence_is_the_likelihood_observable():
+    """run_inference.py records kappa_observable per batch; at the truth it must be exactly the
+    observable the truth's convergence packs to, whatever self.model is conditioned on."""
+    model = FieldLevelModel(**_cfg(cmb_proj_oversamp=2, cmb_shell_weights="linear"))
+    truth, _ = _run(model)
+    field, fixed = _truth_latents(model, truth)
+    model.condition({"Omega_m_": 5.0}, frombase=False)   # a sampling-time conditioning, ignored
+    got = np.asarray(model.kappa_observable(field | fixed))
+    want = np.asarray(model.pack_kappa_obs(truth["kappa_pred"]))
+    np.testing.assert_allclose(got, want, rtol=1e-8, atol=1e-12)
+
+
+def test_the_convergence_figure_uses_the_fixed_parameters(tmp_path):
+    """A run with fixed_params does not carry them in its sampler state. The figure must evaluate
+    the model at those values, not at prior draws of them: at the true field it then reproduces the
+    truth exactly."""
+    model = FieldLevelModel(**_cfg())
+    truth, _ = _run(model)
+    field, fixed = _truth_latents(model, truth)
+    positions = {k: np.stack([v, v]) for k, v in field.items()}
+    held = plot_kappa_maps(model, truth, positions, tmp_path / "held.png", fixed=fixed)
+    np.testing.assert_allclose(held["r_sample"], 1.0, atol=1e-6)
+    drawn = plot_kappa_maps(model, truth, positions, tmp_path / "drawn.png")
+    assert np.max(np.abs(drawn["r_sample"] - 1.0)) > 1e-3 or not np.allclose(
+        drawn["r_sample"], held["r_sample"])
+
+
+def test_the_posterior_mean_comes_from_the_recorded_samples(tmp_path):
+    """With per-batch samples the orange curve is their mean, and the posterior-mean figure is
+    drawn; samples scattered around the truth average back to it."""
+    model = FieldLevelModel(**_cfg())
+    truth, _ = _run(model)
+    field, fixed = _truth_latents(model, truth)
+    positions = {k: np.stack([v, v]) for k, v in field.items()}
+    centre = np.asarray(model.kappa_observable(field | fixed))
+    rng = np.random.default_rng(1)
+    samples = centre + 0.3 * centre.std() * rng.normal(size=(400, centre.size))
+    out = tmp_path / "kappa_reconstruction.png"
+    res = plot_kappa_maps(model, truth, positions, out, fixed=fixed, kappa_samples=samples)
+    assert (tmp_path / "kappa_posterior_mean.png").exists()
+    assert np.all(res["r_mean"] > 0.95)

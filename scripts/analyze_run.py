@@ -185,7 +185,11 @@ def load_and_process_run(run_dir, burn_in=0.0, exclude_chains=None):
     }
 
     chain_obj = Chains(samples_jax, model.groups | model.groups_)
-    physical_chains = model.reparam_chains(chain_obj, fourier=False, batch_ndim=2)
+    # Every scalar can be fixed (e.g. a kappa-only run with f_NL fixed): only the field is sampled.
+    if samples_jax:
+        physical_chains = model.reparam_chains(chain_obj, fourier=False, batch_ndim=2)
+    else:
+        physical_chains = chain_obj
     physical_samples = {k: np.array(v) for k, v in physical_chains.data.items()}
 
     # Load Truth values
@@ -239,13 +243,29 @@ def _load_field_state(run_dir):
     return positions, {k: truth_data[k] for k in truth_data.files}
 
 
+def _fixed_latents(run_dir, model):
+    """The scalar latents the run held fixed (``mcmc.fixed_params``), at the values
+    run_inference.py conditioned on. The sampler state does not carry them, and a predict() on
+    the state alone would draw them from their priors."""
+    cfg = utils.yload(Path(run_dir) / "config" / "config.yaml")
+    fixed = list(cfg.get("mcmc", {}).get("fixed_params", []))
+    if not fixed:
+        return {}
+    obs_mode = ObservationMode.validate(cfg.get("observation_mode", "closure"))
+    src = (cfg.get("truth_params", {}) if obs_mode == ObservationMode.CLOSURE
+           else cfg.get("abacus_truth_params", {}))
+    base = {p: float(src.get(p, model.loc_fid[p])) for p in fixed}
+    latents = model.reparam(base, inv=True)
+    return {p + "_": jnp.asarray(latents[p + "_"]) for p in fixed}
+
+
 def _bands(lmax, n=6):
     """Logarithmic multipole bands covering [2, lmax], for the printed diagnostics."""
     edges = np.unique(np.round(np.geomspace(2, lmax + 1, n + 1)).astype(int))
     return list(zip(edges[:-1], edges[1:], strict=False))
 
 
-def plot_initial_conditions(model, truth, positions, out_path, chain=0):
+def plot_initial_conditions(model, truth, positions, out_path, chain=0, fixed=None):
     """True vs reconstructed initial conditions, their difference, and the reconstruction quality.
 
     One posterior sample, never a mean over chains: averaging independent samples suppresses the
@@ -261,7 +281,9 @@ def plot_initial_conditions(model, truth, positions, out_path, chain=0):
     shape = tuple(int(s) for s in model.init_shape)
     true_k = jnp.asarray(truth["init_mesh"])
 
-    rec_k = [model.reparam({k: jnp.asarray(np.asarray(v)[c]) for k, v in positions.items()})["init_mesh"]
+    fixed = fixed or {}
+    rec_k = [model.reparam({k: jnp.asarray(np.asarray(v)[c]) for k, v in positions.items()}
+                           | fixed)["init_mesh"]
              for c in range(n_chains)]
     if tuple(np.shape(true_k)) != tuple(np.shape(rec_k[chain])):
         print(f"truth init_mesh {np.shape(true_k)} and the sampled field "
@@ -377,8 +399,13 @@ def plot_initial_conditions(model, truth, positions, out_path, chain=0):
         print(f"  {c - half:5.0f}-{c + half:5.0f} {q_ / t_:9.2f} {r_:9.3f} {rr_:10.3f}{inside}")
 
 
-def plot_kappa_maps(model, truth, positions, out_path, chain=0):
+def plot_kappa_maps(model, truth, positions, out_path, chain=0, fixed=None, truth_has_los=False,
+                    kappa_samples=None):
     """Observed convergence, the model's convergence, and the model error, with their spectra.
+
+    ``kappa_samples`` (n_samples, n_obs), the kappa_obs observable recorded per batch and chain by
+    run_inference.py, gives the posterior mean and the per-pixel posterior spread
+    (``kappa_posterior_mean.png``); without it the mean is over the final states of the chains.
 
     Everything is shown in the band the likelihood actually uses (l <= 2*cmb_nside, at cmb_nside),
     so this is the reconstruction as the inference sees it, not a prettier high-resolution version
@@ -403,22 +430,32 @@ def plot_kappa_maps(model, truth, positions, out_path, chain=0):
     if kappa_obs is not None and kappa_obs.shape != kappa_true.shape:
         kappa_obs = None
 
-    pos = {k: jnp.asarray(np.asarray(v)[chain]) for k, v in positions.items()}
-    model.reset()
-    k_model = np.asarray(model.predict(samples=pos, hide_det=False, hide_base=True,
-                                       frombase=False, rng=0)["kappa_pred"])
-
     def to_band(m):
         """Mask, band-limit to the likelihood's band and resynthesise at the observable nside."""
         w = proj_mask if m.size == proj_mask.size else mask
         return hp.alm2map(hp.map2alm(np.asarray(m) * w, lmax=lmax), nside)
 
-    true_b, model_b = to_band(kappa_true), to_band(k_model)
+    n_chains = int(np.shape(next(iter(positions.values())))[0])
+    model_bs = []
+    for c in range(n_chains):
+        pos = {k: jnp.asarray(np.asarray(v)[c]) for k, v in positions.items()} | (fixed or {})
+        model.reset()
+        k_model = model.predict(samples=pos, hide_det=False, hide_base=True, frombase=False,
+                                rng=0)["kappa_pred"]
+        model_bs.append(to_band(np.asarray(k_model)))
+
+    true_b, model_b = to_band(kappa_true), model_bs[chain]
+    mean_b = np.mean(model_bs, axis=0)
+    n_post = 0
+    if kappa_samples is not None and len(kappa_samples) > 1:
+        post_maps = np.stack([np.asarray(model.unpack_kappa_obs_to_map(v)) for v in kappa_samples])
+        n_post = len(post_maps)
+        mean_b, std_b = post_maps.mean(0), post_maps.std(0)
     error_b = true_b - model_b
     noise_b = to_band(kappa_obs - kappa_true) if kappa_obs is not None else None
 
-    def cl(m):
-        return hp.anafast(m, lmax=lmax) / f_sky
+    def cl(m, m2=None):
+        return hp.anafast(m, m2, lmax=lmax) / f_sky
 
     cl_tt, cl_mm, cl_err = cl(true_b), cl(model_b), cl(error_b)
 
@@ -426,20 +463,76 @@ def plot_kappa_maps(model, truth, positions, out_path, chain=0):
     assumed = None
     if getattr(model, "cmb_M_ll", None) is not None:
         total = np.asarray(model.nell_1d)
+        los = np.zeros_like(total)
         if getattr(model, "cl_high_z_cached", None) is not None:
-            total = total + np.asarray(model.cl_high_z_cached)
-        assumed = np.asarray(model.cmb_M_ll) @ total
+            los = np.asarray(model.cl_high_z_cached)
+        assumed = np.asarray(model.cmb_M_ll) @ (total + los)
+        los = np.asarray(model.cmb_M_ll) @ los
 
-    fig = plt.figure(figsize=(22, 5.2))
+    # Harmonic coherence r_l = C_tm / sqrt(C_tt C_mm), in linear l bins. Expected values for a correct
+    # Gaussian posterior: the model generates S_m, the likelihood treats N_a (noise + line of sight)
+    # as noise, W = S_m/(S_m + N_a). Two samples share W*S_m, so they agree at r = W. The truth is
+    # S_t = S_m + L when it holds matter the model does not generate (the line of sight L of an
+    # external map), and a sample then reaches r = W*sqrt(S_t/S_m) with it; in closure L = 0.
+    edges = np.unique(np.append(np.arange(2, lmax + 1, 4), lmax + 1))
+
+    def coherence(a, b):
+        cab, caa, cbb = cl(a, b), cl(a), cl(b)
+        return np.array([cab[lo:hi].sum() / np.sqrt(caa[lo:hi].sum() * cbb[lo:hi].sum())
+                         for lo, hi in zip(edges[:-1], edges[1:], strict=False)])
+
+    ell_bin = 0.5 * (edges[:-1] + edges[1:] - 1)
+    r_sample = [coherence(true_b, m) for m in model_bs]
+    r_mean = coherence(true_b, mean_b)
+    mean_label = (f"posterior mean ({n_post} samples) vs truth" if n_post
+                  else f"mean of the {n_chains} chains vs truth")
+    r_chains = (np.mean([coherence(model_bs[i], model_bs[j]) for i in range(n_chains)
+                         for j in range(i + 1, n_chains)], axis=0) if n_chains > 1 else None)
+    exp_truth = exp_chains = None
+    if assumed is not None:
+        def binned(x):
+            return np.array([np.asarray(x)[lo:hi].sum()
+                             for lo, hi in zip(edges[:-1], edges[1:], strict=False)])
+        s_t = binned(cl_tt)
+        s_m = np.maximum(s_t - (binned(los) if truth_has_los else 0.0), 1e-30)
+        exp_chains = s_m / (s_m + binned(assumed))
+        exp_truth = exp_chains * np.sqrt(s_t / s_m)
+        exp_mean = np.sqrt(exp_chains * s_t / s_m)
+
+    fig = plt.figure(figsize=(27, 5.2))
     vmax = float(np.percentile(np.abs(true_b), 99)) / sigma
     for i, (m, title) in enumerate((
         (true_b, "Observed κ (truth, noiseless)"),
         (model_b, f"Model κ (one posterior sample, chain {chain})"),
         (error_b, "Model error = truth − model"),
     )):
-        hp.mollview(m / sigma, sub=(1, 4, i + 1), title=title, min=-vmax, max=vmax,
+        hp.mollview(m / sigma, sub=(1, 5, i + 1), title=title, min=-vmax, max=vmax,
                     cmap="RdBu_r", unit=r"$\kappa/\sigma_{\rm hp}$", fig=fig.number)
-    ax = fig.add_subplot(1, 4, 4)
+
+    ax = fig.add_subplot(1, 5, 5)
+    for c, r in enumerate(r_sample):
+        ax.plot(ell_bin, r, color="C0", alpha=1.0 if c == chain else 0.35, lw=1.5 if c == chain else 1,
+                label="one sample vs truth (each chain)" if c == 0 else None)
+    ax.plot(ell_bin, r_mean, color="C1", lw=2, label=mean_label)
+    if r_chains is not None:
+        ax.plot(ell_bin, r_chains, color="C3", ls="--", label="agreement between chains")
+    if exp_truth is not None:
+        ax.plot(ell_bin, exp_truth, color="k", ls=":", lw=2,
+                label="expected, sample vs truth (correct model)")
+        ax.plot(ell_bin, exp_chains, color="C3", ls=":", lw=2,
+                label="expected, between chains (correct model)")
+        if n_post:
+            ax.plot(ell_bin, exp_mean, color="C1", ls=":", lw=2,
+                    label="expected, posterior mean vs truth (correct model)")
+    ax.axhline(0, color="k", lw=0.6)
+    ax.set_ylim(-0.2, 1.0)
+    ax.set_xlabel(r"$\ell$")
+    ax.set_ylabel(r"$r_\ell = C_\ell^{tm}/\sqrt{C_\ell^{tt}C_\ell^{mm}}$")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+    ax.set_title("Harmonic coherence with the truth", fontsize=11)
+
+    ax = fig.add_subplot(1, 5, 4)
     ell = np.arange(len(cl_tt))
     curves = [(cl_tt, "truth κ", {"color": "k"}), (cl_mm, "model κ", {"color": "C0"}),
               (cl_err, "model error", {"color": "C3", "lw": 2})]
@@ -472,20 +565,94 @@ def plot_kappa_maps(model, truth, positions, out_path, chain=0):
     for name, y in ratios:
         v = [np.asarray(y)[(ell >= a) & (ell < b)].mean() for a, b in bands]
         print(f"  {name:>32}" + "".join(f"  {x:8.2f}" for x in v))
+    print(f"  harmonic coherence r_l with the truth, in l bins of 4 (l = {int(ell_bin[0])} ... "
+          f"{int(ell_bin[-1])}):")
+    rows = [(f"sample, chain {c}", r) for c, r in enumerate(r_sample)]
+    rows.append((f"posterior mean ({n_post})" if n_post else f"mean of {n_chains} chains", r_mean))
+    if r_chains is not None:
+        rows.append(("between chains", r_chains))
+    if exp_truth is not None:
+        rows.append(("expected vs truth", exp_truth))
+        rows.append(("expected between", exp_chains))
+        if n_post:
+            rows.append(("expected mean", exp_mean))
+    for name, y in rows:
+        print(f"  {name:>20}" + "".join(f" {x:5.2f}" for x in y))
+
+    if n_post:
+        _plot_kappa_posterior_mean(true_b, mean_b, std_b, n_post, sigma, lmax, nside,
+                                   Path(out_path).with_name("kappa_posterior_mean.png"))
+    return {"ell": ell_bin, "r_sample": np.asarray(r_sample), "r_mean": r_mean,
+            "r_chains": r_chains, "exp_truth": exp_truth, "exp_chains": exp_chains}
 
 
-def plot_field_reconstruction(run_dir, model, fig_dir):
-    """Both field-level figures, from the final sampler state."""
+def _plot_kappa_posterior_mean(true_b, mean_b, std_b, n_post, sigma, lmax, nside, out_path):
+    """Truth, posterior mean, per-pixel posterior spread and the normalised residual. The mean is
+    the best estimate of the map but has less power than the truth where the data are weak; the
+    spread says where. Only l >= 2 is recorded, so the truth is shown without its monopole and
+    dipole as well."""
+    alm = hp.map2alm(true_b, lmax=lmax)
+    for ell in (0, 1):
+        for m in range(ell + 1):
+            alm[hp.Alm.getidx(lmax, ell, m)] = 0.0
+    true_l2 = hp.alm2map(alm, nside)
+    resid = (true_l2 - mean_b) / np.maximum(std_b, 1e-30)
+    fig = plt.figure(figsize=(22, 5.2))
+    vmax = float(np.percentile(np.abs(true_l2), 99)) / sigma
+    for i, (m, title, lim, cmap, unit) in enumerate((
+        (true_l2 / sigma, "Observed κ (truth, noiseless)", vmax, "RdBu_r", r"$\kappa/\sigma_{\rm hp}$"),
+        (mean_b / sigma, f"Posterior mean ({n_post} samples)", vmax, "RdBu_r", r"$\kappa/\sigma_{\rm hp}$"),
+        (std_b / sigma, "Posterior standard deviation per pixel", None, "viridis",
+         r"$\kappa/\sigma_{\rm hp}$"),
+        (resid, "(truth − mean) / posterior std", 3.0, "RdBu_r", "σ"),
+    )):
+        kw = {"min": -lim, "max": lim} if lim is not None else {}
+        hp.mollview(m, sub=(1, 4, i + 1), title=title, cmap=cmap, unit=unit, fig=fig.number, **kw)
+    fig.suptitle(f"CMB lensing posterior — {Path(out_path).parent.parent.name}, l = 2 ... {lmax} "
+                 f"at nside {nside}", fontsize=11)
+    fig.savefig(out_path, dpi=130, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {out_path}")
+    print(f"  posterior mean rms / truth rms {mean_b.std() / true_l2.std():.2f}; mean posterior std / "
+          f"truth rms {std_b.mean() / true_l2.std():.2f}; rms of (truth - mean)/std {resid.std():.2f}")
+
+
+def _load_kappa_samples(run_dir, burn_in=0.0, exclude_chains=None):
+    """The kappa_obs observable run_inference.py records per batch and chain, after burn-in, as
+    (n_samples, n_obs); None for runs that predate it or have no CMB lensing."""
+    files = sorted((Path(run_dir) / "config").glob("kappa_batch_*.npz"),
+                   key=lambda p: int(p.stem.split("_")[-1]))
+    if not files:
+        return None
+    files = files[int(len(files) * burn_in):]
+    stack = np.stack([np.load(f)["kappa_obs"] for f in files])      # (batches, chains, n_obs)
+    keep = [c for c in range(stack.shape[1]) if c not in (exclude_chains or [])]
+    return stack[:, keep].reshape(-1, stack.shape[-1])
+
+
+def plot_field_reconstruction(run_dir, model, fig_dir, burn_in=0.0, exclude_chains=None):
+    """Both field-level figures, from the final sampler state (and, for the convergence, from
+    the maps recorded per batch when the run has them)."""
     positions, truth = _load_field_state(run_dir)
     if positions is None:
         return
     restore_model_state_from_truth(model, truth)
+    fixed = _fixed_latents(run_dir, model)
     print("\n" + "=" * 40)
     print("FIELD RECONSTRUCTION")
     print("=" * 40)
-    plot_initial_conditions(model, truth, positions, Path(fig_dir) / "initial_conditions.png")
+    if fixed:
+        print(f"Fixed latents (held by the run, not in the sampler state): "
+              f"{ {k: float(v) for k, v in fixed.items()} }")
+    plot_initial_conditions(model, truth, positions, Path(fig_dir) / "initial_conditions.png",
+                            fixed=fixed)
     if model.cmb_enabled:
-        plot_kappa_maps(model, truth, positions, Path(fig_dir) / "kappa_reconstruction.png")
+        cfg = utils.yload(Path(run_dir) / "config" / "config.yaml")
+        external = (ObservationMode.validate(cfg.get("observation_mode", "closure"))
+                    != ObservationMode.CLOSURE)
+        plot_kappa_maps(model, truth, positions, Path(fig_dir) / "kappa_reconstruction.png",
+                        fixed=fixed, truth_has_los=external,
+                        kappa_samples=_load_kappa_samples(run_dir, burn_in, exclude_chains))
 
 
 def analyze_run(run_dir, burn_in=0.0, exclude_chains=None, output_subdir=None, field_plots=True):
@@ -522,6 +689,13 @@ def analyze_run(run_dir, burn_in=0.0, exclude_chains=None, output_subdir=None, f
     physical_samples = data["physical_samples"]
     truth_vals = data["truth_vals"]
     available_params = data["available_params"]
+
+    if not available_params:
+        print("\nNo sampled scalar parameter: skipping diagnostics, traces and corner plot.")
+        if field_plots:
+            plot_field_reconstruction(run_dir, data["model"], fig_dir, burn_in, exclude_chains)
+        print(f"✓ Analysis complete. Figures in {fig_dir}")
+        return
 
     # 5. Diagnostics & Plotting
     print("\n" + "="*40)
@@ -592,7 +766,7 @@ def analyze_run(run_dir, burn_in=0.0, exclude_chains=None, output_subdir=None, f
         print("GetDist not installed, skipping corner plot.")
 
     if field_plots:
-        plot_field_reconstruction(run_dir, data["model"], fig_dir)
+        plot_field_reconstruction(run_dir, data["model"], fig_dir, burn_in, exclude_chains)
 
     print(f"✓ Analysis complete. Figures in {fig_dir}")
 

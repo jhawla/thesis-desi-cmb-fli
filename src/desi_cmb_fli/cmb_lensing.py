@@ -633,6 +633,25 @@ def compute_theoretical_cl_kappa_windowed(
     return jax.vmap(get_cl_per_ell)(jnp.asarray(ell, dtype=float))
 
 
+def kappa_radial_window(r_shells, d_r, shell_weights="nearest", support=None, n_per_shell=40):
+    """Radial weight with which the Born projector holds the matter at each distance: 1 inside a
+    shell for ``nearest``, the sum of the tents for ``linear`` (1 between the first and last apex,
+    ramping to 0 over one ``d_r`` at each end), times the angular support of each shell. Returns
+    ``(chi, w)`` on a grid fine enough to resolve the ramps."""
+    r = np.asarray(r_shells, dtype=float)
+    h = np.broadcast_to(np.asarray(d_r, dtype=float), r.shape)
+    s = np.ones_like(r) if support is None else np.asarray(support, dtype=float)
+    reach = h if shell_weights == "linear" else 0.5 * h
+    chi = np.linspace(float(np.min(r - reach)), float(np.max(r + reach)), n_per_shell * r.size)
+    w = np.zeros_like(chi)
+    for ri, hi, si in zip(r, h, s, strict=True):
+        if shell_weights == "linear":
+            w += si * np.clip(1.0 - np.abs(chi - ri) / hi, 0.0, None)
+        else:
+            w += si * ((chi >= ri - 0.5 * hi) & (chi < ri + 0.5 * hi))
+    return chi, w
+
+
 def _galaxy_kernel(chi, chi_min, chi_max, nz):
     """Normalised radial galaxy kernel on ``chi``: uniform on [chi_min, chi_max], or dN/dchi."""
     if nz is None:
@@ -666,13 +685,22 @@ def compute_theoretical_cl_gg(
 
 
 def compute_theoretical_cl_kg(
-    cosmo, ell, chi_min, chi_max, z_source, b1, n_steps=100, bias_of_a=None, k_nyq=None, nz=None
+    cosmo, ell, chi_min, chi_max, z_source, b1, n_steps=100, bias_of_a=None, k_nyq=None, nz=None,
+    kappa_window=None,
 ):
-    """C_ell^{kappa g} cross-spectrum via Limber; ``nz`` and ``k_nyq`` as for C_ell^{gg}."""
+    """C_ell^{kappa g} cross-spectrum via Limber; ``nz`` and ``k_nyq`` as for C_ell^{gg}.
+
+    ``kappa_window = (chi, w)`` multiplies the lensing kernel by the radial weight with which the
+    convergence map holds the matter at each distance (``kappa_radial_window``); without it the
+    map is assumed to hold all the matter the galaxies trace.
+    """
     chi_s = jc.background.radial_comoving_distance(cosmo, 1.0 / (1.0 + z_source))[0]
     chi = jnp.linspace(chi_min, chi_max, n_steps)
     a = jc.background.a_of_chi(cosmo, chi)
     w_kappa = lensing_kernel(cosmo, chi, a, chi_s)
+    if kappa_window is not None:
+        w_kappa = w_kappa * jnp.interp(chi, jnp.asarray(kappa_window[0]),
+                                       jnp.asarray(kappa_window[1]), left=0.0, right=0.0)
     bias = jnp.ones_like(a) * b1 if bias_of_a is None else bias_of_a(a)
     w_g = bias * _galaxy_kernel(chi, chi_min, chi_max, nz)
 

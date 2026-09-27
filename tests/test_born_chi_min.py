@@ -54,6 +54,53 @@ def test_shells_tile_chi_min_to_chi_boundary_and_low_z_cl_enters_the_covariance(
     assert np.all(extra[2:] > 0)
 
 
+def test_low_z_covariance_starts_where_the_observed_matter_starts():
+    """A simulated map with no matter below chi_low_z_min: the low-z term is the Limber C_l of
+    [chi_low_z_min, chi_min] only, and nothing when the map starts beyond chi_min."""
+    from desi_cmb_fli.bricks import get_cosmology
+    from desi_cmb_fli.cmb_lensing import compute_theoretical_cl_kappa
+
+    high_z_only = np.asarray(FieldLevelModel(**_cfg()).cl_high_z_cached)
+    for start, model_kw in ((1.0, {}), (25.0, {"chi_low_z_min": 25.0})):
+        m = FieldLevelModel(**_cfg(cmb_chi_min=60.0, **model_kw))
+        assert m.low_z_matter_start == start
+        low_z = np.asarray(compute_theoretical_cl_kappa(get_cosmology(**m.loc_fid), m.ell_1d,
+                                                        start, 60.0, m.cmb_z_source))
+        np.testing.assert_allclose(np.asarray(m.cl_high_z_cached)[2:],
+                                   (high_z_only + low_z)[2:], rtol=1e-6)
+    beyond = FieldLevelModel(**_cfg(cmb_chi_min=60.0, chi_low_z_min=80.0))
+    np.testing.assert_allclose(np.asarray(beyond.cl_high_z_cached), high_z_only, rtol=1e-10)
+
+
+def test_the_kappa_radial_window_is_one_inside_and_ramps_at_the_ends():
+    from desi_cmb_fli.cmb_lensing import kappa_radial_window
+
+    r = np.array([100.0, 150.0, 200.0])
+    chi, w = kappa_radial_window(r, 50.0, "linear")
+    inside = (chi >= r[0]) & (chi <= r[-1])
+    np.testing.assert_allclose(w[inside], 1.0, atol=1e-12)
+    np.testing.assert_allclose(np.interp([75.0, 225.0], chi, w), 0.5, atol=1e-3)
+    chi, w = kappa_radial_window(r, 50.0, "nearest", support=[1.0, 0.5, 1.0])
+    np.testing.assert_allclose(np.interp([110.0, 150.0, 190.0], chi, w), [1.0, 0.5, 1.0])
+
+
+def test_the_kappa_window_removes_only_the_matter_the_map_does_not_hold():
+    from desi_cmb_fli.bricks import get_cosmology
+    from desi_cmb_fli.cmb_lensing import compute_theoretical_cl_kg
+
+    cosmo, ell = get_cosmology(), jnp.array([10.0, 50.0])
+    g = np.linspace(1000.0, 2000.0, 200)
+    args = (cosmo, ell, 1000.0, 2000.0, 1100.0, 2.0)
+    ref = np.asarray(compute_theoretical_cl_kg(*args, nz=(g, np.ones_like(g))))
+    covering = (np.array([500.0, 3000.0]), np.ones(2))
+    np.testing.assert_allclose(
+        np.asarray(compute_theoretical_cl_kg(*args, nz=(g, np.ones_like(g)),
+                                             kappa_window=covering)), ref, rtol=1e-10)
+    half = (np.array([500.0, 1499.9, 1500.0, 3000.0]), np.array([0.0, 0.0, 1.0, 1.0]))
+    cut = np.asarray(compute_theoretical_cl_kg(*args, nz=(g, np.ones_like(g)), kappa_window=half))
+    assert np.all((cut > 0.2 * ref) & (cut < 0.8 * ref))
+
+
 def test_chi_min_requires_the_los_correction():
     with pytest.raises(ValueError, match="full_los_correction"):
         FieldLevelModel(**_cfg(cmb_chi_min=60.0, full_los_correction=False))

@@ -1,0 +1,143 @@
+slurm:
+  job_name: kappaonly_abacushuge_Nl1p0
+  account: desi
+  qos: regular
+  constraint: gpu
+  nodes: 1
+  gpus: 4
+  time: '11:00:00'
+model:
+  cell_size: 93.75
+  box_shape:
+  - 7500.0
+  - 7500.0
+  - 7500.0
+  galaxies_enabled: false
+  gxy_stoch_noise: false
+  gxy_ngbar_free: false
+  lightcone: true
+  a_obs: null
+  curved_sky: true
+  evolution: lpt
+  lpt_order: 2
+  precond: kaiser
+  init_oversamp: 1.5
+  evol_oversamp: 1.75
+  ptcl_oversamp: 1.75
+  paint_oversamp: 1.75
+  gxy_density: 0.000843318125
+  png_type: fNL
+cmb_lensing:
+  enabled: true
+  z_source: 1089.28
+  nside: 32
+  n_shells: 32
+  chi_min: 350
+  shell_weights: linear
+  proj_oversamp: 2
+  cmb_noise_nell: /global/homes/j/jhawla/thesis-desi-cmb-fli/data/N_L_kk_act_dr6_lensing_v1_baseline.txt
+  cmb_noise_scaling: 1.0
+  full_los_correction: true
+  high_z_mode: fixed
+  likelihood_mode: diagonal
+  kl_rcond: 1e-2
+  chi_high_z_max: 3942
+  observer_mode: center
+truth_params:
+  Omega_m: 0.315192
+  sigma8: 0.811355
+  b1: 1.15
+  b2: 0.0
+  bs2: 0.0
+  bn2: 0.0
+  fNL: 0.0
+latents:
+  fNL:
+    loc: 0.0
+    scale: 10000.0
+    scale_fid: 1000.0
+    loc_fid: 0.0
+  fNL_bp:
+    loc: 0.0
+    scale: 10000.0
+    scale_fid: 30.0
+    loc_fid: 0.0
+  fNL_bpd:
+    loc: 0.0
+    scale: 10000.0
+    scale_fid: 300.0
+    loc_fid: 0.0
+  Omega_m:
+    loc: 0.315192
+    scale: 0.15
+    scale_fid: 0.05
+    loc_fid: 0.315192
+    low: 0.1
+    high: 0.6
+  sigma8:
+    loc: 0.811355
+    scale: 0.15
+    scale_fid: 0.05
+    loc_fid: 0.811355
+    low: 0.5
+    high: 1.2
+  b1:
+    loc: 1.15
+    scale: 100.0
+    scale_fid: 0.01
+    loc_fid: 1.15
+  b2:
+    loc: 0.0
+    scale: 100.0
+    scale_fid: 0.03
+    loc_fid: 0.0
+  bs2:
+    loc: 0.0
+    scale: 100.0
+    scale_fid: 0.1
+    loc_fid: 0.0
+  bn2:
+    loc: 0.0
+    scale: 1000.0
+    scale_fid: 1.0
+    loc_fid: 0.0
+  bnpar:
+    loc: 0.0
+    scale: 100.0
+    scale_fid: 1.0
+    loc_fid: 0.0
+mcmc:
+  num_warmup: 8192
+  fixed_params:
+  - Omega_m
+  - sigma8
+  num_samples: 50
+  num_batches: 140
+  num_chains: 4
+  save_large_fields: false
+  mesh_desired_energy_var: 1.0e-05
+  mclmc:
+    desired_energy_var: 1.0e-07
+    diagonal_preconditioning: true
+    thinning: 5
+observation_mode: abacus
+abacus_truth_params:
+  Omega_m: 0.315192
+  sigma8: 0.811355
+  fNL: 0.0
+  fNL_bp: 0.0
+  fNL_bpd: 0.0
+abacus_kappa:
+  file: /global/cfs/cdirs/desi/cosmosim/AbacusLensing/v1/AbacusSummit_huge_c000_ph201/kappa_00045.asdf
+  noise_seed: 6482
+abacus_galaxy:
+  file: /global/cfs/projectdirs/desi/mocks/cai/abacus_HF_lightcones/DR2/mock_catalogs/lrg_huge/LRG_AbacusSummit_huge_c000_ph201_base_cmaes_opt_0_fit_DESI_nz_data.fits
+  randoms: /global/cfs/projectdirs/desi/mocks/cai/abacus_HF_lightcones/DR2/mock_catalogs/lrg_huge/LRG_AbacusSummit_huge_c000_ph201_base_cmaes_opt_0_fit_DESI_nz_randoms_100x.fits
+  z_range:
+  - 0.4
+  - 1.1
+  randoms_chunk_rows: 50000000
+  completeness_min: 0.3
+abacus_ic:
+  file: /global/cfs/cdirs/desi/public/cosmosim/AbacusSummit/ic/AbacusSummit_huge_c000_ph201/ic_dens_N576.asdf
+seed: 77

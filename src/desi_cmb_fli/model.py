@@ -289,6 +289,7 @@ def get_model_from_config(config_or_path):
         model_config["cmb_mask"] = cmb_cfg.get("mask", None)
         model_config["full_los_correction"] = cmb_cfg.get("full_los_correction", False)
         model_config["chi_high_z_max"] = cmb_cfg.get("chi_high_z_max", None)  # None = integrate to chi_CMB
+        model_config["chi_low_z_min"] = cmb_cfg.get("chi_low_z_min", None)  # None = from the observer
         model_config["cmb_z_source"] = float(cmb_cfg.get("z_source", 1100.0))
         model_config["cmb_lensing_obs"] = None # Will be set via conditioning if needed
 
@@ -463,6 +464,14 @@ class Model:
             rng = jr.split(rng, shape)
             return nvmap(single_prediction, len(shape))(rng, samples)
 
+    def kappa_observable(self, latents):
+        """The kappa_obs observable (packed a_lm, or KL amplitudes) the model predicts at a point of
+        the sampled space. ``latents`` must hold every scalar latent, the fixed ones included: those
+        missing would be drawn from their priors. Traces the unconditioned model, so it can run
+        while ``self.model`` is conditioned for sampling."""
+        tr = trace(seed(condition(self._model, data=latents), rng_seed=0)).get_trace()
+        return self.pack_kappa_obs(tr["kappa_pred"]["value"])
+
     ############
     # Wrappers #
     ############
@@ -592,6 +601,9 @@ class FieldLevelModel(Model):
     cmb_chi_min : float
         Comoving distance where the Born integration starts (default 0). The
         C_ell of the dropped range is added to the covariance at fiducial.
+    chi_low_z_min : float or None
+        Comoving distance where the matter of the observed map starts (default None: the
+        observer). The low-z covariance term covers [chi_low_z_min, cmb_chi_min] only.
     cmb_shell_weights : str
         Radial shell assignment of the particles, 'nearest' or 'linear'.
     cmb_proj_oversamp : int
@@ -645,6 +657,7 @@ class FieldLevelModel(Model):
 
     full_los_correction: bool = field(default=False)  # Enable high-z kappa correction
     chi_high_z_max: float | None = field(default=None)  # Upper chi limit for high-z correction (None = chi_CMB)
+    chi_low_z_min: float | None = field(default=None)  # Lower chi of the matter in the observed map (None = 0)
     high_z_mode: str = field(default="taylor")  # 'fixed', 'taylor', 'exact'
     cmb_likelihood_mode: str = field(default=default_config["cmb_likelihood_mode"])  # 'diagonal' | 'pixel_exact'
     cmb_kl_rcond: float = field(default=default_config["cmb_kl_rcond"])  # pixel_exact KL eigenmode cutoff
@@ -987,14 +1000,15 @@ class FieldLevelModel(Model):
                         f"  Cached C_l^{{high-z}} at fiducial "
                         f"(mode={self.high_z_mode}, chi={self.chi_boundary:.0f}->{chi_high_z_upper:.0f} Mpc/h)"
                     )
-                    if chi_min > 0.0:
+                    low_z_from = self.low_z_matter_start
+                    if chi_min > low_z_from:
                         cl_low_z = compute_theoretical_cl_kappa(
-                            cosmo_fid, self.ell_1d, 1.0, chi_min, self.cmb_z_source
+                            cosmo_fid, self.ell_1d, low_z_from, chi_min, self.cmb_z_source
                         )
                         self.cl_high_z_cached = self.cl_high_z_cached + cl_low_z
                         print(
-                            f"  Added C_l^{{low-z}} at fiducial (chi=1->{chi_min:.0f} Mpc/h) to the "
-                            "cached LOS correction"
+                            f"  Added C_l^{{low-z}} at fiducial (chi={low_z_from:.0f}->{chi_min:.0f} "
+                            "Mpc/h) to the cached LOS correction"
                         )
                 elif chi_min > 0.0:
                     raise ValueError(
@@ -1406,6 +1420,9 @@ class FieldLevelModel(Model):
                 cosmology, a_initial, pos_initial, _bshape, **bias_w, init_mesh=init_mesh_evol_grid,
                 fNL_bp=fNL_bp, fNL_bpd=fNL_bpd, png_type=self.png_type,
             )
+            # Exposed with rsd_pos for the particle-level galaxy map of the diagnostics; like
+            # matter_mesh it only materialises under predict().
+            lbe_weights = deterministic("gxy_weights", lbe_weights)
 
             # Finger-of-God velocity term (b_nabla_parallel): full grad(delta) 3-vector at the
             # initial positions; projected onto the observer-dependent per-particle LOS in rsd().
@@ -1621,6 +1638,14 @@ class FieldLevelModel(Model):
         return jnp.real(
             jhp.alm2map(alm, nside=self.cmb_nside, lmax=self.cmb_lmax, pol=False, healpy_ordering=True)
         )
+
+    @property
+    def low_z_matter_start(self):
+        """Comoving distance where the matter of the observed convergence map starts: the
+        observer for real data, the end of the light cone for a simulation that stops before z=0
+        (``cmb_lensing.chi_low_z_min``). The low-z covariance term and the kappa theory start here.
+        1 Mpc/h rather than 0 keeps the Limber integrand finite."""
+        return max(1.0, float(self.chi_low_z_min or 0.0))
 
     def reparam(self, params: dict, fourier=True, inv=False, temp=1.0):
         """

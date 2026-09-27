@@ -187,7 +187,9 @@ else:
             geom = load_abacus_galaxy_observation(abacus_gxy_cfg=abacus_gxy_cfg, model=model)
             dscale = float(cfg.get("closure_gxy_density_scale", 1.0))
             model.gxy_count = float(model.gxy_count) * dscale
-            closure_geom_keys = {k: v for k, v in geom.items() if k != "obs"}
+            # Geometry only: the catalogue's own maps must not stand in for the closure data.
+            closure_geom_keys = {k: v for k, v in geom.items()
+                                 if k not in ("obs", "gxy_hp_counts", "mesh_plain")}
             print(
                 f"[Closure test] Survey geometry from Abacus randoms; "
                 f"gxy_count = {model.gxy_count:.6g} (catalog n̄ x {dscale})"
@@ -638,6 +640,15 @@ print()
 
 
 
+# The field is not kept per sample, so the posterior of the convergence map is recorded here: once
+# per batch and chain, the kappa_obs observable (packed a_lm, or KL amplitudes) of the current state.
+kappa_fn = None
+if cmb_enabled:
+    fixed_latents = {k: v for k, v in model.reparam(fixed_dict, inv=True).items()
+                     if k in fixed_latent_keys} if fixed_dict else {}
+
+    kappa_fn = pmap(jit(lambda position: model.kappa_observable({**position, **fixed_latents})))
+
 # Storage
 samples_scalars = {}  # For small parameters (scalars)
 param_names = None
@@ -710,6 +721,10 @@ for batch_idx in range(start_batch, num_batches):
     # Save batch to disk
     batch_content = {**batch_scalars, **batch_large}
     jnp.savez(config_dir / f"samples_batch_{batch_idx}.npz", **batch_content)
+
+    if kappa_fn is not None:
+        jnp.savez(config_dir / f"kappa_batch_{batch_idx}.npz",
+                  kappa_obs=jax.device_get(kappa_fn(state.position)))
 
     # Save sampler state for resume
     with open(config_dir / "sampler_state.pkl", "wb") as f:

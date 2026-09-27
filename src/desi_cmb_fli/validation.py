@@ -15,6 +15,7 @@ from desi_cmb_fli.cmb_lensing import (
     compute_theoretical_cl_kappa,
     compute_theoretical_cl_kappa_windowed,
     compute_theoretical_cl_kg,
+    kappa_radial_window,
     project_mesh_to_healpix,
 )
 from desi_cmb_fli.metrics import bin_cl_log, get_cl_healpix, masked_healpix_to_full
@@ -710,10 +711,13 @@ def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
 
     * kappa-kappa, closure: the model's Born shells, chi_min to chi_boundary, with k_perp below the
       init-grid Nyquist -- the inferred linear field has no power above it.
-    * kappa-kappa, abacus: the whole line of sight to ``chi_high_z_max`` at full resolution, times
+    * kappa-kappa, abacus: the line of sight from ``low_z_matter_start`` to ``chi_high_z_max`` at
+      full resolution, times
       the pixel window of the ud_grade that brings the simulation map to ``cmb_nside``.
     * gg and kappa-g: the survey's dN/dchi (``gxy_kernel``), constant Eulerian bias ``bE``,
-      nonlinear P(k); the same k cut in closure, none on data.
+      nonlinear P(k); the same k cut in closure, none on data. In closure kappa-g also carries the
+      radial window of the Born shells (``kappa_radial_window``): where ``chi_min`` cuts into the
+      galaxies, the model map does not hold their matter.
     """
     import healpy as hp
 
@@ -724,6 +728,7 @@ def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
         k_cut = float(np.pi / np.max(init_cell))
     out = {"cl_kk": None, "cl_gg": None, "cl_kg": None, "k_cut": k_cut}
 
+    kappa_window = None
     if model.cmb_enabled:
         z_source = model.cmb_z_source
         if observation_mode == "closure":
@@ -731,6 +736,8 @@ def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
                 model.observer_position, model.box_shape, model.cmb_nside,
                 model.cmb_r_shells, model.cmb_d_r, final_mask=model.cmb_mask,
             )
+            kappa_window = kappa_radial_window(model.cmb_r_shells, model.cmb_d_r,
+                                               model.cmb_shell_weights, support)
             out["cl_kk"] = np.asarray(compute_theoretical_cl_kappa_windowed(
                 cosmo_val, ell_j, model.cmb_r_shells, model.cmb_a_shells, model.cmb_d_r,
                 z_source, shell_weights=support, k_nyq=k_cut,
@@ -738,7 +745,7 @@ def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
         else:
             wpix = hp.pixwin(int(model.cmb_nside), lmax=int(np.ceil(np.max(ell_theory))) + 1)
             out["cl_kk"] = np.asarray(compute_theoretical_cl_kappa(
-                cosmo_val, ell_j, 1.0, float(model.chi_high_z_max), z_source,
+                cosmo_val, ell_j, model.low_z_matter_start, float(model.chi_high_z_max), z_source,
             )) * np.interp(ell_theory, np.arange(wpix.size), wpix) ** 2
 
     if has_galaxies and gxy_kernel is not None:
@@ -750,7 +757,7 @@ def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
         if model.cmb_enabled:
             out["cl_kg"] = np.asarray(compute_theoretical_cl_kg(
                 cosmo_val, ell_j, chi0, chi1, model.cmb_z_source, bE, n_steps=400,
-                k_nyq=k_cut, nz=(r, nz)))
+                k_nyq=k_cut, nz=(r, nz), kappa_window=kappa_window))
     return out
 
 
