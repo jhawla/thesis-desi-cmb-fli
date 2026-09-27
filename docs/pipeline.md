@@ -996,6 +996,14 @@ No Born shell lies below `chi_min`, so κ does not see the field there. At 0–6
 state gives rms rec/true 1.50, 1.09, 0.99, r(truth) 0.39, 0.24, 0.10 and r(chains) −0.10, −0.02,
 0.10 in the 200 Mpc/h shells 0–200, 200–400, 400–600 (≈ 137, 960 and 2610 init-grid cells by volume).
 
+**What `chi_min` 700 gives up** (Limber at the fiducial cosmology, the Abacus configuration
+`abacus/abacus_joint_Nl1p0_chimin700.yaml`). The matter at 350–700 Mpc/h, modelled at `chi_min` 350,
+moves into the covariance at 700: 24 %, 19 %, 12 %, 7 %, 4 % of the κ power (from 293 to 3942 Mpc/h)
+in ℓ 2–4, 5–10, 11–20, 21–36, 37–64, i.e. 19 %, 25 %, 21 %, 13 %, 7 % of the ACT DR6 `N_ℓ` (×1)
+in the same bands. No Born shell lies below 700 Mpc/h, so the likelihood holds no κ information on
+the field there: the joint-vs-galaxy field-reconstruction gain of §7.1 in the 361–722 Mpc/h shell was
+measured at `chi_min` 350 and does not carry over.
+
 **Consequence for the closure scan (§7.3).** The closure joint runs use `chi_min` 350. There the
 lattice is in the truth and in the model alike: the cross shows in both maps, and the truth C_ℓ
 spikes at ℓ > 50 raise the Wiener coherence at ℓ ≥ 48 to 0.68, against 0.51 on Abacus. The
@@ -1028,6 +1036,10 @@ Runs, each in a 4 h interactive `salloc` with a bare `run_inference.py` (`docs/h
    redo d1.00 at 700) still open.
 4c. **κ-only on Abacus at `N_ℓ` ×0.1, `chi_min` 700** — done 2026-09-25 (§7.4): no model error
    detected, coherence as expected bin by bin, line-of-sight covariance sized right.
+4h. **All joints at `chi_min` 700** (decided 2026-09-27, paper consistency): `scan/closure_d{0p10,0p20,1p00}_joint_chimin700.yaml`
+   (d0.03 done), and the Abacus joint `abacus/abacus_joint_Nl1p0_chimin700.yaml` (running,
+   `run_20260927_060952_58951736`). The §7.1 field-reconstruction table, measured at 350, has to be
+   remeasured on the Abacus joint at 700 with `scripts/compare_reconstruction.py`.
 4e. **Lower limit of `C_ℓ^{low-z}` on Abacus** — done 2026-09-27: `cmb_lensing.chi_low_z_min: 292.6`
    (§2.6) in `config.yaml`, `abacus/abacus_joint_Nl1p0_chimin700.yaml` and
    `abacus/abacus_kappaonly_Nl0p1_fnlfixed_chimin700.yaml`; the configs of runs already made keep
