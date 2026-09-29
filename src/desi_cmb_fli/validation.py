@@ -478,6 +478,12 @@ def galaxy_healpix_delta(truth, model, nside, chi_max):
         poisson = False
     else:
         return None
+    if not poisson:
+        # Bilinear spreading gives some pixels more weight than others (the polar caps 17 %):
+        # divide it out, as the Born projector does, so that the expectation below applies.
+        from desi_cmb_fli.cmb_lensing import bilinear_weight_norm
+
+        G = G / bilinear_weight_norm(nside)
     E, kernel = _expected_hp_map(truth, model, nside, chi_max)
     mask = E > 1e-6 * E.max()
     g_exp = E / E[mask].sum() * G[mask].sum()

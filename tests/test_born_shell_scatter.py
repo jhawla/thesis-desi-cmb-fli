@@ -19,6 +19,7 @@ import pytest
 from desi_cmb_fli.bricks import get_cosmology
 from desi_cmb_fli.cmb_lensing import (
     _box_ray_intervals,
+    bilinear_weight_norm,
     convergence_Born_spherical,
     lensing_kernel,
     linear_shell_volumes,
@@ -36,7 +37,9 @@ Z_SOURCE = 1089.28
 
 def reference_born(cosmo, pos, box_shape, mesh_shape, observer, r_shells,
                    a_shells, d_r, nside, mask, z_source, t_enter, t_exit):
-    """The previous implementation, transcribed verbatim."""
+    """The previous implementation, transcribed verbatim, but for one deliberate divergence from
+    jaxpm: its density is also divided by the per-pixel bilinear normalisation
+    (``bilinear_weight_norm``), which jaxpm's uniform shell volume leaves out."""
     import jax_cosmo as jc
     from jaxpm.spherical import paint_particles_spherical
 
@@ -49,6 +52,7 @@ def reference_born(cosmo, pos, box_shape, mesh_shape, observer, r_shells,
     d_r_arr = jnp.full(len(r_shells), d_r)
     t_enter_jnp, t_exit_jnp = jnp.asarray(t_enter), jnp.asarray(t_exit)
     n_bar = float(pos.shape[0]) / float(np.prod(np.asarray(box_shape, dtype=float)))
+    pix_norm = jnp.asarray(bilinear_weight_norm(nside))
 
     def scan_fn(kappa_acc, i):
         chi_i, a_i, dr_i = r_shells_jnp[i], a_shells_jnp[i], d_r_arr[i]
@@ -57,7 +61,7 @@ def reference_born(cosmo, pos, box_shape, mesh_shape, observer, r_shells,
             positions=pos, nside=nside, observer_position=observer,
             R_min=R_min, R_max=R_max, box_size=box_size_jnp,
             mesh_shape=tuple(int(x) for x in mesh_shape), method="bilinear",
-        )
+        ) / pix_norm
         is_fully_inside = (t_enter_jnp <= R_min) & (t_exit_jnp >= R_max)
         shell_mask = mask_jnp & is_fully_inside
         delta_full = jnp.where(
@@ -154,6 +158,29 @@ def test_gradient_matches_the_per_shell_implementation(setup):
     np.testing.assert_allclose(g_new, g_ref, rtol=1e-8, atol=1e-10 * scale)
 
 
+@pytest.mark.parametrize("shell_weights", ["nearest", "linear"])
+def test_isotropic_matter_gives_the_same_kappa_in_every_pixel(setup, shell_weights):
+    """Matter spread identically in every direction must give a flat kappa map, polar caps
+    included. Without the per-pixel bilinear normalisation the four pixels of each polar cap
+    read 1.167 times the density of the others. The directions are the pixel centres of a
+    grid 12 times finer, rotated, not the aligned 16 times finer one the normalisation integrates
+    over, so the test does not reproduce its own quadrature (its own quadrature error is 0.3 %). The grid is rotated off the HEALPix axes: a
+    direction whose longitude equals a pixel centre's to machine precision makes jax_healpy's
+    get_interp_weights give a weight to the wrong pixel, which particles never do but an
+    aligned grid does all the time."""
+    dirs = np.array(hp.pix2vec(12 * NSIDE, np.arange(hp.nside2npix(12 * NSIDE)))).T
+    dirs = dirs @ np.asarray(hp.rotator.euler_matrix_new(0.3, 0.7, 1.1)).T
+    radii = CHI_MAX * ((np.arange(8) + 0.5) / 8) ** (1.0 / 3.0)  # uniform in volume
+    obs_cell = setup["observer"] * MESH[0] / BOX
+    pos = obs_cell + (radii[:, None, None] * dirs[None, :, :]).reshape(-1, 3) * MESH[0] / BOX
+    kappa = np.asarray(_call({**setup, "pos": jnp.asarray(pos)}, return_full=True,
+                             shell_weights=shell_weights))
+    caps = np.r_[0:4, kappa.size - 4:kappa.size]
+    assert abs(kappa.mean()) > 0, "degenerate map: the test would prove nothing"
+    np.testing.assert_allclose(kappa[caps], np.median(kappa), rtol=0.01)
+    assert np.ptp(kappa) < 0.01 * abs(kappa.mean())
+
+
 def test_rejects_non_contiguous_shells(setup):
     s = dict(setup)
     s["r_shells"] = setup["r_shells"] * 1.5
@@ -209,11 +236,12 @@ def test_linear_volumes_match_the_tent_integral(setup):
 def test_linear_conserves_the_particle_weight(setup):
     """Every in-range particle contributes a total weight of one, whichever shells it is
     split between: the two maps carry the same mass, so the kappa sums agree once the
-    per-shell volumes are the matching ones."""
+    per-shell volumes are the matching ones. The correlation is 0.978-0.981 over particle
+    draws, hence the 0.97 bound."""
     hard = np.asarray(_call(setup, return_full=True))
     lin = np.asarray(_call(setup, return_full=True, shell_weights="linear"))
     assert np.all(np.isfinite(lin))
-    assert np.corrcoef(hard, lin)[0, 1] > 0.98
+    assert np.corrcoef(hard, lin)[0, 1] > 0.97
     np.testing.assert_allclose(lin.std(), hard.std(), rtol=0.1)
 
 

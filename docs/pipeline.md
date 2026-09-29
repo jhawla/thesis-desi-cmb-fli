@@ -201,11 +201,28 @@ shell index are scattered together into one `(n_shells, npix)` array, which the 
 mask and kernel then reduce to κ. Painting shell by shell would redo the angular work `n_shells`
 times, and differentiating through that repetition is what makes the κ channel expensive.
 
-The per-shell volume normalises every pixel by the same solid angle, which assumes the bilinear
-weights of uniformly spread particles sum to the same value in every pixel. HEALPix's bilinear
-weights do not: the four pixels of each polar cap collect 1.166 × the mean at every nside (all
-others within 0.4 % at nside 64). Uniform matter therefore reads δ = +0.166 in those eight pixels in
-every shell — a fixed, field-independent convergence at the two poles (§8, item 11).
+**Per-pixel normalisation.** Counts become a density by dividing each pixel by the volume it
+collects: the shell volume per pixel (`Ω_pix ∫ w_shell(r) r² dr`) times `bilinear_weight_norm`, the
+bilinear weight that pixel receives from directions spread uniformly over the sphere, relative to
+the mean. HEALPix's bilinear weights sum to one per particle but not to the same total per pixel:
+the four pixels of each polar cap collect 1.167 × the mean at every nside, the others stay within
+0.4 % at nside 64 (3 % at nside 8). A uniform solid angle per pixel — what jaxpm's
+`paint_particles_spherical_bilinear` divides by — would read uniform matter as δ = +0.167 in those
+eight pixels in every shell, a fixed convergence at the two poles that no field produces: it cancels
+in closure, where data and model share it, but not against a map made otherwise (AbacusLensing,
+real data), and the sampler would have to dig the field along the polar axis to hide it. The map is
+computed once per nside by quadrature over the pixel centres of a grid 16 × finer (error ∝
+oversampling⁻², 6·10⁻⁴ at the poles) and cached; it is a constant, so the gradient is unchanged.
+The Abacus loader brings the data map to the projection sphere through the same kernel with the
+same per-pixel division (`bilinear_resample_healpix`, §4), and the diagnostic galaxy map from
+particles divides by it too (§6), so all three read a uniform field as uniform.
+`tests/test_born_shell_scatter.py` checks that isotropic matter gives the same κ in every pixel,
+polar caps included.
+
+`jax_healpy.get_interp_weights` agrees with healpy on generic directions (2·10⁶ random directions,
+identical weights) but not on a direction whose longitude equals a pixel centre's to machine
+precision, where it gives a neighbour's weight to the wrong pixel. Particles never land there; a
+test grid aligned with the HEALPix axes does, hence the rotated grid in that test.
 
 Because each particle lands in exactly one radial bin, the shells must **tile
 `[chi_min, chi_boundary]` exactly**: an overlap would count the mass inside it twice, a gap would
@@ -664,7 +681,9 @@ has failed and compute is being wasted (since `Var[E] = O(ε⁶)`, the step is s
     Abacus loader stores (`gxy_hp_counts`, nside 256, galaxies whose nearest final node is in the
     survey), or the model's particles (`rsd_pos`) weighted by their bias weight (`gxy_weights`),
     the selection and the survey mask, and spread bilinearly over the four nearest pixels as the
-    Born projector spreads them for κ. The particles sit on a displaced lattice; wherever a pixel
+    Born projector spreads them for κ, then divided by `bilinear_weight_norm` as the projector
+    divides (§2.6). This map only enters the diagnostic spectra, never the likelihood, which works
+    on the 3-D count mesh (§3.1). The particles sit on a displaced lattice; wherever a pixel
     is smaller than the lattice spacing (at nside 64, everywhere closer than χ ≈ 3400 Mpc/h for a
     54 Mpc/h spacing), nearest-pixel counts carry a moiré pattern at every ℓ, uncorrelated with κ,
     that inflates `C_ℓ^{gg}` by 10–60 % and not `C_ℓ^{κg}`. Catalogue galaxies are Poisson points
@@ -1142,8 +1161,8 @@ truth 0.76, 0.82, 0.83, 0.83, 0.77, 0.73; model/truth power 0.75, 0.90, 0.89, 0.
 Below ℓ = 48 the chains agree with each other as they agree with the truth; above, they agree
 with each other more (0.620 vs 0.579 at ℓ 56–64); the κ-only run at 700 had 0.52 vs 0.52 there.
 The cause is not established. Cutting |b| > 80° changes no coherence by more than
-0.003, so it is not the polar caps. The polar-cap excess of the projector (§2.6, §8 item 11) is
-nonetheless visible in this run: the posterior mean of the eight polar pixels (nside 32) is +0.83
+0.003, so it is not the polar caps. The polar-cap excess of the projector (§8 item 11, fixed since
+this run) is nonetheless visible in it: the posterior mean of the eight polar pixels (nside 32) is +0.83
 to +2.01 σ_hp, where the truth ranges from −4.1 to +3.2 σ_hp (mean −0.3), with a posterior std of
 0.64–0.72 σ_hp.
 
@@ -1195,6 +1214,17 @@ reaches its maximum coherence, and the lowest reaches the highest (0.979 at ℓ 
 against 0.863 for 700). With the cell halved, same band, the error beyond LOS is at most 0.03 × `N_ℓ`
 in every bin for every `chi_min` down to 292.6, and negative from ℓ = 12 on: the model error is
 below the line-of-sight term the covariance assumes.
+
+The two tables predate the per-pixel bilinear normalisation of the projector (§2.6, §8 item 11).
+With it, cell 93.75, `chi_min` 350 and 700 only (`--out_dir $SCRATCH/outputs/kappa_from_ic/poles_fixed`):
+
+| `chi_min` | coherence | transfer | error beyond LOS / `N_ℓ` |
+|---|---|---|---|
+| 350 | 0.967 / 0.985 / 0.971 / 0.932 / 0.745 / 0.643 | 0.946 / 0.989 / 0.986 / 1.020 / 1.229 / 1.384 | 0.017 / −0.021 / 0.023 / 0.154 / 0.737 / 1.376 |
+| 700 | 0.861 / 0.926 / 0.948 / 0.944 / 0.902 / 0.858 | 0.922 / 0.935 / 0.951 / 0.996 / 1.002 / 0.999 | 0.008 / −0.034 / −0.024 / 0.016 / 0.086 / 0.225 |
+
+The conclusions are unchanged: at 700 the error beyond the line of sight is 0.09 and 0.23 × `N_ℓ`
+at ℓ 48–55 and 56–64.
 
 ### 7.7 Stiffness of the κ log-density vs `chi_min` and shell weights — measured
 
@@ -1363,7 +1393,23 @@ Without a run:
    numbers.
 10. Density-scan figure: measured paired gain vs `n̄/n̄_LRG`, with `fisher_kappa_gain.py
     --density_scale` as the reference curve.
-11. **Polar-cap excess of the bilinear projector** (§2.6), open. Measured at the Abacus configuration
+11. **Polar-cap excess of the bilinear projector** (§2.6) — fixed 2026-09-29 (per-pixel
+   normalisation, `bilinear_weight_norm`). Every κ run and κ figure made before carries it; in
+   closure it cancelled. Measured after the fix on the Abacus ICs (cell 93.75, same command as
+   below, `--out_dir $SCRATCH/outputs/kappa_from_ic/poles_fixed`;
+   `figures/spectra_diagnostic/kappa_from_abacus_ic_poles_cell93p75_chimin{350,700}.png`). The
+   poles lie on the z axis, where two lattice planes cross (item 8b), so the reference is the
+   other four coordinate axes, equivalent for the lattice but where the bilinear weights are
+   normal. Model − Abacus at ℓ ≤ 64, interpolated at each axis:
+
+   | `chi_min` | ±x, ±y | pole N / S before | pole N / S after |
+   |---|---|---|---|
+   | 350 | +0.020, +0.016, +0.012, +0.011 | +0.046 / +0.037 | +0.013 / +0.005 |
+   | 700 | −0.001, −0.003, −0.004, −0.005 | +0.024 / +0.021 | −0.004 / −0.007 |
+
+   (rms over random directions 0.004 at 350, 0.0025 at 700). The fix leaves the four equatorial
+   axes unchanged to 2·10⁻⁴ and brings the poles into their range: what remains at the poles is
+   the lattice, common to all six axes. What it was, measured at the Abacus configuration
    (`abacus/abacus_joint_Nl1p0_chimin700.yaml`): Σ_i d_r W(χ_i) = 0.549 over the shells, so uniform
    matter gives κ = 0.091 in the eight polar-cap pixels of the projection sphere and up to 0.020 in the
    observable (ℓ ≤ 64 at nside 32), against an Abacus κ rms of 0.0093 and a noise σ_hp of 0.0054; 1–3 %
@@ -1372,14 +1418,12 @@ Without a run:
    the same way. Visible in the posterior of the Abacus joint at 700 (§7.5: all eight polar pixels
    of the posterior mean at +0.8 to +2.0 σ_hp), harmonically negligible there (a polar cut moves the
    coherences by ≤ 0.003). Measured on the Abacus ICs through the forward model (cell 93.75,
-   `validate_kappa_from_ic.py --maps`, `figures/spectra_diagnostic/kappa_from_abacus_ic_poles_cell93p75_chimin{350,700}.png`):
+   `validate_kappa_from_ic.py --maps`, `figures/spectra_diagnostic/kappa_from_abacus_ic_poles_cell93p75_chimin{350,700}_before_fix.png`):
    model − AbacusLensing in the eight polar-cap pixels, band-limited to ℓ ≤ 64, is +0.020 to +0.025
    at `chi_min` 700 (mean +0.022, 8.2 × the rms of the difference elsewhere, 4 × σ_hp) and +0.035 to
    +0.047 at 350 (mean +0.042, 9.6 ×); all sixteen values positive. On the projection sphere, before
    band-limiting, the mean is +0.104 at 700 against the 0.091 expected, with a difference rms of
-   0.055 elsewhere. Candidate fix, in the projector's own design: divide each pixel by the bilinear
-   weight a uniform distribution gives it (one precomputed map) instead of by the mean. To be agreed
-   with W. Kabalan before touching the projector.
+   0.055 elsewhere.
 12. **Abacus κ runs made before 2026-09-27** read the map through `ud_grade` to nside 32 (§4), whose
    window is 0.998, 0.98 and 0.94 × the projector's at ℓ = 50, 60 and 64 in amplitude: the κ-only
    ×1 and ×0.1 runs of §7.4 and the Abacus joint `run_20260927_060952_58951736`. The top two bins

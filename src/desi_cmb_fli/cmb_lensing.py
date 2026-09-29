@@ -273,6 +273,34 @@ def lensing_kernel(cosmo, chi, a, chi_source):
 # =========================================================================
 
 
+@functools.lru_cache(maxsize=8)
+def bilinear_weight_norm(nside, oversamp=16, chunk=1 << 21):
+    """Bilinear weight each pixel receives from directions spread uniformly over the sphere,
+    relative to the mean.
+
+    HEALPix's bilinear weights (``get_interp_weights``) sum to one per point but not to the same
+    total per pixel: the four pixels of each polar cap receive 1.167 times the mean, the others
+    stay within 0.4 % of it at nside 64 (3 % at nside 8). A map painted with these weights and
+    divided by a uniform per-pixel volume therefore reads uniform matter as ``norm - 1``; dividing
+    by this map as well makes it read zero. Computed once per ``nside`` by quadrature over the
+    pixel centres of a grid ``oversamp`` times finer, in chunks of ``chunk`` points; the
+    quadrature error falls as ``oversamp**-2`` (6e-4 at the poles for 16). Read-only.
+    """
+    import healpy as hp
+
+    npix = hp.nside2npix(nside)
+    nside_fine = int(oversamp) * int(nside)
+    npix_fine = hp.nside2npix(nside_fine)
+    total = np.zeros(npix)
+    for start in range(0, npix_fine, int(chunk)):
+        theta, phi = hp.pix2ang(nside_fine, np.arange(start, min(start + int(chunk), npix_fine)))
+        pix, w = hp.get_interp_weights(nside, theta, phi)
+        total += np.bincount(pix.ravel(), weights=w.ravel(), minlength=npix)
+    norm = total / total.mean()
+    norm.flags.writeable = False
+    return norm
+
+
 def linear_shell_volumes(r_shells, d_r, npix):
     """Per-pixel volume of each shell under the 'linear' shell weights.
 
@@ -316,10 +344,11 @@ def convergence_Born_spherical(
 
     Each particle is assigned radially to its shell(s) and bilinearly scattered
     onto the HEALPix row(s) in a single pass, giving per-shell densities
-    ``rho``; then ``kappa = sum_i (rho_i / n_bar - 1) * d_r_i * W_kappa(chi_i,
-    a_i)`` over the shells whose segment lies fully inside the box along each
-    ray. Shells must tile the radial range exactly. See docs/pipeline.md
-    "Single-pass shell scatter" and "Shell weights" (2.6).
+    ``rho`` (per-pixel volume = shell volume x ``bilinear_weight_norm``); then
+    ``kappa = sum_i (rho_i / n_bar - 1) * d_r_i * W_kappa(chi_i, a_i)`` over the
+    shells whose segment lies fully inside the box along each ray. Shells must
+    tile the radial range exactly. See docs/pipeline.md "Single-pass shell
+    scatter" and "Shell weights" (2.6).
 
     Parameters
     ----------
@@ -446,7 +475,11 @@ def convergence_Born_spherical(
         shell_idx = jnp.broadcast_to(jnp.clip(idx, 0, n_shells - 1), pixels.shape)
         counts = counts.at[shell_idx, pixels].add(interp_weights * w)
 
-    rho = counts / shell_vol[:, None]
+    # Per-pixel volume: the shell volume of a pixel times the bilinear weight that pixel collects
+    # from uniform matter, so that uniform matter reads delta = 0 in every pixel, polar caps
+    # included (docs/pipeline.md 2.6).
+    pix_norm = jnp.asarray(bilinear_weight_norm(int(nside)))
+    rho = counts / (shell_vol[:, None] * pix_norm[None, :])
 
     is_fully_inside = (t_enter_jnp[None, :] <= jnp.asarray(mask_lower)[:, None]) & (
         t_exit_jnp[None, :] >= jnp.asarray(mask_upper)[:, None]

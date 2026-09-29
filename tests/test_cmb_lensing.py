@@ -458,6 +458,22 @@ def test_the_resampling_kernel_is_the_born_projector_kernel():
                                np.take_along_axis(np.asarray(w_j), order_j, 0), atol=1e-6)
 
 
+def test_bilinear_weight_norm_singles_out_the_polar_caps():
+    """Mean one; the four pixels of each polar cap at 1.167 x the mean, the others within 2 % at
+    nside 16; the quadrature converged (oversamp 16 against 32); read-only, since it is cached."""
+    from desi_cmb_fli.cmb_lensing import bilinear_weight_norm
+
+    norm = bilinear_weight_norm(16)
+    caps = np.r_[0:4, norm.size - 4:norm.size]
+    rest = np.delete(norm, caps)
+    np.testing.assert_allclose(norm.mean(), 1.0, rtol=1e-12)
+    np.testing.assert_allclose(norm[caps], 1.1667, atol=2e-3)
+    assert rest.min() > 0.98 and rest.max() < 1.005
+    np.testing.assert_allclose(bilinear_weight_norm(4), bilinear_weight_norm(4, oversamp=32),
+                               atol=1e-3)
+    assert not norm.flags.writeable
+
+
 def test_bilinear_resampling_keeps_a_constant_everywhere():
     """Including the polar-cap pixels, where HEALPix's bilinear weights sum 16.6 % high."""
     import healpy as hp
