@@ -16,6 +16,7 @@ Likelihood:
     Native dist.Normal over the packed masked pseudo-a_lm (see FieldLevelModel).
 """
 
+import functools
 import os
 import tempfile
 from pathlib import Path
@@ -809,18 +810,81 @@ def prepare_abacus_kappa_hp(healpix_map, nside, mask=None):
     return healpix_map[np.asarray(mask, dtype=bool)]
 
 
+def bilinear_resample_healpix(healpix_map, nside_out, oversamp=8):
+    """Bring a fine HEALPix map to ``nside_out`` through the Born projector's own angular kernel.
+
+    The model scatters each particle over the four nearest ``nside_out`` pixels
+    (``get_interp_weights``); an observed map must reach the observable through the same kernel,
+    or the two differ by the ratio of their angular windows at the top of the band. The map is
+    first averaged to ``oversamp * nside_out`` (whose own window is 1 in the observable band),
+    then each of those pixels is scattered like a particle carrying its value, and each output
+    pixel is divided by the weight it received. The per-pixel division matters: HEALPix's
+    bilinear weights do not sum uniformly over the sphere (the four pixels of each polar cap
+    collect 16.6 % more), so dividing by the mean weight would raise the map there.
+    """
+    import healpy as hp
+
+    healpix_map = np.asarray(healpix_map)
+    nside_in = hp.get_nside(healpix_map)
+    nside_mid = min(nside_in, int(oversamp) * int(nside_out))
+    if nside_in != nside_mid:
+        healpix_map = hp.ud_grade(healpix_map, nside_mid, order_in="RING", order_out="RING")
+    npix_mid, npix_out = hp.nside2npix(nside_mid), hp.nside2npix(nside_out)
+    theta, phi = hp.pix2ang(nside_mid, np.arange(npix_mid))
+    pix, w = hp.get_interp_weights(nside_out, theta, phi)
+    num = np.bincount(pix.ravel(), weights=(w * np.asarray(healpix_map, dtype=float)[None, :]).ravel(),
+                      minlength=npix_out)
+    den = np.bincount(pix.ravel(), weights=w.ravel(), minlength=npix_out)
+    return num / den
+
+
+@functools.lru_cache(maxsize=16)
+def bilinear_window(nside, lmax, oversamp=8, seed=0):
+    """Angular window of the bilinear kernel at ``nside``, per multipole up to ``lmax``.
+
+    Measured, not modelled: a Gaussian field band-limited well above ``2 * nside`` is sampled on
+    a grid ``oversamp`` times finer, brought to ``nside`` by ``bilinear_resample_healpix`` and
+    transformed; the window is the square root of the ratio of its spectrum to the input one. This
+    is the window the Born projector (and the particle galaxy map) imprints on an observable, and
+    what a theory curve must carry to compare with it. HEALPix's ``pixwin`` is the window of a
+    pixel average (``ud_grade``), not of this kernel.
+    """
+    import healpy as hp
+
+    nside_fine = int(oversamp) * int(nside)
+    lmax_in = 3 * nside_fine - 1
+    ell = np.arange(lmax_in + 1, dtype=float)
+    cl = np.zeros(lmax_in + 1)
+    cl[2:] = ell[2:] ** -1.5
+    rng = np.random.default_rng(seed)
+    n_alm = hp.Alm.getsize(lmax_in)
+    l_of = hp.Alm.getlm(lmax_in)[0]
+    m_of = hp.Alm.getlm(lmax_in)[1]
+    re, im = rng.standard_normal(n_alm), rng.standard_normal(n_alm)
+    alm = np.where(m_of == 0, re, (re + 1j * im) / np.sqrt(2.0)) * np.sqrt(cl[l_of])
+    fine = hp.alm2map(alm, nside_fine, lmax=lmax_in)
+    out = bilinear_resample_healpix(fine, nside, oversamp=oversamp)
+    got = hp.anafast(out, lmax=lmax, iter=3)
+    want = hp.alm2cl(alm, lmax_out=lmax)
+    w = np.sqrt(np.divide(got, want, out=np.ones_like(got), where=want > 0))
+    w[:2] = 1.0
+    return w
+
+
 # =========================================================================
 # AbacusSummit observation loaders
 # =========================================================================
 
 
 def load_abacus_kappa_observation(abacus_cfg: dict, model) -> dict:
-    """Load an AbacusSummit kappa HEALPix map and build an observed kappa map.
+    """Load an AbacusSummit kappa HEALPix map and build the observed kappa map.
 
     Pipeline:
       1. Load the full-sky HEALPix ASDF map.
-      2. ud_grade to model.cmb_nside (full-sky map at the model resolution).
-      3. Add a harmonic Gaussian noise realisation on the effective mask.
+      2. Bring it to the projection sphere (``model.cmb_proj_nside``) through the Born projector's
+         bilinear kernel (``bilinear_resample_healpix``), so that data and model reach the packed
+         observable through the same angular window.
+      3. Add a Gaussian noise realisation band-limited to ``l <= cmb_lmax``, on the projection mask.
 
     Parameters
     ----------
@@ -829,11 +893,11 @@ def load_abacus_kappa_observation(abacus_cfg: dict, model) -> dict:
             file (str)       : Path to the ASDF convergence file.
             noise_seed (int) : JAX PRNGKey seed (default 7777).
     model : FieldLevelModel
-        Required attributes: cmb_enabled, cmb_nside, cmb_lmax, cmb_mask, nell_1d.
+        Required attributes: cmb_enabled, cmb_proj_nside, cmb_lmax, cmb_proj_mask, nell_1d.
 
     Returns
     -------
-    dict: 'kappa_obs' (npix_full,), 'kappa_pred' (npix_full,).
+    dict: 'kappa_obs' and 'kappa_pred' (noiseless), full-sky maps at ``cmb_proj_nside``.
     """
     if not model.cmb_enabled:
         raise ValueError("load_abacus_kappa_observation requires cmb_enabled=True")
@@ -860,34 +924,33 @@ def load_abacus_kappa_observation(abacus_cfg: dict, model) -> dict:
             "Set it explicitly for independent noise draws."
         )
 
-    nside = model.cmb_nside
-    # Effective analysis mask = simulation footprint & external kappa footprint.
-    eff_mask = np.asarray(getattr(model, "cmb_mask", getattr(model, "cmb_sim_mask", None)), dtype=bool)
+    nside = int(model.cmb_proj_nside)
+    # Effective analysis mask on the projection sphere (simulation footprint & external mask).
+    eff_mask = np.asarray(model.cmb_proj_mask, dtype=bool)
 
     print(f"[Abacus] Loading {abacus_file} ...")
     _kappa_hp = None
     try:
         with _asdf.open(abacus_file) as _f:
             _kappa_hp = np.array(_f.tree["data"]["kappa"])
-        kappa_full_np = prepare_abacus_kappa_hp(_kappa_hp, nside)
+        kappa_full_np = bilinear_resample_healpix(_kappa_hp, nside)
     finally:
         del _kappa_hp
 
     kappa_support = kappa_full_np[eff_mask]
-    print("[Abacus] kappa map stats (noiseless, on cmb_mask):")
-    print(f"  n_pix_support = {kappa_support.size}, nside = {nside}")
+    print("[Abacus] kappa map stats (noiseless, on the projection mask):")
+    print(f"  n_pix_support = {kappa_support.size}, nside = {nside} (projection sphere)")
     print(f"  mean  = {float(kappa_support.mean()):.6f}")
     print(f"  std   = {float(kappa_support.std()):.6f}")
 
     kappa_signal = jnp.asarray(kappa_full_np, dtype=float)
     del kappa_full_np, kappa_support
 
+    # Band-limited to l <= cmb_lmax; synthesised at the transform's own lmax = 2 * nside.
+    nell = np.zeros(2 * nside + 1)
+    nell[: len(model.nell_1d)] = np.asarray(model.nell_1d)[: 2 * nside + 1]
     noise = sample_healpix_gaussian(
-        jr.key(noise_seed),
-        jnp.asarray(model.nell_1d),
-        nside=model.cmb_nside,
-        lmax=model.cmb_lmax,
-        mask=eff_mask,
+        jr.key(noise_seed), jnp.asarray(nell), nside=nside, lmax=2 * nside, mask=eff_mask,
     )
     kappa_obs = kappa_signal + noise
 

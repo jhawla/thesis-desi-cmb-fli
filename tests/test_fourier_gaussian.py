@@ -24,7 +24,7 @@ def _curved_sky_config():
         {
             "mesh_shape": (8, 8, 8),
             "box_shape": (80.0, 80.0, 120.0),
-            "evolution": "kaiser",
+            "evolution": "lpt",
             "a_obs": 1.0,
             "paint_oversamp": 1.0,
             "galaxies_enabled": True,

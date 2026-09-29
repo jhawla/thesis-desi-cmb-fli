@@ -13,6 +13,10 @@ The Fisher gain per --density_scale is the reference curve of the density-scan f
 information on f_NL through the galaxies, not a kappa-only constraint (kappa alone sees f_NL only
 through the weak matter phi^2 channel), which is why it grows as the galaxies thin out.
 
+The kappa geometry (chi_min, the start of the matter in the map, chi_high_z_max, the box) is read
+from --config, so the Fisher matches the runs it is compared with. The galaxy bias is
+b_E - b_nabla2 k^2 (+ the PNG term): angular Limber spectra of broad shells carry no Kaiser term.
+
 Usage:
     python scripts/fisher_kappa_gain.py                                   # Abacus reference, x1
     python scripts/fisher_kappa_gain.py --gxy_run run_<...> --density_scale 0.1
@@ -29,7 +33,7 @@ import yaml
 from jax import numpy as jnp
 
 from desi_cmb_fli.bricks import get_cosmology, lin_power_interp, trans_phi2delta_interp
-from desi_cmb_fli.nbody import a2chi, a2f, a2g
+from desi_cmb_fli.nbody import a2chi, a2g
 
 jax.config.update("jax_enable_x64", True)
 
@@ -37,11 +41,11 @@ DELTA_C, RH = 1.686, 2997.92458
 PARAMS = ["fNL", "b1", "bn2"]
 NELL_FILE = Path(__file__).resolve().parents[1] / "data/N_L_kk_act_dr6_lensing_v1_baseline.txt"
 
-# AbacusSummit HUGE c000_ph201: full-sky LRG lightcone and CMB-source kappa, baseline analysis
-# geometry (box 7500, cell 93.75, centred observer, chi_min 350, matter in the map to chi 3942).
+# AbacusSummit HUGE c000_ph201: full-sky LRG lightcone and CMB-source kappa. The kappa geometry
+# (chi_min_kappa, chi_low_z_min, chi_box, chi_high_z_max) is overwritten from --config in main().
 HUGE = {
     "zmin": 0.4, "zmax": 1.1, "fsky_g": 1.0, "fsky_k": 1.0, "N_gal": 22_239_543,
-    "chi_min_kappa": 350.0, "chi_box": 3750.0, "chi_high_z_max": 3942.0,
+    "chi_min_kappa": 700.0, "chi_low_z_min": 292.6, "chi_box": 3750.0, "chi_high_z_max": 3942.0,
     "zbins": 0.405 + (np.arange(15) + 0.5) * (1.095 - 0.405) / 15,
     "nbins": np.array([956218, 1082438, 1270883, 1452080, 1594423, 1723189, 1819472,
                        2007973, 2322955, 2214695, 1924098, 1556193, 1116871, 730871,
@@ -76,10 +80,6 @@ def Plin(k, z):
 
 def Mk(k, z):
     return np.interp(k, _ks, _M0) * (D_of_z(z) / D0)
-
-
-def f_of_z(z):
-    return np.asarray(a2f(cosmo, 1.0 / (1.0 + np.atleast_1d(z))))
 
 
 NELL = np.loadtxt(NELL_FILE)
@@ -127,8 +127,9 @@ def delta_F_kappa(g, b1, bn2, noise_scaling, density_scale, nz=10):
     ells = np.arange(ell_min, 65)
     Ck_mod = C_kappa(ells, g["chi_min_kappa"], g["chi_box"])
     Ck_corr = C_kappa(ells, g["chi_box"], g["chi_high_z_max"])
-    if g["chi_min_kappa"] > 0:
-        Ck_corr = Ck_corr + C_kappa(ells, 1.0, g["chi_min_kappa"])
+    low_z_from = max(1.0, float(g.get("chi_low_z_min") or 0.0))
+    if g["chi_min_kappa"] > low_z_from:
+        Ck_corr = Ck_corr + C_kappa(ells, low_z_from, g["chi_min_kappa"])
 
     chi = np.linspace(chi_lo, chi_hi, 400)
     z = z_of_chi(chi)
@@ -138,7 +139,6 @@ def delta_F_kappa(g, b1, bn2, noise_scaling, density_scale, nz=10):
     edges = np.interp(np.linspace(0, 1, nz + 1), cdf, chi)
     Ng_sr = density_scale * g["N_gal"] / (4 * np.pi * g["fsky_g"])
     Wk = W_kappa(chi)
-    fg = f_of_z(z)
 
     W, frac = [], []
     for i in range(nz):
@@ -152,7 +152,7 @@ def delta_F_kappa(g, b1, bn2, noise_scaling, density_scale, nz=10):
     for idx, ell in enumerate(ells):
         k = (ell + 0.5) / chi
         Pm = Plin(k, z)
-        B = bE - bn2 * k**2 + fg / 3.0
+        B = bE - bn2 * k**2
         dB = {"fNL": bphi / Mk(k, z), "b1": np.ones_like(k), "bn2": -(k**2)}
 
         def ig(a, b, e, Pm=Pm):
@@ -194,7 +194,20 @@ def main():
     ap.add_argument("--density_scale", type=float, default=1.0,
                     help="multiplier on the catalogue n-bar (closure_gxy_density_scale)")
     ap.add_argument("--noise_scalings", type=float, nargs="+", default=[1.0, 0.4, 0.1, 0.01, 0.0])
+    ap.add_argument("--config", default=str(Path(__file__).resolve().parents[1]
+                                            / "configs/inference/abacus/abacus_joint_Nl1p0_chimin700.yaml"),
+                    help="run config whose cmb_lensing geometry the Fisher uses")
     args = ap.parse_args()
+
+    run_cfg = yaml.safe_load(open(args.config))
+    cmb = run_cfg.get("cmb_lensing", {})
+    box = np.asarray(run_cfg["model"]["box_shape"], dtype=float)
+    HUGE["chi_min_kappa"] = float(cmb.get("chi_min", 0.0))
+    HUGE["chi_low_z_min"] = cmb.get("chi_low_z_min")
+    HUGE["chi_high_z_max"] = float(cmb.get("chi_high_z_max", HUGE["chi_high_z_max"]))
+    HUGE["chi_box"] = float(box.min() / 2 if cmb.get("observer_mode", "face") == "center" else box[2])
+    print(f"kappa geometry from {args.config}: chi_min {HUGE['chi_min_kappa']}, low-z from "
+          f"{HUGE['chi_low_z_min']}, box to {HUGE['chi_box']}, high-z to {HUGE['chi_high_z_max']}")
 
     cov, b1, bn2 = chain_stats(args.gxy_run)
     F_g = np.linalg.inv(cov)

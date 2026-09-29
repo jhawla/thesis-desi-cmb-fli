@@ -34,7 +34,7 @@ from desi_cmb_fli.model import get_model_from_config  # noqa: E402
 from desi_cmb_fli.utils import restore_model_state_from_truth  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from analyze_run import IC_SMOOTHING_MPC, _load_field_state  # noqa: E402
+from analyze_run import IC_SMOOTHING_MPC, _fixed_latents, _load_field_state  # noqa: E402
 
 
 def _smoothing_kernel(shape, box, scale_mpc):
@@ -57,12 +57,14 @@ def load_run(run_dir, smoothing):
         print(f"{run_dir.name}: truth.npz has no init_mesh (no abacus_ic in the config); skipping.")
         return None
     restore_model_state_from_truth(model, truth)
+    fixed = _fixed_latents(run_dir, model)  # held by the run, absent from the sampler state
 
     box = np.asarray(model.box_shape, dtype=float)
     shape = tuple(int(s) for s in model.init_shape)
     true_k = jnp.asarray(truth["init_mesh"])
     n_chains = int(np.shape(positions["init_mesh_"])[0])
-    rec_k = [model.reparam({k: jnp.asarray(np.asarray(v)[c]) for k, v in positions.items()})["init_mesh"]
+    rec_k = [model.reparam({k: jnp.asarray(np.asarray(v)[c]) for k, v in positions.items()}
+                           | fixed)["init_mesh"]
              for c in range(n_chains)]
     if tuple(np.shape(true_k)) != tuple(np.shape(rec_k[0])):
         print(f"{run_dir.name}: truth init_mesh {np.shape(true_k)} and the sampled field "

@@ -207,6 +207,28 @@ default_config = {
 }
 
 
+# Keys get_model_from_config reads from the two model-defining sections. Anything else there is a
+# typo or a removed option, and would otherwise fall back on the default without a word.
+MODEL_CONFIG_KEYS = {
+    "box_shape", "cell_size", "evolution", "lpt_order", "gxy_density", "lightcone", "a_obs",
+    "precond", "init_oversamp", "evol_oversamp", "ptcl_oversamp", "paint_oversamp", "curved_sky",
+    "los", "galaxies_enabled", "gxy_stoch_noise", "gxy_ngbar_free", "png_type",
+}
+CMB_CONFIG_KEYS = {
+    "enabled", "observer_mode", "observer_position", "nside", "n_shells", "chi_min",
+    "shell_weights", "proj_oversamp", "likelihood", "likelihood_mode", "kl_rcond", "mask",
+    "full_los_correction", "chi_high_z_max", "chi_low_z_min", "z_source", "high_z_mode",
+    "cmb_noise_nell", "cmb_noise_scaling",
+}
+
+
+def _check_config_keys(section, given, known):
+    unknown = sorted(set(given or {}) - known)
+    if unknown:
+        raise ValueError(f"Unknown key(s) in config section '{section}': {unknown}. "
+                         f"Known: {sorted(known)}.")
+
+
 def get_model_from_config(config_or_path):
     """
     Factory function to create a FieldLevelModel from a config dictionary or path.
@@ -223,6 +245,9 @@ def get_model_from_config(config_or_path):
         cfg = utils.yload(config_or_path)
     else:
         cfg = config_or_path
+
+    _check_config_keys("model", cfg.get("model"), MODEL_CONFIG_KEYS)
+    _check_config_keys("cmb_lensing", cfg.get("cmb_lensing"), CMB_CONFIG_KEYS)
 
     # Build model config
     model_config = default_config.copy()
@@ -774,6 +799,9 @@ class FieldLevelModel(Model):
         # Validation: at least one observable must be enabled
         if not self.galaxies_enabled and not self.cmb_enabled:
             raise ValueError("At least one observable must be enabled (galaxies_enabled or cmb_enabled)")
+        if self.cmb_enabled and self.evolution == "kaiser":
+            raise ValueError("CMB lensing Born-projects particles: use evolution 'lpt' or 'nbody', "
+                             "not 'kaiser'.")
 
         if self.cmb_enabled:
             import healpy as hp
@@ -1638,6 +1666,12 @@ class FieldLevelModel(Model):
         return jnp.real(
             jhp.alm2map(alm, nside=self.cmb_nside, lmax=self.cmb_lmax, pol=False, healpy_ordering=True)
         )
+
+    def sampled_scalar_latents(self):
+        """Base names of the scalar latents the prior samples: every group but the field, and not
+        the biases of a CMB-only model (the prior pins those to their fiducial values)."""
+        skip = {"init"} | ({"bias"} if self.cmb_enabled and not self.galaxies_enabled else set())
+        return [n for g, names in self.groups.items() if g not in skip for n in names]
 
     @property
     def low_z_matter_start(self):

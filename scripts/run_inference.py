@@ -173,6 +173,13 @@ else:
     if observation_mode == ObservationMode.CLOSURE:
         # Closure test: generate synthetic observation from truth_params
         truth_params = cfg["truth_params"]
+        # predict() would draw any sampled latent missing here from its prior, silently.
+        missing = [n for n in model.sampled_scalar_latents() if n not in truth_params]
+        if missing:
+            raise ValueError(
+                f"truth_params lacks sampled latent(s) {missing}: the closure truth would draw "
+                "them from their prior. Give every one a value in config.yaml."
+            )
         print(f"[Closure test] Truth params: {truth_params}")
         print(f"Seed: {seed}")
 
@@ -520,7 +527,9 @@ if not RESUME_MODE:
     print("=" * 80)
 
     from desi_cmb_fli.validation import plot_warmup_diagnostics
-    plot_warmup_diagnostics(model, state, params_start, truth, fig_dir)
+    _fixed_lat = ({k: v for k, v in model.reparam(fixed_dict, inv=True).items()
+                   if k in fixed_latent_keys} if fixed_dict else {})
+    plot_warmup_diagnostics(model, state, params_start, truth, fig_dir, fixed_latents=_fixed_lat)
 
     # Save raw per-chain values
     raw_L = jnp.array(config.L)
@@ -625,8 +634,11 @@ model.reset()
 apply_conditioning()
 
 # Setup sampling function (pmap for parallel chains)
+# The field is only kept per sample when mcmc.save_large_fields asks for it.
+_keep_fields = bool(cfg.get("mcmc", {}).get("save_large_fields", False))
 run_fn = pmap(jit(get_mclmc_run(
     model.logpdf, n_samples=num_samples, thinning=thinning, progress_bar=False,
+    drop_keys=() if _keep_fields else ("init_mesh_",),
 )))
 
 print(f"\nRunning {num_chains} chains in parallel, each with {num_batches} sequential batches")

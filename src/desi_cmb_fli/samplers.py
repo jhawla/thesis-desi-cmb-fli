@@ -367,6 +367,7 @@ def mclmc_run(
     transform=None,
     thinning=1,
     progress_bar=True,
+    drop_keys=(),
 ):
     integrator = isokinetic_mclachlan
 
@@ -383,8 +384,10 @@ def mclmc_run(
         n_dim = len(ravel_pytree(state.position)[0])
 
         def transform(state, info):
+            # drop_keys: position entries not returned per sample (e.g. the field, when only the
+            # scalars are kept), so they are neither stacked nor sent back to the host.
             return (
-                state.position,
+                {k: v for k, v in state.position.items() if k not in drop_keys},
                 {
                     "logdensity": state.logdensity,
                     "mse_per_dim": jnp.mean(info.energy_change**2) / n_dim,
@@ -450,7 +453,7 @@ def get_mclmc_warmup(
     )
 
 
-def get_mclmc_run(logdf, n_samples, transform=None, thinning=1, progress_bar=True):
+def get_mclmc_run(logdf, n_samples, transform=None, thinning=1, progress_bar=True, drop_keys=()):
     return partial(
         mclmc_run,
         logdf=logdf,
@@ -458,6 +461,7 @@ def get_mclmc_run(logdf, n_samples, transform=None, thinning=1, progress_bar=Tru
         transform=transform,
         thinning=thinning,
         progress_bar=progress_bar,
+        drop_keys=tuple(drop_keys),
     )
 
 

@@ -56,7 +56,22 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--output_dir", default=None)
     parser.add_argument("--show", action="store_true")
+    parser.add_argument("--bias_run", default=None,
+                        help="Abacus mode: take the biases (posterior means, second half) of this "
+                             "run instead of truth_params, so the model is the fitted one")
     return parser.parse_args()
+
+
+def posterior_bias_means(run_dir, model):
+    """Posterior means of the bias parameters of a run (second half of its chains)."""
+    import sys
+    from pathlib import Path as _P
+
+    sys.path.insert(0, str(_P(__file__).resolve().parent))
+    from analyze_run import load_and_process_run
+
+    samples = load_and_process_run(run_dir, burn_in=0.5)["physical_samples"]
+    return {k: float(np.mean(samples[k])) for k in model.groups.get("bias", []) if k in samples}
 
 
 def pk_theory_nonlinear(cosmo, k_hmpc, a):
@@ -339,9 +354,13 @@ def _main_abacus(args, cfg_dict, output_dir):
     print(f"  Cosmology: Omega_m={truth_params.get('Omega_m', '?')}, "
           f"sigma8={truth_params.get('sigma8', '?')}")
 
+    bias_from_run = posterior_bias_means(args.bias_run, model) if args.bias_run else {}
     cond_params = conditioning_params(
-        model, truth_params, cfg_dict.get("abacus_truth_params", {})
+        model, truth_params, cfg_dict.get("abacus_truth_params", {}), bias_from_run
     )
+    print("  Biases used by the model: "
+          f"{ {k: round(float(cond_params[k]), 4) for k in model.groups.get('bias', [])} }"
+          + (f" (posterior means of {args.bias_run})" if args.bias_run else " (config truth_params)"))
 
     all_pk_model = []
     for i in range(n_real):

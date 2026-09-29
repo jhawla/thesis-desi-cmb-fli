@@ -34,7 +34,6 @@ from desi_cmb_fli import utils
 from desi_cmb_fli.cmb_lensing import (
     load_abacus_galaxy_observation,
     load_abacus_kappa_observation,
-    sample_healpix_gaussian,
 )
 from desi_cmb_fli.model import get_model_from_config
 from desi_cmb_fli.validation import conditioning_params, measure_spectra, plot_cl_figure
@@ -142,20 +141,12 @@ def main():
         # ── Build truth dicts and measure spectra ───────────────────────────
         # The diagnostic compares the noiseless maps, which do not change between noise draws.
         print("Measuring the Abacus maps (one realisation: the simulation)...")
-        for i in range(1):
-            seed_i = base_seed + i
+        for _ in range(1):
             truth_i = {}
 
             if cmb_enabled and kappa_noiseless is not None:
                 truth_i["kappa_pred"] = kappa_noiseless
-                truth_i["kappa_obs"] = kappa_noiseless + sample_healpix_gaussian(
-                    jr.key(seed_i),
-                    jnp.asarray(model.nell_1d),
-                    nside=model.cmb_nside,
-                    lmax=model.cmb_lmax,
-                    # Same effective mask as load_abacus_kappa_observation (sim & external)
-                    mask=getattr(model, "cmb_mask", None),
-                )
+                truth_i["kappa_obs"] = truth_cmb["kappa_obs"]
 
             if galaxies_enabled and gxy_obs_mesh is not None:
                 truth_i["obs"] = gxy_obs_mesh

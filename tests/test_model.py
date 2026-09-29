@@ -184,3 +184,56 @@ def test_model_cell_parameters():
     assert model.k_funda > 0
     assert model.k_nyquist > model.k_funda
     assert model.gxy_count > 0
+
+
+def _minimal_config(**model_overrides):
+    return {
+        "model": {"box_shape": [100.0, 100.0, 100.0], "cell_size": 12.5, "evolution": "lpt",
+                  "lpt_order": 1, "gxy_density": 1e-3, "lightcone": False, "a_obs": 1.0,
+                  **model_overrides},
+    }
+
+
+def test_an_unknown_model_key_is_an_error():
+    """A typo must not silently fall back on the default."""
+    from desi_cmb_fli.model import get_model_from_config
+
+    with pytest.raises(ValueError, match="paint_oversmp"):
+        get_model_from_config(_minimal_config(paint_oversmp=1.75))
+    cfg = _minimal_config()
+    cfg["cmb_lensing"] = {"enabled": False, "chi_minn": 700}
+    with pytest.raises(ValueError, match="chi_minn"):
+        get_model_from_config(cfg)
+
+
+def test_sampled_scalar_latents_lists_what_the_prior_samples(small_model):
+    names = small_model.sampled_scalar_latents()
+    assert "Omega_m" in names and "b1" in names and "init_mesh" not in names
+
+
+def test_cmb_lensing_needs_particles():
+    config = default_config.copy()
+    config.update({"mesh_shape": (8, 8, 8), "box_shape": (400.0, 400.0, 400.0),
+                   "evolution": "kaiser", "a_obs": 1.0, "cmb_enabled": True,
+                   "cmb_noise_nell": {"ell": np.arange(64.0), "N_ell": np.full(64, 1e-9)}})
+    with pytest.raises(ValueError, match="kaiser"):
+        FieldLevelModel(**config)
+
+
+def test_mclmc_run_can_drop_the_field_from_the_samples():
+    import jax
+    from blackjax.adaptation.mclmc_adaptation import MCLMCAdaptationState
+    from blackjax.mcmc import mclmc
+
+    from desi_cmb_fli.samplers import get_mclmc_run
+
+    def logdf(x):
+        return -0.5 * (jnp.sum(x["init_mesh_"] ** 2) + x["b1_"] ** 2)
+
+    pos = {"init_mesh_": jnp.zeros(8), "b1_": jnp.array(0.0)}
+    state = mclmc.init(position=pos, logdensity_fn=logdf, rng_key=jr.key(0))
+    config = MCLMCAdaptationState(L=1.0, step_size=0.3, inverse_mass_matrix=jnp.ones(9))
+    for drop, expected in (((), {"init_mesh_", "b1_"}), (("init_mesh_",), {"b1_"})):
+        run = jax.jit(get_mclmc_run(logdf, n_samples=4, progress_bar=False, drop_keys=drop))
+        _, samples = run(jr.key(1), state, config)
+        assert expected <= set(samples) and not (set(drop) & set(samples))

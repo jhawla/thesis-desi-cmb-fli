@@ -432,3 +432,69 @@ def test_healpix_counts_conserves_weight_in_both_assignments():
     for bilinear in (False, True):
         m = healpix_counts(pos, 8, weights=w, bilinear=bilinear)
         np.testing.assert_allclose(m.sum(), w.sum(), rtol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Abacus kappa through the projector's own angular kernel
+# ---------------------------------------------------------------------------
+
+
+def test_the_resampling_kernel_is_the_born_projector_kernel():
+    """bilinear_resample_healpix (healpy) and convergence_Born_spherical (jax_healpy) must spread a
+    point over the same four pixels with the same weights, or data and model see different
+    angular windows."""
+    import healpy as hp
+    import jax_healpy as jhp
+
+    rng = np.random.default_rng(3)
+    theta = np.arccos(rng.uniform(-1, 1, 500))
+    phi = rng.uniform(0, 2 * np.pi, 500)
+    p_hp, w_hp = hp.get_interp_weights(16, theta, phi)
+    p_j, w_j = jhp.get_interp_weights(16, jnp.asarray(theta), jnp.asarray(phi))
+    order_hp, order_j = np.argsort(p_hp, axis=0), np.argsort(np.asarray(p_j), axis=0)
+    np.testing.assert_array_equal(np.take_along_axis(p_hp, order_hp, 0),
+                                  np.take_along_axis(np.asarray(p_j), order_j, 0))
+    np.testing.assert_allclose(np.take_along_axis(w_hp, order_hp, 0),
+                               np.take_along_axis(np.asarray(w_j), order_j, 0), atol=1e-6)
+
+
+def test_bilinear_resampling_keeps_a_constant_everywhere():
+    """Including the polar-cap pixels, where HEALPix's bilinear weights sum 16.6 % high."""
+    import healpy as hp
+
+    from desi_cmb_fli.cmb_lensing import bilinear_resample_healpix
+
+    const = np.full(hp.nside2npix(64), 0.37)
+    np.testing.assert_allclose(bilinear_resample_healpix(const, 8), 0.37, rtol=1e-12)
+
+
+def test_the_abacus_observation_lives_on_the_projection_sphere(tmp_path):
+    """The loader returns maps on the projection sphere, and they pack through the fine branch,
+    like the model's own kappa."""
+    import asdf
+    import healpy as hp
+
+    from desi_cmb_fli.cmb_lensing import load_abacus_kappa_observation
+    from desi_cmb_fli.model import FieldLevelModel, default_config
+
+    cfg = default_config.copy()
+    cfg.update({
+        "mesh_shape": (8, 8, 8), "box_shape": (400.0, 400.0, 400.0), "evolution": "lpt",
+        "lpt_order": 1, "a_obs": 1.0, "paint_oversamp": 1.0, "galaxies_enabled": False,
+        "cmb_enabled": True, "cmb_nside": 4, "cmb_n_shells": 4, "cmb_observer_mode": "center",
+        "cmb_proj_oversamp": 2, "cmb_shell_weights": "linear",
+        "cmb_noise_nell": {"ell": np.arange(64, dtype=float), "N_ell": np.full(64, 1e-9)},
+        "full_los_correction": True, "high_z_mode": "fixed", "chi_high_z_max": 300.0,
+    })
+    model = FieldLevelModel(**cfg)
+    rng = np.random.default_rng(1)
+    kappa_hi = rng.normal(scale=1e-2, size=hp.nside2npix(64))
+    path = tmp_path / "kappa.asdf"
+    asdf.AsdfFile({"data": {"kappa": kappa_hi}, "header": {}}).write_to(path)
+
+    out = load_abacus_kappa_observation({"file": str(path), "noise_seed": 5}, model)
+    npix_proj = hp.nside2npix(model.cmb_proj_nside)
+    assert np.asarray(out["kappa_obs"]).size == npix_proj
+    assert np.asarray(out["kappa_pred"]).size == npix_proj
+    packed = np.asarray(model.pack_kappa_obs(jnp.asarray(out["kappa_obs"])))
+    assert packed.size == model.cmb_u_dim and np.all(np.isfinite(packed))

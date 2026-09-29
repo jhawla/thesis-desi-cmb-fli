@@ -10,6 +10,7 @@ import numpy as np
 from desi_cmb_fli import metrics, plot
 from desi_cmb_fli.bricks import get_cosmology
 from desi_cmb_fli.cmb_lensing import (
+    bilinear_window,
     compute_shell_support_fractions,
     compute_theoretical_cl_gg,
     compute_theoretical_cl_kappa,
@@ -481,8 +482,10 @@ def galaxy_healpix_delta(truth, model, nside, chi_max):
     mask = E > 1e-6 * E.max()
     g_exp = E / E[mask].sum() * G[mask].sum()
     shot = 4 * np.pi / E.size * float(np.mean(1.0 / g_exp[mask])) if poisson else 0.0
+    # A catalogue histogram carries the pixel window; particles and mesh nodes are spread by the
+    # bilinear kernel, whose window is not the pixel one.
     return {"delta_masked": G[mask] / g_exp[mask] - 1.0, "mask_full": mask,
-            "kernel": kernel, "shot": shot}
+            "kernel": kernel, "shot": shot, "bilinear": not poisson}
 
 
 def measure_spectra(truth, model, model_config=None):
@@ -610,7 +613,8 @@ def measure_spectra(truth, model, model_config=None):
             chi_max_g = float(getattr(model, "chi_boundary", np.min(model.box_shape) / 2))
             gmap = galaxy_healpix_delta(truth, model, nside_g, chi_max_g)
         if gmap is not None:
-            wpix = hp.pixwin(nside_g, lmax=gxy_lmax)
+            wpix = (bilinear_window(nside_g, gxy_lmax) if gmap.get("bilinear")
+                    else hp.pixwin(nside_g, lmax=gxy_lmax))
             ell_tmp, cl_gg, info_gg = get_cl_healpix(
                 gmap["delta_masked"], gmap["mask_full"], lmax=gxy_lmax)
             gxy_shot = gmap["shot"]
@@ -719,7 +723,6 @@ def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
       radial window of the Born shells (``kappa_radial_window``): where ``chi_min`` cuts into the
       galaxies, the model map does not hold their matter.
     """
-    import healpy as hp
 
     ell_j = jnp.asarray(ell_theory, dtype=float)
     k_cut = None
@@ -728,9 +731,13 @@ def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
         k_cut = float(np.pi / np.max(init_cell))
     out = {"cl_kk": None, "cl_gg": None, "cl_kg": None, "k_cut": k_cut}
 
-    kappa_window = None
+    kappa_window, w_kappa = None, None
     if model.cmb_enabled:
         z_source = model.cmb_z_source
+        # Model and (since the loader resamples it through the same kernel) Abacus kappa both
+        # carry the Born projector's bilinear window at the projection nside.
+        w_proj = bilinear_window(int(model.cmb_proj_nside), int(np.ceil(np.max(ell_theory))))
+        w_kappa = np.interp(ell_theory, np.arange(w_proj.size), w_proj)
         if observation_mode == "closure":
             support = compute_shell_support_fractions(
                 model.observer_position, model.box_shape, model.cmb_nside,
@@ -741,12 +748,11 @@ def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
             out["cl_kk"] = np.asarray(compute_theoretical_cl_kappa_windowed(
                 cosmo_val, ell_j, model.cmb_r_shells, model.cmb_a_shells, model.cmb_d_r,
                 z_source, shell_weights=support, k_nyq=k_cut,
-            ))
+            )) * w_kappa**2
         else:
-            wpix = hp.pixwin(int(model.cmb_nside), lmax=int(np.ceil(np.max(ell_theory))) + 1)
             out["cl_kk"] = np.asarray(compute_theoretical_cl_kappa(
                 cosmo_val, ell_j, model.low_z_matter_start, float(model.chi_high_z_max), z_source,
-            )) * np.interp(ell_theory, np.arange(wpix.size), wpix) ** 2
+            )) * w_kappa**2
 
     if has_galaxies and gxy_kernel is not None:
         r, nz = (np.asarray(a, dtype=float) for a in gxy_kernel)
@@ -757,7 +763,7 @@ def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
         if model.cmb_enabled:
             out["cl_kg"] = np.asarray(compute_theoretical_cl_kg(
                 cosmo_val, ell_j, chi0, chi1, model.cmb_z_source, bE, n_steps=400,
-                k_nyq=k_cut, nz=(r, nz), kappa_window=kappa_window))
+                k_nyq=k_cut, nz=(r, nz), kappa_window=kappa_window)) * w_kappa
     return out
 
 
@@ -909,7 +915,8 @@ def plot_cmb_noise_spectrum(model, output_dir, show=False):
     except Exception as e:
         print(f"⚠️  Could not plot N_ell: {e}")
 
-def plot_warmup_diagnostics(model, state, init_params, truth, output_dir, show=False):
+def plot_warmup_diagnostics(model, state, init_params, truth, output_dir, show=False,
+                            fixed_latents=None):
     """
     Plot warmup diagnostics: Power Spectrum, Transfer Function, and Coherence
     comparing initial condition (init) vs warmed-up state (warm).
@@ -921,7 +928,11 @@ def plot_warmup_diagnostics(model, state, init_params, truth, output_dir, show=F
         truth (dict): The truth dictionary containing 'init_mesh'.
         output_dir (Path or str): Output directory.
         show (bool): Whether to show the plot.
+        fixed_latents (dict): The scalar latents the run holds fixed (``mcmc.fixed_params``),
+            which the sampler state does not carry; without them ``reparam`` falls back on the
+            default cosmology.
     """
+    fixed_latents = dict(fixed_latents or {})
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     truth = _truth_as_overdensity(truth, model)  # counts -> 1 + delta_g
@@ -943,7 +954,7 @@ def plot_warmup_diagnostics(model, state, init_params, truth, output_dir, show=F
             # Need to extract init_mesh from reparametrized params and convert to real
             def compute_kptc(params_dict):
                 # Reparam to get init_mesh in Fourier (base) space
-                params_base = model.reparam(params_dict)
+                params_base = model.reparam({**params_dict, **fixed_latents})
                 # Convert from Fourier to real space
                 init_mesh_real = jnp.fft.irfftn(params_base['init_mesh'])
                 return model.powtranscoh(init_mesh_true_real, init_mesh_real)
@@ -1014,7 +1025,7 @@ def plot_warmup_diagnostics(model, state, init_params, truth, output_dir, show=F
             from desi_cmb_fli.bricks import lin_power_interp
 
             def get_init_mesh_real(params_dict):
-                return jnp.fft.irfftn(model.reparam(params_dict)['init_mesh'])
+                return jnp.fft.irfftn(model.reparam({**params_dict, **fixed_latents})['init_mesh'])
 
             init_meshes_real = np.asarray(vmap(get_init_mesh_real)(init_params))
             warm_meshes_real = np.asarray(vmap(get_init_mesh_real)(state.position))
