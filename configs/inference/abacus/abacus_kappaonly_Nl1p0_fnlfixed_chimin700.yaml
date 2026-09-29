@@ -42,6 +42,7 @@ cmb_lensing:
   likelihood_mode: diagonal
   kl_rcond: 1e-2
   chi_high_z_max: 3942
+  chi_low_z_min: 292.6  # the HUGE light cone stops at z = 0.1: no matter below in the kappa map
   observer_mode: center
 truth_params:
   Omega_m: 0.315192

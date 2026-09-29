@@ -1270,9 +1270,10 @@ Runs, each in a 4 h interactive `salloc` with a bare `run_inference.py` (`docs/h
    2026-09-27 (`run_20260927_060952_58951736`, §7.5, with the pre-2026-09-27 κ loader; to be rerun,
    item 12). Its field reconstruction is measured (§7.5).
 4e. **Lower limit of `C_ℓ^{low-z}` on Abacus** — done 2026-09-27: `cmb_lensing.chi_low_z_min: 292.6`
-   (§2.6) in `config.yaml`, `abacus/abacus_joint_Nl1p0_chimin700.yaml` and
-   `abacus/abacus_kappaonly_Nl0p1_fnlfixed_chimin700.yaml`; the configs of runs already made keep
-   their setting.
+   (§2.6) in `config.yaml`, `abacus/abacus_joint_Nl1p0_chimin700.yaml`,
+   `abacus/abacus_kappaonly_Nl0p1_fnlfixed_chimin700.yaml` and (for its rerun, 2026-09-29)
+   `abacus/abacus_kappaonly_Nl1p0_fnlfixed_chimin700.yaml`; the configs of runs already made and
+   not rerun keep their setting.
 4f. **Does κ break a degeneracy at low density?** Done for 0.03 and 1.0 (§7.3): ≈ 80 % and 60 % of
    the variance κ removes comes out of the `f_NL`–`b1`/`b∇²` degeneracy. To repeat at 0.1 and 0.2
    when their joint runs are in, and to redo for any pair rerun at `chi_min` 700.
