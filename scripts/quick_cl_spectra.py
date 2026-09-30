@@ -100,7 +100,7 @@ def main():
 
     truth_params = cfg_dict.get("truth_params", {})
     base_seed = args.seed if args.seed is not None else cfg_dict.get("seed", 42)
-    output_dir = Path(args.output_dir or "figures")
+    output_dir = Path(args.output_dir or "figures/spectra_diagnostic")
     output_dir.mkdir(parents=True, exist_ok=True)
     n_real = args.n_realizations
 

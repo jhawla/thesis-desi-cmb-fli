@@ -283,7 +283,7 @@ def plot_field_slices(
             axes = list(axes)
 
         # Observed kappa
-        _obs_arr = np.asarray(truth["kappa_obs"])
+        _obs_arr = kappa_pred_on_obs_sphere(truth["kappa_obs"], model)  # Abacus: projection sphere
         _obs_plot = _obs_arr
         _obs_xlabel = "x [pix]"
         _obs_ylabel = "y [pix]"
@@ -536,8 +536,10 @@ def measure_spectra(truth, model, model_config=None):
     # The model stores the noisy observed kappa as a packed observable ("kappa_obs":
     # pseudo-a_lm vector or KL eigenmode coefficients, size != #pixels); the diagnostic
     # needs a pixel map, so reconstruct the (noisy) observed map from the observable.
+    # The Abacus loader gives it as a map on the projection sphere, like kappa_pred.
     if cmb_enabled and has_kappa_obs:
-        _ko = np.asarray(truth["kappa_obs"])
+        _ko = kappa_pred_on_obs_sphere(truth["kappa_obs"], model)
+        truth = {**truth, "kappa_obs": _ko}
         _pix_sizes = {npix_hp} | ({int(cmb_mask_eff.sum())} if cmb_mask_eff is not None else set())
         if _ko.ndim == 1 and _ko.size not in _pix_sizes:
             truth = {

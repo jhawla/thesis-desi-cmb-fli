@@ -59,6 +59,9 @@ def parse_args():
     parser.add_argument("--bias_run", default=None,
                         help="Abacus mode: take the biases (posterior means, second half) of this "
                              "run instead of truth_params, so the model is the fitted one")
+    parser.add_argument("--set_bias", nargs="+", default=[], metavar="NAME=VALUE",
+                        help="Abacus mode: override single biases after --bias_run, e.g. bn2=0 "
+                             "bnpar=0, to see which one moves the model spectrum")
     return parser.parse_args()
 
 
@@ -355,6 +358,11 @@ def _main_abacus(args, cfg_dict, output_dir):
           f"sigma8={truth_params.get('sigma8', '?')}")
 
     bias_from_run = posterior_bias_means(args.bias_run, model) if args.bias_run else {}
+    for item in args.set_bias:
+        name, value = item.split("=")
+        if name not in model.groups.get("bias", []):
+            raise ValueError(f"--set_bias: {name} is not a bias ({model.groups.get('bias', [])})")
+        bias_from_run[name] = float(value)
     cond_params = conditioning_params(
         model, truth_params, cfg_dict.get("abacus_truth_params", {}), bias_from_run
     )
@@ -478,7 +486,7 @@ def main():
     observation_mode = cfg_dict.get("observation_mode", "closure")
     print(f"observation_mode: {observation_mode}")
 
-    output_dir = Path(args.output_dir or "figures")
+    output_dir = Path(args.output_dir or "figures/spectra_diagnostic")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if observation_mode == "abacus":

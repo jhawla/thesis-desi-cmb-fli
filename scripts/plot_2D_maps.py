@@ -102,7 +102,7 @@ def main():
     observation_mode = cfg.get("observation_mode", "closure")
     truth_params = cfg.get("truth_params", {})
     seed = args.seed if args.seed is not None else cfg.get("seed", 42)
-    output_dir = Path(args.output_dir or "figures")
+    output_dir = Path(args.output_dir or "figures/maps")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Config: {args.config}")
@@ -189,6 +189,13 @@ def main():
             print(f"  κ std(predicted): {float(np.std(kappa_pred)):.4f}")
         if kappa_obs is not None:
             print(f"  κ std(observed):  {float(np.std(kappa_obs)):.4f}")
+
+    # predict() and the Abacus loader give kappa on the projection sphere (proj_oversamp > 1):
+    # show it on the observable sphere, band-limited as the likelihood sees it.
+    from desi_cmb_fli.validation import kappa_pred_on_obs_sphere
+
+    kappa_pred = None if kappa_pred is None else kappa_pred_on_obs_sphere(kappa_pred, model)
+    kappa_obs = None if kappa_obs is None else kappa_pred_on_obs_sphere(kappa_obs, model)
 
     # ── Save HEALPix maps if requested ───────────────────────────────────────
     if args.save_healpix and cmb_enabled:

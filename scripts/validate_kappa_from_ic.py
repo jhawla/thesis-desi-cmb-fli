@@ -17,7 +17,8 @@ holds, t = m + u with u the unmodelled line of sight: C_err = C_LOS and r = sqrt
 
 Needs a compute node the first time (the nside-16384 κ map does not fit a login node); the map
 resampled to the projection sphere is cached in the output directory and reused. The figure
-goes to figures/spectra_diagnostic/, the numbers (npz) to the output directory. `--abacus_map`
+goes to figures/spectra_diagnostic/ (the pole maps of --maps to figures/maps/), the spectra
+(npz) to the output directory with the caches. `--abacus_map`
 takes a map already on disk instead (any nside; e.g. `kappa_pred` of a run's truth.npz), in which
 case data and model need not share their angular window and the transfer and error columns carry
 the ratio of the two windows; the coherence does not.
@@ -160,6 +161,63 @@ def plot_polar_maps(t, m, lmax, chi_min, cell, fig_path, half_width_deg=25.0):
     print(f"  Saved {fig_path}")
 
 
+def plot_spectra(results, lmax, config_name, cell_size, fig=None):
+    """Spectra, coherence and error power per chi_min; dotted: what a model exact on the matter it
+    holds would give, since the Abacus map also holds the line of sight the model does not."""
+    fine = np.arange(2, lmax + 2, 4)
+    ell = 0.5 * (fine[:-1] + fine[1:] - 1)
+    fig_, axes = plt.subplots(1, 3, figsize=(18, 5))
+    for i, (chi_min, cl) in enumerate(results.items()):
+        b = {k: binned(v, fine) for k, v in cl.items()}
+        c = f"C{i}"
+        if i == 0:
+            axes[0].plot(ell, b["tt"] / 4, "k", lw=2, label="AbacusLensing")
+        axes[0].plot(ell, b["mm"] / 4, c, label=f"model from the Abacus IC, chi_min {chi_min:g}")
+        axes[0].plot(ell, (b["tt"] - b["los"]) / 4, c, ls=":")
+        axes[1].plot(ell, b["tm"] / np.sqrt(b["tt"] * b["mm"]), c, label=f"chi_min {chi_min:g}")
+        axes[1].plot(ell, np.sqrt(np.clip(1 - b["los"] / b["tt"], 0, 1)), c, ls=":")
+        axes[2].plot(ell, b["err"] / b["nell"], c, label=f"model error, chi_min {chi_min:g}")
+        axes[2].plot(ell, b["los"] / b["nell"], c, ls=":")
+    axes[0].set(
+        yscale="log",
+        ylabel=r"$C_\ell$",
+        title="Convergence spectra (bins of 4; dotted: AbacusLensing minus the LOS)",
+    )
+    axes[1].set(
+        ylim=(0, 1.02),
+        ylabel=r"$r_\ell$",
+        title="Coherence with AbacusLensing (dotted: exact model but for the LOS)",
+    )
+    axes[2].set(
+        yscale="log",
+        ylabel=r"$C_\ell^{\rm err}/N_\ell$",
+        title="Error power over the ACT DR6 noise (dotted: LOS covariance)",
+    )
+    axes[2].axhline(1, color="k", lw=0.6)
+    for ax in axes:
+        ax.set_xlabel(r"$\ell$")
+        ax.grid(alpha=0.3)
+        ax.legend(fontsize=8)
+    fig_.suptitle(
+        f"κ from the AbacusSummit HUGE ICs through the forward model vs AbacusLensing — "
+        f"{config_name}, cell {cell_size:.2f} Mpc/h",
+        fontsize=11,
+    )
+    fig_.tight_layout()
+    cell = f"{cell_size:g}".replace(".", "p")
+    fig_path = Path(
+        fig
+        or Path(__file__).resolve().parents[1]
+        / "figures"
+        / "spectra_diagnostic"
+        / f"kappa_from_abacus_ic_cell{cell}.png"
+    )
+    fig_path.parent.mkdir(parents=True, exist_ok=True)
+    fig_.savefig(fig_path, dpi=130)
+    plt.close(fig_)
+    return fig_path
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument(
@@ -187,16 +245,32 @@ def main():
     ap.add_argument(
         "--out_dir",
         default=None,
-        help="data (npz, cached Abacus map); default $SCRATCH/outputs/kappa_from_ic",
+        help="caches and the spectra npz; default $SCRATCH/outputs/kappa_from_ic",
     )
     ap.add_argument(
         "--fig",
         default=None,
         help="figure path; default figures/spectra_diagnostic/kappa_from_abacus_ic_cell<cell>.png",
     )
+    ap.add_argument(
+        "--replot",
+        default=None,
+        metavar="NPZ",
+        help="only redraw the figure from a kappa_from_ic.npz (with --cell_size for its title)",
+    )
     args = ap.parse_args()
 
     cfg = yaml.safe_load(open(args.config))
+    if args.replot:
+        d = np.load(args.replot)
+        chis = sorted({float(k.split("_", 1)[1]) for k in d.files})
+        results = {
+            c: {k.split("_", 1)[0]: d[k] for k in d.files if k.endswith(f"_{c}")} for c in chis
+        }
+        lmax = results[chis[0]]["tt"].size - 1
+        cell = float(args.cell_size or cfg["model"]["cell_size"])
+        print(f"Saved {plot_spectra(results, lmax, Path(args.config).name, cell, args.fig)}")
+        return
     out = Path(args.out_dir or Path(os.environ.get("SCRATCH", ".")) / "outputs" / "kappa_from_ic")
     out.mkdir(parents=True, exist_ok=True)
     truth_params = conditioning_params(
@@ -236,7 +310,7 @@ def main():
                 cell,
                 Path(__file__).resolve().parents[1]
                 / "figures"
-                / "spectra_diagnostic"
+                / "maps"
                 / f"kappa_from_abacus_ic_poles_cell{cell}_chimin{chi_min:g}.png",
             )
 
@@ -270,57 +344,13 @@ def main():
         print("  error / N_ell          ", np.round(b["err"] / b["nell"], 3))
         print("  LOS / N_ell            ", np.round(b["los"] / b["nell"], 3))
         print("  (error - LOS) / N_ell  ", np.round((b["err"] - b["los"]) / b["nell"], 3))
-    np.savez(
-        out / "kappa_from_ic.npz",
-        **{f"{k}_{c}": v for c, cl in results.items() for k, v in cl.items()},
+    fig_path = plot_spectra(
+        results, lmax, Path(args.config).name, float(model.cell_shape[0]), args.fig
     )
-
-    fine = np.arange(2, lmax + 2, 4)
-    ell = 0.5 * (fine[:-1] + fine[1:] - 1)
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    for i, (chi_min, cl) in enumerate(results.items()):
-        b = {k: binned(v, fine) for k, v in cl.items()}
-        c = f"C{i}"
-        if i == 0:
-            axes[0].plot(ell, b["tt"] / 4, "k", lw=2, label="AbacusLensing")
-        axes[0].plot(ell, b["mm"] / 4, c, label=f"model from the Abacus IC, chi_min {chi_min:g}")
-        axes[1].plot(ell, b["tm"] / np.sqrt(b["tt"] * b["mm"]), c, label=f"chi_min {chi_min:g}")
-        axes[1].plot(ell, np.sqrt(np.clip(1 - b["los"] / b["tt"], 0, 1)), c, ls=":")
-        axes[2].plot(ell, b["err"] / b["nell"], c, label=f"model error, chi_min {chi_min:g}")
-        axes[2].plot(ell, b["los"] / b["nell"], c, ls=":")
-    axes[0].set(yscale="log", ylabel=r"$C_\ell$", title="Convergence spectra (bins of 4)")
-    axes[1].set(
-        ylim=(0, 1.02),
-        ylabel=r"$r_\ell$",
-        title="Coherence with AbacusLensing (dotted: exact model but for the LOS)",
-    )
-    axes[2].set(
-        yscale="log",
-        ylabel=r"$C_\ell^{\rm err}/N_\ell$",
-        title="Error power over the ACT DR6 noise (dotted: LOS covariance)",
-    )
-    axes[2].axhline(1, color="k", lw=0.6)
-    for ax in axes:
-        ax.set_xlabel(r"$\ell$")
-        ax.grid(alpha=0.3)
-        ax.legend(fontsize=8)
-    fig.suptitle(
-        f"κ from the AbacusSummit HUGE ICs through the forward model vs AbacusLensing — "
-        f"{Path(args.config).name}, cell {model.cell_shape[0]:.2f} Mpc/h",
-        fontsize=11,
-    )
-    fig.tight_layout()
-    cell = f"{float(model.cell_shape[0]):g}".replace(".", "p")
-    fig_path = Path(
-        args.fig
-        or Path(__file__).resolve().parents[1]
-        / "figures"
-        / "spectra_diagnostic"
-        / f"kappa_from_abacus_ic_cell{cell}.png"
-    )
-    fig_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(fig_path, dpi=130)
-    print(f"\nSaved {fig_path} and {out / 'kappa_from_ic.npz'}")
+    # The spectra behind the figure go with the caches; --replot redraws from them.
+    npz_path = out / "kappa_from_ic.npz"
+    np.savez(npz_path, **{f"{k}_{c}": v for c, cl in results.items() for k, v in cl.items()})
+    print(f"\nSaved {fig_path} and {npz_path}")
 
 
 if __name__ == "__main__":

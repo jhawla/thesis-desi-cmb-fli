@@ -514,3 +514,11 @@ def test_the_abacus_observation_lives_on_the_projection_sphere(tmp_path):
     assert np.asarray(out["kappa_pred"]).size == npix_proj
     packed = np.asarray(model.pack_kappa_obs(jnp.asarray(out["kappa_obs"])))
     assert packed.size == model.cmb_u_dim and np.all(np.isfinite(packed))
+
+    # run_inference's start-up figures and quick_cl_spectra take these maps as they are.
+    from desi_cmb_fli.validation import measure_spectra, plot_field_slices
+
+    spectra = measure_spectra({"kappa_obs": out["kappa_obs"], "kappa_pred": out["kappa_pred"]}, model)
+    assert np.all(np.isfinite(spectra["cl_kk_obs"])) and np.all(np.isfinite(spectra["cl_kk_pred"]))
+    plot_field_slices(out, output_dir=tmp_path, box_shape=model.box_shape, observation_mode="abacus",
+                      cmb_mask=model.cmb_mask, cmb_nside=model.cmb_nside, model=model)
