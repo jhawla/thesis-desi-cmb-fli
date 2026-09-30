@@ -1,135 +1,207 @@
+"""How much of the CMB-lensing convergence the runs hold, against the depth of the line of sight.
 
+Limber C_l^kk (non-linear P(k), the fiducial cosmology of a run config) from the observer to the
+CMB, split by comoving distance. The integrand depends on the bounds only through the integration
+range, so it is tabulated once on a fine chi grid and every range is a cumulative sum of it (checked
+against cmb_lensing.compute_theoretical_cl_kappa at start). Two figures, both over the likelihood's
+band l = 2 ... 2 nside:
+
+- lensing_fraction_vs_z.png: power fraction C_l(chi_a -> chi(z_max)) / C_l(0 -> chi_s) against
+  z_max, from the observer and from the model's chi_min; red line at the model's box edge.
+- lensing_spectra_comparison.png: total C_l, what the model shells hold, what the data map holds
+  (Abacus or closure), the line-of-sight term of the likelihood covariance, the part in neither,
+  and N_l.
+
+Usage: python scripts/plot_lensing_fraction.py [--config configs/inference/abacus/abacus_joint_Nl1p0_chimin700.yaml]
+"""
+
+import argparse
+from pathlib import Path
+
+import jax
 import jax.numpy as jnp
 import jax_cosmo as jc
 import matplotlib.pyplot as plt
+import numpy as np
+import yaml
 
 from desi_cmb_fli.bricks import get_cosmology
-from desi_cmb_fli.cmb_lensing import compute_theoretical_cl_kappa
+from desi_cmb_fli.cmb_lensing import compute_theoretical_cl_kappa, lensing_kernel
+
+ROOT = Path(__file__).resolve().parents[1]
+BLUE, AQUA, ORANGE, RED, GREY = "#2a78d6", "#1baf7a", "#eb6834", "#e34948", "#8a8984"
 
 
-def plot_fraction_vs_depth():
-    print("Computing Lensing Signal Fraction...")
+def limber_integrand(cosmo, ell, chi, chi_s):
+    """(W^2 / chi^2) P_NL((l + 1/2)/chi, a(chi)), shape (n_ell, n_chi)."""
+    a = jc.background.a_of_chi(cosmo, chi)
+    w2 = (lensing_kernel(cosmo, chi, a, chi_s) / chi) ** 2
 
-    # 1. Define Cosmology
-    cosmo = get_cosmology(Omega_m=0.3, sigma8=0.8)
+    def one(ell_val):
+        k = (ell_val + 0.5) / chi
+        pk = jax.vmap(lambda ki, ai: jnp.squeeze(jc.power.nonlinear_matter_power(cosmo, ki, ai)))(k, a)
+        return w2 * pk
 
-    # 2. Parameters
-    z_source = 1100.0
-    # Use a range of scales for averaging
-    ell_arr = jnp.linspace(100, 2000, 20)
+    return np.asarray(jax.lax.map(one, jnp.asarray(ell, dtype=float)))
 
-    z_max_list = jnp.linspace(0.1, 5.0, 50)
 
-    # Pre-calculate chi for z_max list
-    chi_max_list = jc.background.radial_comoving_distance(cosmo, 1.0/(1.0+z_max_list))
+class LineOfSight:
+    """C_l over any [chi_a, chi_b] from one tabulated integrand (trapezoid, cumulative)."""
 
-    # 3. Compute Total Cl (0 -> z_source) for reference
-    print("Computing Total Cl...")
-    cl_tot = compute_theoretical_cl_kappa(cosmo, ell_arr, chi_min=1.0, chi_max=14000.0, z_source=z_source, n_steps=512)
-    cl_tot = jnp.where(cl_tot <= 0, 1e-30, cl_tot)
+    def __init__(self, cosmo, ell, chi_s, n_chi=3000):
+        self.chi = np.linspace(1.0, chi_s, n_chi)
+        f = limber_integrand(cosmo, ell, jnp.asarray(self.chi), chi_s)
+        steps = 0.5 * (f[:, 1:] + f[:, :-1]) * np.diff(self.chi)
+        self.cum = np.concatenate([np.zeros((f.shape[0], 1)), np.cumsum(steps, axis=1)], axis=1)
 
-    # 4. Loop over depths
-    ratios = []
+    def cl(self, chi_a, chi_b):
+        at = lambda c: np.array([np.interp(c, self.chi, row) for row in self.cum])  # noqa: E731
+        return at(min(chi_b, self.chi[-1])) - at(max(chi_a, self.chi[0]))
 
-    print("Computing Fractions vs Box Depth...")
-    for i, chi_max in enumerate(chi_max_list):
-        cl_box = compute_theoretical_cl_kappa(cosmo, ell_arr, chi_min=1.0, chi_max=chi_max, z_source=z_source, n_steps=256)
 
-        # Ratio of amplitudes
-        ratio = jnp.sqrt(cl_box / cl_tot)
-        ratios.append(ratio)
+def run_geometry(cfg):
+    cmb, model = cfg["cmb_lensing"], cfg["model"]
+    box = float(np.atleast_1d(model["box_shape"])[-1])
+    chi_boundary = box / 2 if cmb.get("observer_mode", "center") == "center" else box
+    truth = {**cfg.get("truth_params", {}), **cfg.get("abacus_truth_params", {})}
+    return {
+        "cosmo": {k: float(truth[k]) for k in ("Omega_m", "sigma8") if k in truth},
+        "z_source": float(cmb.get("z_source", 1089.28)),
+        "lmax": 2 * int(cmb["nside"]),
+        "chi_min": float(cmb.get("chi_min", 0.0)),
+        "chi_boundary": chi_boundary,
+        "chi_high_z_max": float(cmb["chi_high_z_max"]),
+        "chi_low_z_min": float(cmb.get("chi_low_z_min") or 1.0),
+        "z_gxy": cfg.get("abacus_galaxy", {}).get("z_range"),
+        "nell_file": cmb.get("cmb_noise_nell"),
+        "nell_scale": float(cmb.get("cmb_noise_scaling", 1.0)),
+        "data": "Abacus map" if cfg.get("observation_mode") == "abacus" else "closure data map",
+    }
 
-        if i % 10 == 0:
-            print(f"  z={z_max_list[i]:.2f}, Mean Fraction: {jnp.mean(ratio):.2%}")
 
-    ratios = jnp.array(ratios) # Shape [N_z, N_ell]
+def weighted(ell, x):
+    return float(np.sum((2 * ell + 1) * x))
 
-    # Average over ell
-    mean_ratio = jnp.mean(ratios, axis=1)
-    min_ratio = jnp.min(ratios, axis=1)
-    max_ratio = jnp.max(ratios, axis=1)
 
-    # 5. Plotting
-    plt.figure(figsize=(10, 6))
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument(
+        "--config", default=str(ROOT / "configs/inference/abacus/abacus_joint_Nl1p0_chimin700.yaml")
+    )
+    ap.add_argument("--out_dir", default=str(ROOT / "figures/lensing_fraction"))
+    args = ap.parse_args()
 
-    plt.plot(z_max_list, mean_ratio, label=r'Mean Fraction ($\ell \in [100, 2000]$)', color='blue', lw=3)
-    plt.fill_between(z_max_list, min_ratio, max_ratio, color='blue', alpha=0.2, label='Variation with $\ell$')
+    g = run_geometry(yaml.safe_load(open(args.config)))
+    cosmo = get_cosmology(**g["cosmo"])
+    chi_s = float(jc.background.radial_comoving_distance(cosmo, jnp.atleast_1d(1 / (1 + g["z_source"])))[0])
+    ell = np.arange(2, g["lmax"] + 1).astype(float)
+    los = LineOfSight(cosmo, ell, chi_s)
 
-    plt.axhline(1.0, color='k', linestyle='--', alpha=0.5)
+    # Check the cumulative table against the direct Limber integral of the model.
+    ref = np.asarray(compute_theoretical_cl_kappa(cosmo, jnp.asarray(ell), g["chi_min"], g["chi_boundary"],
+                                                  g["z_source"], n_steps=1000))
+    dev = np.max(np.abs(los.cl(g["chi_min"], g["chi_boundary"]) / ref - 1))
+    print(f"chi_s = {chi_s:.1f} Mpc/h; cumulative table vs compute_theoretical_cl_kappa: max |rel. dev.| {dev:.2e}")
 
-    # Vertical Lines
-    plt.axvline(0.83, color='red', linestyle='--', label='Box Depth ($z \sim 0.83, \chi=2000$)')
+    z_of_chi = lambda c: float(1 / jc.background.a_of_chi(cosmo, jnp.atleast_1d(c))[0] - 1)  # noqa: E731
+    tot = los.cl(1.0, chi_s)
+    parts = {
+        "model shells": los.cl(g["chi_min"], g["chi_boundary"]),
+        "data map": los.cl(g["chi_low_z_min"], g["chi_high_z_max"]),
+        "LOS in the covariance": los.cl(g["chi_low_z_min"], g["chi_min"])
+        + los.cl(g["chi_boundary"], g["chi_high_z_max"]),
+        "in neither": los.cl(1.0, g["chi_low_z_min"]) + los.cl(g["chi_high_z_max"], chi_s),
+    }
+    nell = None
+    if g["nell_file"]:
+        tab = np.loadtxt(g["nell_file"])
+        nell = g["nell_scale"] * np.interp(ell, tab[:, 0], tab[:, 1])
 
-    plt.xlabel(r'Box Depth $z_{max}$')
-    plt.ylabel(r'Amplitude Ratio $\sqrt{C_\ell^{box} / C_\ell^{total}}$')
-    plt.title('CMB Lensing Signal Captured by Box (Depth 2000 Mpc/h)')
-    plt.grid(True, alpha=0.3)
-    plt.legend(loc='lower right')
-    plt.ylim(0, 1.1)
+    bands = [(2, 4), (5, 10), (11, 20), (21, 36), (37, g["lmax"])]
+    print(f"Power fraction of C_l(0 -> chi_s), (2l+1)-weighted per band; data-map matter from chi = "
+          f"{g['chi_low_z_min']:g} to {g['chi_high_z_max']:g} Mpc/h:")
+    for lo, hi in bands:
+        m = (ell >= lo) & (ell <= hi)
+        row = "  ".join(f"{k} {weighted(ell[m], v[m]) / weighted(ell[m], tot[m]):.3f}" for k, v in parts.items())
+        extra = f"  model/data map {weighted(ell[m], parts['model shells'][m]) / weighted(ell[m], parts['data map'][m]):.3f}"
+        if nell is not None:
+            cov = weighted(ell[m], nell[m] + parts["LOS in the covariance"][m])
+            extra += f"  N_l {weighted(ell[m], nell[m]) / weighted(ell[m], tot[m]):.2f}"
+            extra += f"  (N_l + LOS) / (N_l + LOS + neither) {cov / (cov + weighted(ell[m], parts['in neither'][m])):.2f}"
+        print(f"  l {lo}-{hi}: {row}{extra}")
 
-    output_path = 'figures/lensing_fraction/lensing_fraction_vs_z.png'
-    plt.savefig(output_path, dpi=150)
-    print(f"✓ Plot saved to {output_path}")
+    # ---- fraction vs depth -------------------------------------------------------------------
+    z_max = np.linspace(0.05, 5.0, 100)
+    chi_max = np.asarray(jc.background.radial_comoving_distance(cosmo, jnp.asarray(1 / (1 + z_max))))
+    z_min_model, z_box = z_of_chi(g["chi_min"]), z_of_chi(g["chi_boundary"])
 
-def plot_spectra_comparison():
-    print("\nComputing Lensing Spectra Comparison (Box vs Total)...")
+    def curve(chi_a):
+        frac = np.array([los.cl(chi_a, c) / tot if c > chi_a else np.zeros_like(tot) for c in chi_max])
+        mean = np.array([weighted(ell, f * tot) / weighted(ell, tot) for f in frac])
+        return mean, frac.min(axis=1), frac.max(axis=1)
 
-    # 1. Define Cosmology
-    cosmo = get_cosmology(Omega_m=0.3, sigma8=0.8)
-    z_source = 1100.0
+    fig, ax = plt.subplots(figsize=(8, 5))
+    if g["z_gxy"]:
+        ax.axvspan(*g["z_gxy"], color=GREY, alpha=0.15, lw=0)
+        ax.text(np.mean(g["z_gxy"]), 1.02, "LRG shell", ha="center", va="bottom", fontsize=9, color="0.3")
+    for chi_a, color, ls, label in (
+        (1.0, BLUE, "-", r"matter from the observer to $z_\mathrm{max}$"),
+        (g["chi_min"], AQUA, "--",
+         rf"matter from $\chi_\mathrm{{min}}$ = {g['chi_min']:.0f} Mpc/$h$ to $z_\mathrm{{max}}$ (model)"),
+    ):
+        mean, lo, hi = curve(chi_a)
+        ok = chi_max > chi_a
+        ax.plot(z_max[ok], mean[ok], color=color, ls=ls, lw=2, label=label)
+        ax.fill_between(z_max[ok], lo[ok], hi[ok], color=color, alpha=0.15, lw=0)
+    f_model = weighted(ell, parts["model shells"]) / weighted(ell, tot)
+    ax.axvline(z_box, color=RED, ls="--", lw=1.5,
+               label=rf"box edge of the runs, $\chi$ = {g['chi_boundary']:.0f} Mpc/$h$ ($z$ = {z_box:.2f})")
+    ax.plot([z_box], [f_model], "o", color=RED, ms=7)
+    ax.annotate(f"model holds {f_model:.0%}", (z_box, f_model), xytext=(10, -14),
+                textcoords="offset points", fontsize=9, color="0.15")
+    f_map = weighted(ell, parts["data map"]) / weighted(ell, tot)
+    z_map = z_of_chi(g["chi_high_z_max"])
+    ax.plot([z_map], [f_map], "s", color=AQUA, ms=7, mec="k", mew=0.6)
+    ax.annotate(f"{g['data']} holds {f_map:.0%}", (z_map, f_map), xytext=(10, 6),
+                textcoords="offset points", fontsize=9, color="0.15")
+    ax.axvline(z_min_model, color=GREY, ls=":", lw=1)
+    ax.text(z_min_model, 0.02, r" $\chi_\mathrm{min}$", fontsize=9, color="0.3", ha="left")
+    ax.axhline(1.0, color="0.5", ls=":", lw=1)
+    ax.set_xlim(0, z_max[-1])
+    ax.set_ylim(0, 1.08)
+    ax.set_xlabel(r"depth of the integration $z_\mathrm{max}$")
+    ax.set_ylabel(r"fraction of the full CMB-lensing power $C_\ell^{\kappa\kappa}(0 \to \chi_s)$")
+    ax.set_title(rf"CMB-lensing power captured, $\ell$ = 2–{g['lmax']} (band: spread over $\ell$)")
+    ax.grid(alpha=0.25)
+    ax.legend(loc="lower right", fontsize=9)
+    out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(out / "lensing_fraction_vs_z.png", dpi=150)
+    plt.close(fig)
 
-    # High resolution ell for smooth plot
-    ell_plot = jnp.geomspace(10, 3000, 100)
+    # ---- spectra -----------------------------------------------------------------------------
+    fig, ax = plt.subplots(figsize=(11, 5))
+    ax.loglog(ell, tot, color="k", lw=2, label=r"total, observer $\to$ CMB")
+    ax.loglog(ell, parts["model shells"], color=BLUE, lw=2,
+              label=rf"model shells, {g['chi_min']:.0f}–{g['chi_boundary']:.0f} Mpc/$h$")
+    ax.loglog(ell, parts["data map"], color=AQUA, ls="--", lw=2,
+              label=rf"{g['data']}, {g['chi_low_z_min']:.1f}–{g['chi_high_z_max']:.0f} Mpc/$h$")
+    ax.loglog(ell, parts["LOS in the covariance"], color=ORANGE, ls="-.", lw=2,
+              label=r"line of sight in the covariance, $C_\ell^\mathrm{LOS}$")
+    ax.loglog(ell, parts["in neither"], color=RED, ls=":", lw=2, label=f"in neither (absent from the {g['data']})")
+    if nell is not None:
+        ax.loglog(ell, nell, color=GREY, lw=1.5, label=rf"$N_\ell$ (ACT DR6 $\times${g['nell_scale']:g})")
+    ax.set_xlabel(r"$\ell$")
+    ax.set_ylabel(r"$C_\ell^{\kappa\kappa}$ (Limber, non-linear $P$)")
+    ax.set_title("What each part of the line of sight contributes")
+    ax.grid(alpha=0.25, which="both")
+    ax.legend(fontsize=8, loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=False)
+    fig.tight_layout()
+    fig.savefig(out / "lensing_spectra_comparison.png", dpi=150)
+    plt.close(fig)
+    print(f"Saved {out / 'lensing_fraction_vs_z.png'} and {out / 'lensing_spectra_comparison.png'}")
 
-    # 2. Define Depths
-    chi_box = 2000.0
-    chi_total = 14000.0
-
-    # Calculate Z for labeling
-    def get_z(chi_target):
-        z_grid = jnp.linspace(0, 1100, 10000)
-        chi_grid = jc.background.radial_comoving_distance(cosmo, 1.0/(1.0+z_grid))
-        return jnp.interp(chi_target, chi_grid, z_grid)
-
-    z_box = get_z(chi_box)
-    print(f"  Box Depth: chi={chi_box} => z={z_box:.2f}")
-
-    # 3. Compute Spectra
-    print("  Computing C_l (Box)...")
-    cl_box = compute_theoretical_cl_kappa(cosmo, ell_plot, chi_min=1.0, chi_max=chi_box, z_source=z_source, n_steps=512)
-
-    print("  Computing C_l (Total)...")
-    cl_total = compute_theoretical_cl_kappa(cosmo, ell_plot, chi_min=1.0, chi_max=chi_total, z_source=z_source, n_steps=1024)
-
-    # Compute Ratio
-    ratio_ampl = jnp.sqrt(cl_box / cl_total)
-
-    # 4. Plot
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10), sharex=True, gridspec_kw={'height_ratios': [2, 1]})
-
-    # Upper: Spectra
-    ax1.loglog(ell_plot, cl_total, 'k-', lw=2, label='Total Signal ($z < 1100$)')
-    ax1.loglog(ell_plot, cl_box, 'r--', lw=2, label=f'Box Signal ($z < {z_box:.2f}$)')
-
-    ax1.set_ylabel(r'$C_\ell^{\kappa\kappa}$')
-    ax1.set_title('Comparison of Lensing Power Spectra (Theoretical)')
-    ax1.legend()
-    ax1.grid(True, which='both', alpha=0.2)
-
-    # Lower: Ratio
-    ax2.semilogx(ell_plot, ratio_ampl, 'b-', lw=2, label=r'Amplitude Ratio $\sqrt{C_\ell^{box}/C_\ell^{tot}}$')
-    ax2.axhline(1.0, color='k', ls=':', alpha=0.5)
-    ax2.set_xlabel(r'Multipole $\ell$')
-    ax2.set_ylabel('Amplitude Fraction')
-    ax2.set_ylim(0, 1.1)
-    ax2.grid(True, which='both', alpha=0.2)
-    ax2.legend()
-
-    plt.tight_layout()
-    output_path = 'figures/lensing_fraction/lensing_spectra_comparison.png'
-    plt.savefig(output_path, dpi=150)
-    print(f"✓ Spectra comparison saved to {output_path}")
 
 if __name__ == "__main__":
-    plot_fraction_vs_depth()
-    plot_spectra_comparison()
+    main()

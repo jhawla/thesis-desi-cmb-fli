@@ -130,7 +130,7 @@ distance maps `χ(a)`/`a(χ)` are served — **in `nbody` only** — by a **bili
 the `jax_cosmo` ODE solvers, whose in-graph CPU callbacks otherwise exhaust LLVM memory. It is not a
 global replacement: `cmb_lensing` still calls `jax_cosmo` inside the graph with the *sampled*
 cosmology, notably `radial_comoving_distance` for `χ_s` in `convergence_Born_spherical`
-(`cmb_lensing.py:301`, once per likelihood evaluation) and in `compute_cl_high_z` /
+(once per likelihood evaluation) and in `compute_cl_high_z` /
 `compute_theoretical_cl_*` under the `exact`/`exact_linear` high-z modes. Tables are
 precomputed once on CPU over `n_Om=100` values of `Ω_m ∈ [0.05, 0.7]` (`χ` on `logspace(-4,0,512)`),
 then bilinearly interpolated in `(Ω_m, a)`. Activated automatically when the fixed background matches
@@ -178,9 +178,8 @@ Under `evolution: lpt`, `ptcl_oversamp` **must equal** `evol_oversamp` (`__post_
 otherwise): jaxpm's `cic_read` reshapes the particle array to the force-grid shape, so LPT needs
 exactly one particle per evol cell.
 
-Flow in `FieldLevelModel.evolve`: init field → chreshape→evol → `add_png` + PNG re-band-limit
-(`model.py:1212-1221`) → LPT displacement → paint+crop to final; `lagrangian_weights`
-(`model.py:1275`) comes **after** and is handed `init_mesh_evol_grid`, i.e. the **pre-`add_png`**
+Flow in `FieldLevelModel.evolve`: init field → chreshape→evol → `add_png` + PNG re-band-limit → LPT
+displacement → paint+crop to final; `lagrangian_weights` comes **after** and is handed `init_mesh_evol_grid`, i.e. the **pre-`add_png`**
 Gaussian field, which is why the bias products read the Gaussian field and why `phi` is recovered
 correctly there.
 
@@ -457,8 +456,28 @@ is `1/w_ℓ²` too large, 1.14 × at ℓ = 50 and 1.24 × at ℓ = 64 at `proj_n
 - `exact_linear` — recompute the Limber integral each step with the **linear** P(k) (slow).
 - `exact` — full recompute each step (very slow).
 
+**Depth of the data map.** The line-of-sight term holds exactly the matter the data map contains
+and the model does not: `χ_0 → chi_min` and `chi_boundary → chi_high_z_max`. On a real map that is
+the observer to `χ_s` (9388 Mpc/h at the fiducial cosmology). Every run here, closure and Abacus,
+has `chi_high_z_max: 3942` (z = 2.40), the last lens plane of `kappa_00045` — the closure configs
+copy the Abacus geometry (§7.3) — and the Abacus configs since 2026-09-27 `chi_low_z_min: 292.6`
+(z = 0.10; earlier Abacus runs integrate the low-z term from χ = 1, §7.4). The matter beyond 3942
+Mpc/h, and on Abacus below 292.6, is therefore in neither the data nor the covariance:
+data and likelihood agree, but the map is that of an experiment without that matter. Limber
+(non-linear P, Abacus cosmology, `scripts/plot_lensing_fraction.py`), fraction of the power from the
+observer to `χ_s`, ℓ bins 2–4 / 5–10 / 11–20 / 21–36 / 37–64 weighted by 2ℓ+1: model shells (700 →
+3750) 0.54 / 0.64 / 0.70 / 0.71 / 0.65; Abacus map 0.77 / 0.83 / 0.83 / 0.79 / 0.72; in neither
+0.23 / 0.17 / 0.17 / 0.21 / 0.28 on Abacus and 0.08 / 0.11 / 0.15 / 0.20 / 0.28 in closure. With ACT
+DR6 `N_ℓ` ×1, `N_ℓ + C_ℓ^LOS` is 0.84 / 0.83 / 0.78 / 0.70 / 0.64 (Abacus) and 0.94 / 0.89 / 0.81 /
+0.72 / 0.64 (closure) of its value on a real map: the κ constraints and gains of §7 are those of a
+map with that smaller variance. Figures `figures/lensing_fraction/lensing_fraction_vs_z.png` and
+`lensing_spectra_comparison.png`.
+
 Noise: ACT DR6 `N_ℓ^{κκ}` (`data/N_L_kk_act_dr6_lensing_v1_baseline.txt`, columns ℓ, N_ℓ) or Planck
-PR4; `cmb_noise_scaling` (default 1.0) multiplies it to test sensitivity. Noise realizations:
+PR4; `cmb_noise_scaling` (default 1.0) multiplies it to test sensitivity. The ACT file is constant
+(8.766·10⁻⁸) below L = 40 and varies from L = 40 on, so most of the band ℓ ≤ 64 sees a flat noise.
+The band is signal-dominated: the full `C_ℓ^κκ` (observer to `χ_s`, Limber) over this `N_ℓ` is
+1.8, 2.4, 2.2 at ℓ = 10, 30, 64, and crosses 1 at ℓ ≈ 150 (0.96). Noise realizations:
 `sample_healpix_gaussian`; map RMS: `compute_sigma_hp`.
 
 ### 3.3 Geometry & observer
@@ -470,7 +489,7 @@ PR4; `cmb_noise_scaling` (default 1.0) multiplies it to test sensitivity. Noise 
   both probes cover the same lightcone volume — no box rotation (the box is axis-aligned).
 - **Curved-sky scope** (`curved_sky`): galaxy LOS/RSD and CMB projection; CMB lensing is always
   curved-sky HEALPix.
-- **Even mesh**: all axes forced even (MCLMC).
+- **Even mesh**: all axes forced even (the real↔complex Gaussian repacking, §2.1).
 
 ---
 
@@ -478,7 +497,7 @@ PR4; `cmb_noise_scaling` (default 1.0) multiplies it to test sensitivity. Noise 
 
 `observation_mode` (`config.yaml`, `utils.ObservationMode`) supports **exactly two values**,
 `closure` and `abacus`. **Real observational data (DESI-LRG × Planck/ACT κ) is not yet supported** —
-it is a roadmap item (§7.3), not a runnable mode; the only external data the pipeline ingests today is
+it is a roadmap item, not a runnable mode; the only external data the pipeline ingests today is
 AbacusSummit.
 
 - **`closure`** — synthetic `obs`/`kappa_obs` generated from `truth_params` via `model.predict`
@@ -611,7 +630,8 @@ the script and are not exposed by any config switch.
 ordinary latents and **can be inferred** jointly with the field and biases (they carry priors in
 `latents`, and the background emulator §2.3 covers the varying-`Ω_m` case). However, **the current
 scientific direction is to fix them** and concentrate the constraining power on the primordial
-non-Gaussianity parameters (§2.2). In practice this means: put `Omega_m, sigma8` in
+non-Gaussianity parameters (§2.2); the one exception is the κ-only comparison with a two-point
+analysis (§8 item 15), which frees them and fixes `fNL`. In practice this means: put `Omega_m, sigma8` in
 `mcmc.fixed_params` (the default `config.yaml` ships `fixed_params: [Omega_m, sigma8]`) **and** run the
 high-z correction in the fixed-cosmology mode (`cmb_lensing.high_z_mode: fixed`, which caches
 `C_ℓ^{high-z}` at the fiducial cosmology — this is also what `pixel_exact` requires, §3.2). The
@@ -746,7 +766,7 @@ has failed and compute is being wasted (since `Var[E] = O(ε⁶)`, the step is s
   with the caches (`--replot` redraws from it).
   `--maps` also saves the model maps and plots Abacus, model and their difference around both
   poles, at full resolution and at ℓ ≤ `cmb_lmax`
-  (`kappa_from_abacus_ic_poles_cell<cell>_chimin<chi_min>.png`), printing the difference in the
+  (`figures/maps/kappa_from_abacus_ic_poles_cell<cell>_chimin<chi_min>.png`), printing the difference in the
   eight polar-cap pixels against the rest of the sphere (§8 item 11).
 - **`kappa_stiffness.py`** — the largest eigenvalue of the Hessian of −log p with respect to the
   field (`init_mesh_`, the sampled basis), by power iteration on exact reverse-over-reverse
@@ -798,7 +818,10 @@ against closed forms in `tests/test_fisher.py`).
 - **`plot_2D_maps.py`** — κ (and galaxy-projection) maps for one forward realization. The galaxy panel
   ray-casts the mesh (`project_mesh_to_healpix`, node `i` at `i·dx` as in the painting) — display only.
 - **`benchmark_highz_cl_modes.py`** — precision/speed of the high-z modes; **`plot_lensing_fraction.py`**
-  — box-captured lensing fraction vs depth; **`make_abacus_kappa_mask.py`** — degrade the AbacusLensing
+  — Limber κ power split along the line of sight at a run config's geometry (`--config`, default
+  the Abacus joint at 700): the fraction captured vs depth from the observer and from `chi_min`,
+  and the spectra of the model shells, the data map, the covariance's line of sight, the part in
+  neither and `N_ℓ` (§3.2); **`make_abacus_kappa_mask.py`** — degrade the AbacusLensing
   footprint to a model-nside `.npy`; **`plot_highz_correction_vs_depth.py`** — mean high-z κ correction
   amplitude vs box depth (`χ_min`); **`plot_linear_vs_nbody.py`** — linear (Kaiser) vs N-body evolved
   matter field from the same IC; **`plot_cmb_noise_comparison.py`** — ACT DR6 vs Planck PR4 κ noise
@@ -820,14 +843,16 @@ scale-dependent bias amplitude `fNL_bp ≈ 0` (the meaningful observable) while 
 matter-φ² `fNL` wanders; `fNL_bias` is not identifiable and is not used. These runs predate the
 number-count likelihood and are not comparable with anything below.
 
-**Reference configuration: the HUGE box, §7.1–7.3.** Every current result uses it, in abacus mode
-(§7.1–7.2) and in closure at the same geometry (§7.3).
+**Reference configuration: the HUGE box, §7.1–7.7.** Every current result uses it, in abacus mode
+(§7.1–7.2, 7.4–7.6) and in closure at the same geometry (§7.3, 7.7).
 
 ### 7.1 Full-sky κ × LRG on the HUGE box — measured
 
 Reference pair, identical configuration apart from `cmb_lensing.enabled`: completeness cut 0.3,
 `gxy_ngbar_free: false`, `png_type: fNL`, counts likelihood, ACT DR6 `N_ℓ` at ×1, `nside 32`,
-`chi_min 350`, `shell_weights: linear`, `proj_oversamp: 2`.
+`chi_min 350`, `shell_weights: linear`, `proj_oversamp: 2`. Both runs, and those of §7.2, predate the
+per-pixel normalisation of the projector (§8 item 11) and read the κ map through `ud_grade`
+(§8 item 12).
 
 | | run | batches |
 |---|---|---|
@@ -953,9 +978,9 @@ occupy the LRG shell χ ∈ [1094, 2447] exactly as in abacus mode and the galax
 exactly (`gxy_count` 266.920 in both); `model.gxy_density` is not the knob, the loader overwrites it.
 `truth_params` pin every sampled latent to the §7.1 galaxy-only posterior means (`b1 1.19`,
 `b2 0.68`, `bs2 −0.48`, `bn2 78`, `bnpar −45`, `f_NL 0`). The initial field is a fresh Gaussian draw
-(`seed`), not the Abacus ICs. Configs: `configs/inference/scan/closure_d<scale>_{gxyonly,joint}.yaml`,
-which differ from each other only in `job_name`, `closure_gxy_density_scale` and
-`cmb_lensing.enabled`.
+(`seed`), not the Abacus ICs. Configs: `configs/inference/scan/closure_d<scale>_{gxyonly,joint,joint_chimin700}.yaml`,
+which differ from each other only in `job_name`, `closure_gxy_density_scale`,
+`cmb_lensing.enabled` and `cmb_lensing.chi_min`.
 
 **Density 1.0, galaxy-only** (`run_20260922_071921_58748954`, 31 batches before its resume,
 second half): `f_NL` −2.7 ± 4.3 (pull −0.62), R-hat ≤ 1.05, every bias within 0.5σ of its truth. The field reconstruction
@@ -963,7 +988,7 @@ behaves as on Abacus: `r ≈ 0.96` inside the galaxy shell, zero outside, `T(k) 
 abacus-mode twin `58153868` at the same geometry, σ ratios closure/abacus are 0.75 (`f_NL`), 0.91
 (`b1`), 0.90 (`b2`), 0.69 (`bs2`), 0.93 (`bn2`), 0.93 (`bnpar`). Not yet interpretable as model
 error: at field level σ(f_NL) depends on the realised large-scale potential, and the two runs do not
-share their initial field. The joint twin is running.
+share their initial field. Its joint twin is in the table below.
 
 **The density scan.** Densities 1.0, 0.2, 0.1, 0.03 × catalogue n̄, one galaxy-only and one joint run
 each, `N_ℓ` ×1. The measured quantity is the paired gain `1 − σ_joint/σ_gxy` at each density.
@@ -1074,7 +1099,9 @@ runs decide.
 The κ model on its own against the real Abacus κ map (`kappa_00045`, full sky), with no galaxies:
 `galaxies_enabled: false`, `Omega_m`, `sigma8` and `f_NL` fixed at the Abacus values, ACT DR6
 `N_ℓ` ×1, `nside 32`, `shell_weights: linear`, `proj_oversamp: 2`. Only the field is sampled. The
-two runs differ only in `chi_min`:
+two runs differ only in `chi_min`. They, and the ×0.1 run below, predate the per-pixel normalisation
+of the projector (§8 item 11) and read the κ map through `ud_grade` (§8 item 12); the two runs at
+700 are to be rerun:
 
 | `chi_min` | run | config | batches (second half used) |
 |---|---|---|---|
@@ -1158,7 +1185,8 @@ in the same bands. No Born shell lies below 700 Mpc/h, so κ carries no direct i
 field there. The inner-cone reconstruction at 250 Mpc/h smoothing does not drop for all that; it
 is measured on the Abacus joint at 700 in §7.5.
 
-**Consequence for the closure scan (§7.3).** The closure joint runs use `chi_min` 350. There the
+**Consequence for the closure scan (§7.3).** The closure joint runs of the §7.3 table use `chi_min`
+350; every joint since runs at 700 (§8 item 4h). At 350 the
 lattice is in the truth and in the model alike: the cross shows in both maps, and the truth C_ℓ
 spikes at ℓ > 50 raise the Wiener coherence at ℓ ≥ 48 to 0.68, against 0.51 on Abacus. The
 closure κ therefore carries top-of-band power that the Abacus κ does not have. The galaxy-only runs
@@ -1346,11 +1374,13 @@ Runs, each in a 4 h interactive `salloc` with a bare `run_inference.py` (`docs/h
    `chi_min` 700 and both runs at 0.2 pending.
 4. **κ-only on Abacus** — done 2026-09-25 (§7.4): passes at `chi_min` 700, fails at 350. The
    `f_NL`-free twin `abacus_kappaonly_Nl1p0.yaml` (`run_20260924_060836_58822478`, `chi_min` 350)
-   does not converge on `f_NL`.
+   does not converge on `f_NL`. The run at 700 is to be redone with the current loader and projector
+   (items 11–12).
 4b. **Joint closure at `chi_min` 700** — done 2026-09-25 (§7.4): gain 14 % ± 1 % against 17 % ± 3 % at
    350, same degeneracy channel. Decided 2026-09-27: every joint at `chi_min` 700 (item 4h).
 4c. **κ-only on Abacus at `N_ℓ` ×0.1, `chi_min` 700** — done 2026-09-25 (§7.4): no model error
-   detected, coherence as expected bin by bin, line-of-sight covariance sized right.
+   detected, coherence as expected bin by bin, line-of-sight covariance sized right. To be redone
+   with the current loader and projector (items 11–12).
 4h. **All joints at `chi_min` 700** (decided 2026-09-27, paper consistency): `scan/closure_d{0p10,0p20,1p00}_joint_chimin700.yaml`
    (d0.03 done), and the Abacus joint `abacus/abacus_joint_Nl1p0_chimin700.yaml` — done
    2026-09-27 (`run_20260927_060952_58951736`, §7.5, with the pre-2026-09-27 κ loader; to be rerun,
@@ -1366,11 +1396,49 @@ Runs, each in a 4 h interactive `salloc` with a bare `run_inference.py` (`docs/h
 4g. **κ recorded per batch** — done 2026-09-25 (`kappa_batch_*.npz`, `kappa_posterior_mean.png`):
    every run launched from now on has the posterior mean and spread of κ; the runs of §7.3–7.4
    predate it.
-4d. **Abacus joint at `chi_min` 700**: `configs/inference/abacus/abacus_joint_Nl1p0_chimin700.yaml`.
-   The §7.1 reference joint runs at `chi_min` 350, where §7.4 shows κ model error at the top of the
-   band; paired with the unchanged galaxy-only reference (item 5).
-5. **Resume the Abacus galaxy-only reference** `run_20260910_033019_58153868` to at least 92 batches
-   (caps the precision of every ratio in §7.1–7.2).
+5. **Resume the Abacus galaxy-only reference** `run_20260910_033019_58153868` (55 batches) to 140, at
+   least 92 (caps the precision of every ratio in §7.1–7.2 and 7.5); it pairs with the Abacus joint
+   at 700 of item 4h.
+
+15. **Field level vs. an independent two-point analysis on the same κ map** (with Constantin
+   Payerne; decided 2026-09-30, to prepare before the runs; paper §6, `sec:res_twopt`). We send one
+   closure κ map of our model with its noise spectrum; he runs his own standard analysis on it
+   (C_ℓ^κκ and an MCMC, theory from CCL, code independent of ours) for `Omega_m` and `sigma8`. We run
+   the field level on exactly that map: κ only, `Omega_m` and `sigma8` free, `fNL` fixed — the
+   reverse of the `fixed_params: [Omega_m, sigma8]` every current config carries.
+   - **What the map is.** In closure `run_inference.py` draws the data once at start-up,
+     `model.predict(truth_params, rng=jr.key(seed))`, and writes them to `truth.npz`. In the
+     diagonal likelihood mode `kappa_obs` is the packed a_ℓm (ℓ = 2–64 at nside 32) of the Born κ
+     from `chi_min` to the box edge (particles scattered at the projection nside with the bilinear
+     kernel, tents in χ), plus a Gaussian draw of variance N_ℓ + C_ℓ^{high-z} (+ C_ℓ^{low-z} below
+     `chi_min`, held in the cached line-of-sight term).
+   - **Same map, guaranteed.** Export it from the `truth.npz` of the very run we analyse, not from
+     a separate regeneration. Script to write (`scripts/export_kappa_map.py`): the observed map
+     (`unpack_to_map`, nside 32, ℓ ≤ 64, full sky, FITS), the noise spectrum the likelihood uses,
+     the bilinear window w_ℓ (`bilinear_window`), the radial window of the shells
+     (`kappa_radial_window`, `chi_min` 700 to 3750 Mpc/h), the source redshift, the band and a short
+     note of the conventions; truth parameters sent separately (blind or not: to decide).
+   - **To decide with him before generating the map:**
+     (a) the line of sight as noise (his theory = the box κ with our radial and angular windows,
+     noise N_ℓ + C_ℓ^LOS) or as signal (noise N_ℓ only). The closure map holds no matter beyond
+     `chi_high_z_max` = 3942 Mpc/h (§3.2): a CCL theory to z = 1089 needs that run at
+     `chi_high_z_max` = χ_s, or his lensing kernel cut at 3942;
+     (b) accordingly `high_z_mode`: `fixed` (C_ℓ^LOS at the fiducial cosmology, pure noise) or
+     `taylor` (C_ℓ^{high-z} follows `Omega_m`, `sigma8`); both analyses must treat it the same way;
+     (c) the top of the band: the model's particle discreteness (+11 % and +23 % over the windowed
+     Limber at ℓ = 51 and 59, item 6b) is in the map; the field level models it exactly in closure,
+     a CCL theory does not — cut ℓ ≤ 47 for him, or state it;
+     (d) the noise level: ACT DR6 baseline × 1 (`cmb_noise_scaling` 1.0, as the current closures)
+     or × 0.4 (Simons Observatory-like);
+     (e) the priors on `Omega_m` and `sigma8` (ours: normal 0.315 ± 0.15 in [0.10, 0.60] and
+     0.811 ± 0.15 in [0.5, 1.2] in the scan configs), the same for both.
+   - **Config to write**: `configs/inference/twopt/closure_kappaonly_cosmo.yaml`, from
+     `scan/closure_d1p00_joint_chimin700.yaml` with `galaxies_enabled: false`,
+     `fixed_params: [fNL]`, `high_z_mode` per (b). κ-only with `Omega_m` and `sigma8` free last ran in
+     May 2026 (e.g. `run_20260529_071055_53563752`), with configs that have no `chi_min`,
+     `shell_weights` or `proj_oversamp`; every run since June fixes both. The κ-only Abacus run with
+     `fNL` free did not converge on `fNL` (item 4). A short test
+     run first (convergence of `Omega_m`, `sigma8`, R-hat), then the full run; then export the map.
 
 Optional: a closure on the Abacus ICs (needs a `closure_init_from_abacus_ic` knob; it is the only way
 to tell model error from realisation in the closure/Abacus comparison of §7.3); `bn2` fixed at the
@@ -1450,10 +1518,10 @@ Forward-model validation against theory, no sampling:
    k > 0.025 h/Mpc, where the Abacus spectrum does not want it; the excess it leaves is ≈ 1 `P_shot`,
    roughly flat in k. Whether the field level sets `b∇²` from the phases and treats the missing power
    as noise, or the LRG stochasticity exceeds Poisson, is not established; a galaxy-only reference
-   run with `gxy_stoch_noise: true` would tell (s_e and `b∇²`).
-   closure matter `P(k)` 0.98 × the lightcone-averaged linear theory, flat in k
-   (`figures/spectra_diagnostic/pk_closure_matter.png`). `plot_2D_maps.py` on the Abacus config —
-   done 2026-09-29 (`figures/maps/maps2d_abacus_huge_chimin700.png`: observed and
+   run with `gxy_stoch_noise: true` would tell (s_e and `b∇²`). In closure (2026-09-23), the matter
+   `P(k)` is 0.98 × the lightcone-averaged linear theory, flat in k
+   (`figures/spectra_diagnostic/pk_closure_matter.png`).
+7b. `plot_2D_maps.py` on the Abacus config — done 2026-09-29 (`figures/maps/maps2d_abacus_huge_chimin700.png`: observed and
    noiseless AbacusLensing κ, projected LRG counts).
 
 8b. **Lattice discreteness in the Born κ** (measured 2026-09-23 on the closure of §7.3). The
@@ -1483,8 +1551,9 @@ Forward-model validation against theory, no sampling:
    planes cross the whole box and a thin line on the sky has power at every ℓ. Moving the observer
    off the lattice node leaves the near shells unchanged and halves the far part. Options: raise
    `chi_min` to ≈ 700 Mpc/h (2π·chi_min/d ≈ 82 clears the band; the toy predicts a 2.5–6× cut, not a
-   removal), the matter below it going into `C_ℓ^{low-z}` like the current 0–350 — to be confirmed
-   with `quick_cl_spectra.py` on `configs/inference/validation/closure_chimin700.yaml`; show the
+   removal), the matter below it going into `C_ℓ^{low-z}` — the option taken (item 4h); its closure
+   spectra (item 6b) keep +11 % and +23 % at ℓ = 51 and 59, and the IC test 0.09 and 0.23 × `N_ℓ`
+   (§7.6); show the
    reconstructed maps band-limited to ℓ ≤ 40 with the reason in the caption; add the measured
    discreteness spectrum to the κ covariance (like `C_ℓ^{high-z}`), which needs the joint runs
    redone; or lower `cmb_lmax`. Measured on the κ-only Abacus pair (§7.4): `chi_min` 700 removes
@@ -1537,9 +1606,9 @@ Without a run:
 13. **σ8 of the Abacus cosmology** — settled (§4): the particles follow `σ8_cb` = 0.811355, the value
    the configs use. Left open: the model's lensing prefactor uses `Omega_m` where AbacusLensing uses
    `Ω_cb`, a 0.45 % amplitude offset on Abacus only.
-14. **κ from the Abacus ICs** — done 2026-09-28 (§7.6); stiffness vs `chi_min` — done 2026-09-28
-   (§7.7). Open: the stiffness at cell 46.875 (`kappa_stiffness.py` has no `--cell_size` yet), and the
-   choice kept for the runs (2026-09-29): cell 93.75 with `chi_min` 700 and ℓ ≤ 64 (0.09 and 0.23 ×
+14. **κ from the Abacus ICs** — done 2026-09-28, redone after the fix of item 11 on 2026-09-29 (§7.6);
+   stiffness vs `chi_min` — done 2026-09-28 (§7.7). Open: the stiffness at cell 46.875
+   (`kappa_stiffness.py` has no `--cell_size` yet). Choice kept for the runs (2026-09-29): cell 93.75 with `chi_min` 700 and ℓ ≤ 64 (0.09 and 0.23 ×
    `N_ℓ` of error beyond LOS at ℓ 48–55 and 56–64), against the same with ℓ ≤ 47 or cell 46.875 with
    a lower `chi_min`; the paper states it with these numbers.
 
