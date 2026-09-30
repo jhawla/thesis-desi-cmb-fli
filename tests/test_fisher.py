@@ -161,3 +161,75 @@ def test_chain_fisher_is_the_inverse_covariance():
     chains = {p: x[..., i] for i, p in enumerate(fi.PARAMS)}
     np.testing.assert_allclose(np.linalg.inv(fi.chain_fisher(chains)), cov, rtol=0.03, atol=0.02)
     assert fi.sigma(fi.chain_fisher(chains)) == pytest.approx(2.0, rel=0.02)
+
+
+# ---- cosmology ------------------------------------------------------------------------------
+
+
+class ToySigma8Background(ToyBackground):
+    """The toy with every power (galaxy and kappa) scaled by (sigma8 / 0.8)^2."""
+
+    def __init__(self, sigma8=0.8):
+        super().__init__()
+        self.s2 = (sigma8 / 0.8) ** 2
+
+    def plin(self, k, z):
+        return self.s2 * super().plin(k, z)
+
+    def c_kappa(self, ells, lo, hi):
+        return self.s2 * super().c_kappa(ells, lo, hi)
+
+
+def toy_cache():
+    return fi.BackgroundCache(factory=lambda om, s8: ToySigma8Background(s8))
+
+
+KAPPA = {"chi_min": 700.0, "chi_low_z_min": 292.6, "chi_box": 3750.0, "chi_high_z_max": 3942.0,
+         "lmax": 16}
+NELL = np.column_stack([np.arange(2.0, 200.0), np.full(198, 1e-8)])
+FID = {"Omega_m": 0.3, "sigma8": 0.8, "b1": 1.2, "bn2": 78.0, "fNL": 0.0}
+
+
+def test_angular_cosmo_fisher_reproduces_the_kappa_increment_at_fixed_cosmology():
+    """On (fNL, b1, bn2) the spectra are quadratic, so central differences are exact and
+    F[gk] - F[g] is kappa_fisher_increment."""
+    s, bgs = survey(2e7), toy_cache()
+    chi_lo, chi_hi = 1000.0 * (1 + s["zmin"]), 1000.0 * (1 + s["zmax"])
+    ell_min = max(2, int(np.ceil(2 * np.pi / shell_volume(s) ** (1 / 3) * 0.5 * (chi_lo + chi_hi))))
+    kw = {"params": fi.PARAMS, "nell": NELL, "n_shells": 4, "ell_min": ell_min}
+    dF = fi.angular_fisher_cosmo(bgs, FID, s, KAPPA, "gk", **kw) - fi.angular_fisher_cosmo(
+        bgs, FID, s, KAPPA, "g", **kw
+    )
+    ref = fi.kappa_fisher_increment(ToyBackground(), s, KAPPA, 1.2, 78.0, n_shells=4, nell=NELL)
+    np.testing.assert_allclose(dF, ref, rtol=1e-6, atol=1e-9 * np.abs(ref).max())
+
+
+def test_sigma8_information_of_kappa_alone():
+    """C = S (sigma8/0.8)^2: F = sum (2l+1)/2 (2 S / (sigma8 (S + N + L)))^2."""
+    F = fi.angular_fisher_cosmo(toy_cache(), FID, survey(2e7), KAPPA, "k", params=("sigma8",),
+                                nell=NELL)
+    bg, ells = ToyBackground(), np.arange(2, 17)
+    S = bg.c_kappa(ells, 700.0, 3750.0)
+    L = bg.c_kappa(ells, 3750.0, 3942.0) + bg.c_kappa(ells, 292.6, 700.0)
+    expected = np.sum((2 * ells + 1) / 2 * (2 * S / (0.8 * (S + 1e-8 + L))) ** 2)
+    np.testing.assert_allclose(F[0, 0], expected, rtol=1e-6)
+
+
+def test_galaxies_alone_leave_b1_and_sigma8_degenerate_and_kappa_breaks_it():
+    """C_gg ~ (1+b1)^2 sigma8^2 is one combination; C_kg ~ (1+b1) sigma8^2 is another."""
+    fid = {**FID, "bn2": 0.0}
+    kw = {"params": ("sigma8", "b1"), "nell": NELL, "n_shells": 4}
+    Fg = fi.angular_fisher_cosmo(toy_cache(), fid, survey(2e7), KAPPA, "g", **kw)
+    Fgk = fi.angular_fisher_cosmo(toy_cache(), fid, survey(2e7), KAPPA, "gk", **kw)
+    corr = lambda F: np.linalg.det(F) / (F[0, 0] * F[1, 1])  # noqa: E731
+    assert corr(Fg) < 1e-8
+    assert corr(Fgk) > 1e-3
+
+
+def test_sigma8_information_of_the_galaxies_is_the_mode_count():
+    """No shot noise, no RSD: P = b^2 sigma8^2 P0, so F = V dk^3 / (3 pi^2 sigma8^2)."""
+    s = survey(1e14)
+    F = fi.galaxy_fisher_3d_cosmo(toy_cache(), FID, s, KMAX, params=("sigma8",), kmin=KMIN,
+                                  rsd=False, n_chi=400, n_k=2000)
+    expected = shell_volume(s) * (KMAX**3 - KMIN**3) / (3 * np.pi**2 * 0.8**2)
+    np.testing.assert_allclose(F[0, 0], expected, rtol=2e-3)

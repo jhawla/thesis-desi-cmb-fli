@@ -322,3 +322,174 @@ def chain_fisher(chains, burn_in=0.5):
         np.asarray(chains[p])[:, int(burn_in * np.shape(chains[p])[1]) :].ravel() for p in PARAMS
     ]
     return np.linalg.inv(np.cov(np.array(cols)))
+
+
+# ---------------------------------------------------------------------------------------------
+# Cosmology: (Omega_m, sigma8) with the biases, fNL optional
+# ---------------------------------------------------------------------------------------------
+
+COSMO_PARAMS = ("Omega_m", "sigma8", "b1", "bn2")
+FD_STEPS = {"Omega_m": 0.005, "sigma8": 0.005, "b1": 0.01, "bn2": 2.0, "fNL": 1.0}
+
+
+class BackgroundCache:
+    """One background per (Omega_m, sigma8), built on first use; ``factory(Omega_m, sigma8)``."""
+
+    def __init__(self, factory=None, z_source=1089.28):
+        self.factory = factory or (lambda om, s8: Background(om, s8, z_source))
+        self._cache = {}
+
+    def __call__(self, theta):
+        key = (round(float(theta["Omega_m"]), 10), round(float(theta["sigma8"]), 10))
+        if key not in self._cache:
+            self._cache[key] = self.factory(*key)
+        return self._cache[key]
+
+
+def _central_differences(fn, fid, params, steps):
+    out = {}
+    for p in params:
+        h = steps[p]
+        up, dn = dict(fid), dict(fid)
+        up[p] += h
+        dn[p] -= h
+        out[p] = (fn(up) - fn(dn)) / (2 * h)
+    return out
+
+
+def _galaxy_bias(bg, theta, k, z):
+    """Eulerian galaxy bias b(k, z) = 1 + b1 - bn2 k^2 + 2 delta_c b1 fNL / M(k, z)."""
+    b = 1 + theta["b1"] - theta.get("bn2", 0.0) * k**2
+    if theta.get("fNL", 0.0) != 0.0:
+        b = b + 2 * DELTA_C * theta["b1"] * theta["fNL"] / bg.m_phi(k, z)
+    return b
+
+
+def galaxy_fisher_3d_cosmo(
+    bgs, fid, survey, kmax, params=COSMO_PARAMS, kmin=None, density_scale=1.0, rsd=True,
+    steps=None, n_chi=160, n_k=240, n_mu=48,
+):
+    """3-D redshift-space galaxy Fisher on ``params`` by central differences, cosmology included.
+
+    As at the field level, the galaxies sit at their fiducial comoving distances (the data are
+    painted once): volume, n(chi) and the k grid are those of the fiducial background, and a
+    cosmology moves only the redshift z(chi) of each distance, hence the growth, the growth rate and
+    the linear power there. No Alcock-Paczynski information. Same integral as ``galaxy_fisher_3d``.
+    """
+    steps = {**FD_STEPS, **(steps or {})}
+    bg0 = bgs(fid)
+    chi_lo, chi_hi = float(bg0.chi_of_z(survey["zmin"])), float(bg0.chi_of_z(survey["zmax"]))
+    V = 4 * np.pi / 3 * survey["fsky"] * (chi_hi**3 - chi_lo**3)
+    kmin = 2 * np.pi / V ** (1 / 3) if kmin is None else kmin
+    chi = np.linspace(chi_lo, chi_hi, n_chi)
+    dV = 4 * np.pi * survey["fsky"] * chi**2 * np.gradient(chi)
+    nbar = nbar_of_chi(bg0, chi, survey, density_scale)
+    lnk = np.linspace(np.log(kmin), np.log(kmax), n_k)
+    k = np.exp(lnk)
+    mu, wmu = np.polynomial.legendre.leggauss(n_mu)
+    K, MU = k[None, :, None], mu[None, None, :]
+
+    def power(theta):
+        bg = bgs(theta)
+        Z = bg.z_of_chi(chi)[:, None, None]
+        f = bg.growth_rate(Z) if rsd else 0.0
+        return (_galaxy_bias(bg, theta, K, Z) + f * MU**2) ** 2 * bg.plin(K, Z)
+
+    P = power(fid)
+    dP = _central_differences(power, fid, params, steps)
+    n = nbar[:, None, None]
+    inv_var = (n / (n * P + 1.0)) ** 2
+    weight = dV[:, None, None] * (k**3)[None, :, None] * wmu[None, None, :] / (2 * (2 * np.pi) ** 2)
+    F = np.zeros((len(params), len(params)))
+    for i, a in enumerate(params):
+        for j, c in enumerate(params[: i + 1]):
+            F[i, j] = F[j, i] = np.trapezoid((weight * dP[a] * dP[c] * inv_var).sum(axis=(0, 2)), lnk)
+    return F
+
+
+def angular_fisher_cosmo(
+    bgs, fid, survey, kappa, probes="gk", params=COSMO_PARAMS, density_scale=1.0,
+    noise_scaling=1.0, nell=None, los="noise", n_shells=10, ell_min=2, steps=None, n_chi=400,
+):
+    """Tomographic Limber Fisher of galaxy shells ('g'), kappa ('k') or both ('gk') on ``params``.
+
+    Galaxy shells: equal-number bins of the catalogue n(z) at fiducial distances, bias
+    ``_galaxy_bias`` (no Kaiser term, as in ``kappa_fisher_increment``). Kappa signal: the matter
+    between kappa["chi_min"] and kappa["chi_box"] at fixed comoving distance, a cosmology moving
+    z(chi), the growth, Omega_m and chi_s in the kernel. Kappa noise: N_l x noise_scaling, plus the
+    line of sight (chi_box -> chi_high_z_max and chi_low_z_min -> chi_min) either at the fiducial as
+    noise (``los='noise'``, high_z_mode fixed) or following the cosmology as signal ('signal').
+    Sum over ell_min <= ell <= kappa["lmax"] of (2 ell + 1)/2 tr(C^-1 dC_a C^-1 dC_b), times fsky.
+    """
+    if nell is None:
+        nell = np.loadtxt(NELL_FILE)
+    steps = {**FD_STEPS, **(steps or {})}
+    bg0 = bgs(fid)
+    chi_lo, chi_hi = float(bg0.chi_of_z(survey["zmin"])), float(bg0.chi_of_z(survey["zmax"]))
+    chi = np.linspace(chi_lo, chi_hi, n_chi)
+    nz = np.interp(bg0.z_of_chi(chi), survey["zbins"], survey["nbins"], left=0, right=0)
+    dNdchi = nz / np.trapezoid(nz, chi)
+    cdf = np.cumsum(dNdchi) / np.sum(dNdchi)
+    edges = np.interp(np.linspace(0, 1, n_shells + 1), cdf, chi)
+    W, frac = [], []
+    for i in range(n_shells):
+        w = np.where((chi >= edges[i]) & (chi < edges[i + 1]), dNdchi, 0.0)
+        frac.append(np.trapezoid(w, chi))
+        W.append(w / max(frac[-1], 1e-30))
+    W, frac = np.array(W), np.array(frac)
+    ells = np.arange(ell_min, int(kappa["lmax"]) + 1)
+    low_z_from = max(1.0, float(kappa.get("chi_low_z_min") or 0.0))
+
+    def c_los(bg):
+        c = bg.c_kappa(ells, kappa["chi_box"], kappa["chi_high_z_max"])
+        if kappa["chi_min"] > low_z_from:
+            c = c + bg.c_kappa(ells, low_z_from, kappa["chi_min"])
+        return c
+
+    def spectra(theta):
+        """Signal matrices (n_ell, n_shells + 1, n_shells + 1), kappa last."""
+        bg = bgs(theta)
+        z = bg.z_of_chi(chi)
+        wk = bg.w_kappa(chi)
+        ck = bg.c_kappa(ells, kappa["chi_min"], kappa["chi_box"])
+        if los == "signal":
+            ck = ck + c_los(bg)
+        out = np.zeros((len(ells), n_shells + 1, n_shells + 1))
+        for n, ell in enumerate(ells):
+            k = (ell + 0.5) / chi
+            kern = _galaxy_bias(bg, theta, k, z) * W  # (n_shells, n_chi)
+            pm = bg.plin(k, z) / chi**2
+            out[n, :n_shells, :n_shells] = np.trapezoid(kern[:, None] * kern[None] * pm, chi, axis=2)
+            out[n, :n_shells, n_shells] = out[n, n_shells, :n_shells] = np.trapezoid(
+                kern * wk * pm, chi, axis=1
+            )
+            out[n, n_shells, n_shells] = ck[n]
+        return out
+
+    C = spectra(fid)
+    dC = _central_differences(spectra, fid, params, steps)
+    noise = np.zeros(n_shells + 1)
+    noise[:n_shells] = 1.0 / (density_scale * survey["N_gal"] / (4 * np.pi * survey["fsky"]) * frac)
+    kappa_noise = noise_scaling * np.interp(ells, nell[:, 0], nell[:, 1])
+    if los == "noise":
+        kappa_noise = kappa_noise + c_los(bg0)
+    idx = {"g": list(range(n_shells)), "k": [n_shells], "gk": list(range(n_shells + 1))}[probes]
+    F = np.zeros((len(params), len(params)))
+    for n, ell in enumerate(ells):
+        Cn = C[n] + np.diag(noise)
+        Cn[n_shells, n_shells] += kappa_noise[n]
+        Ci = np.linalg.inv(Cn[np.ix_(idx, idx)])
+        D = [Ci @ dC[p][n][np.ix_(idx, idx)] for p in params]
+        for a in range(len(params)):
+            for b in range(a + 1):
+                F[a, b] = F[b, a] = F[a, b] + (2 * ell + 1) / 2 * np.trace(D[a] @ D[b])
+    return F * survey["fsky"]
+
+
+def prior_fisher(latents, params):
+    """Gaussian prior of the run config's latents ('scale') on ``params``, as a Fisher matrix."""
+    return np.diag([1.0 / float(latents[p]["scale"]) ** 2 for p in params])
+
+
+def marginal(F, params, name):
+    return float(np.sqrt(np.linalg.inv(F)[params.index(name), params.index(name)]))

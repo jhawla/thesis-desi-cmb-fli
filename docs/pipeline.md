@@ -612,7 +612,8 @@ binning.
 the simulation box at `InitialRedshift` (z=99) — *not* at `CLASS_Redshift`, which is only the redshift
 of the CLASS spectrum the ICs were drawn from. It is grown to a=1 with the header `GrowthTable` and
 Fourier-resampled onto `model.init_shape` by `utils.chreshape` (power-preserving, so no extra
-normalisation is needed; its spectrum matches `P_lin` to the Eisenstein-Hu-vs-CLASS difference).
+normalisation is needed; its spectrum matches `P_lin` to the Eisenstein-Hu-vs-CLASS difference,
+3–4 % at k ≤ 0.03 h/Mpc at the same σ8, §8 item 17).
 **Validation reference only**: it populates `truth['init_mesh']`, read by
 `plot_warmup_diagnostics` and by `analyze_run`'s reconstruction figure (§6). The sampler is
 warm-started from the *observed* galaxy field via `model.kaiser_post` and never sees it.
@@ -810,11 +811,33 @@ against closed forms in `tests/test_fisher.py`).
   (§2.2). The joint forecast adds `ΔF` to a galaxy Fisher, either the 3-D one above (the curve) or
   the one measured from a galaxy-only chain, `inv(Cov[f_NL, b1, b∇²])` (the table); `ΔF` is the
   increment over *angular* galaxy information, so adding it to the 3-D one is an approximation.
+- *Cosmology* (`galaxy_fisher_3d_cosmo`, `angular_fisher_cosmo`, `fisher_cosmo.py`). The same two
+  Fishers on (`Omega_m`, `sigma8`, `b1`, `b∇²`, optionally `f_NL`), derivatives by central
+  differences over one `Background` per cosmology. As at the field level the galaxies sit at their
+  fiducial distances (the data are painted once): a cosmology moves z(χ), hence growth, growth rate
+  and linear power, and in the κ kernel `Omega_m` and χ_s, but no Alcock–Paczynski information.
+  Galaxies: the 3-D Fisher with RSD; κ alone: the Limber Fisher of κ, ℓ = 2 … 2·nside; joint: the
+  3-D galaxies plus `F[shells + κ] − F[shells]`. The line of sight is noise at the fiducial
+  (`high_z_mode: fixed`) or signal following the cosmology. The config's Gaussian priors are added.
+  Tests: the σ8 information of κ alone and of the galaxies against closed forms, the exact b1–σ8
+  degeneracy of angular galaxies and its breaking by κ, and `kappa_fisher_increment` recovered at
+  fixed cosmology.
 - *Measured paired gain* (`paired_sigma_ratio`). The galaxy-only and joint runs of a density share
   `seed` and warm start, so chain `i` of one pairs with chain `i` of the other: the ratio is the mean
   over chains of σ_joint/σ_gxy (second half, at the number of batches both runs have), its error the
   spread over chains / √n_chains. The σ ratio of the chains pooled together is a different estimator
   and is not used.
+- **`fisher_cosmo.py`** — the Fisher forecast on (`Omega_m`, `sigma8`, `b1`, `b∇²`) of galaxies alone,
+  κ alone and joint, at a run config's geometry, band, noise, truth biases and priors (default the
+  closure at the Abacus geometry), line of sight as noise or as signal; table,
+  `figures/fisher_diagnostic/fisher_cosmo_contours.png` (68 % contours) and
+  `$SCRATCH/outputs/fisher_cosmo/fisher_cosmo.json` (§8 item 16); `--resolution_scan` repeats it
+  over box size, cell and `chi_min` (§8 item 16).
+- **`compare_linear_power.py`** — the model's linear P(k) (jax_cosmo Eisenstein–Hu) against the CLASS
+  spectrum the AbacusSummit ICs were drawn from (`data/abacus_cosm000_CLASS_power.txt`, AbacusSummit
+  `Cosmologies/abacus_cosm000/CLASS_power`, the `ZD_Pk_filename` of the HUGE IC header), both
+  normalised to σ8 = 1, table and `figures/spectra_diagnostic/linear_power_eh_vs_class.png` (§8
+  item 17).
 - **`plot_2D_maps.py`** — κ (and galaxy-projection) maps for one forward realization. The galaxy panel
   ray-casts the mesh (`project_mesh_to_healpix`, node `i` at `i·dx` as in the painting) — display only.
 - **`benchmark_highz_cl_modes.py`** — precision/speed of the high-z modes; **`plot_lensing_fraction.py`**
@@ -1093,11 +1116,7 @@ runs decide.
    seeds. Using it requires a `bigfile` reader, Born-integrating κ_CMB from the `usmesh` mass sheets
    (HEALPix nside 8192, 80 shells over a = 0.2–1), and an HOD or mass cut on the RFOF lightcone halos.
 4. Application to real DESI-LRG × Planck/ACT κ data.
-5. **Does κ help on `Omega_m`, `sigma8` where it does not on `f_NL`?** (noted 2026-09-30, after the
-   first paper). The κ–galaxy cross measures the galaxy bias against the matter, which the galaxies
-   alone only reach through RSD. First a Fisher on (`Omega_m`, `sigma8`, `b1`, `b∇²`) in
-   `desi_cmb_fli.fisher` (3-D galaxies with RSD, plus the tomographic κ increment, line of sight as
-   noise and as signal), then, if it predicts a gain, a closure pair with both freed.
+5. *Moved into the first paper:* κ on `Omega_m` and `sigma8` (§8 item 16).
 
 ### 7.4 κ-only on Abacus HUGE: validation of the κ model — measured
 
@@ -1444,6 +1463,50 @@ Runs, each in a 4 h interactive `salloc` with a bare `run_inference.py` (`docs/h
      `shell_weights` or `proj_oversamp`; every run since June fixes both. The κ-only Abacus run with
      `fNL` free did not converge on `fNL` (item 4). A short test
      run first (convergence of `Omega_m`, `sigma8`, R-hat), then the full run; then export the map.
+
+16. **`Omega_m` and `sigma8` on Abacus HUGE** (decided 2026-09-30 with the supervisor; paper §6,
+   `sec:res_cosmo`, and the contour to set against the two-point analysis of item 15). Fisher
+   (`python scripts/fisher_cosmo.py --densities 1.0 0.1 0.03`, §6: closure config at the Abacus
+   geometry, its truth biases and priors, `f_NL` fixed, κ at `chi_min` 700, ACT DR6 ×1), marginal σ
+   of `Omega_m` / `sigma8`: galaxies 0.0183 / 0.0503, κ alone 0.0424 / 0.0279, joint 0.0123 / 0.0166
+   at density 1, a κ gain of 33 % and 67 %; 35 % and 73 % at 0.1, 38 % and 78 % at 0.03; with the
+   line of sight as signal the `sigma8` gain is 70 % at density 1. The two probes' degeneracy
+   directions in the (`Omega_m`, `sigma8`) plane cross (`figures/fisher_diagnostic/fisher_cosmo_contours.png`).
+   Runs, each differing from its `f_NL` twin only in `job_name` and `fixed_params: [fNL]`
+   (`high_z_mode: fixed`, the line of sight at the fiducial, i.e. the Abacus cosmology):
+   (a) galaxy-only `abacus/abacus_gxyonly_cosmo.yaml` — is `sigma8` unbiased on Abacus?;
+   (b) κ-only `abacus/abacus_kappaonly_Nl1p0_cosmo_chimin700.yaml`;
+   (c) joint `abacus/abacus_joint_Nl1p0_cosmo_chimin700.yaml`, and the paired gain against (a).
+   The three models build (checked 2026-09-30). **Resolution** (`fisher_cosmo.py --resolution_scan`,
+   density 1, line of sight as noise; the box enters as κ's box edge, box/2, the cell as
+   k_max = π/cell; cost ∝ mesh³): σ(`Omega_m`) / σ(`sigma8`) joint and κ gain on them —
+   7500 / cell 93.75 / `chi_min` 700 (current, cost 1): 0.0122 / 0.0165, 33 % / 67 %;
+   7500 / 62.5 / 500 (3.4): 0.0070 / 0.0126, 7 % / 41 %; 7500 / 46.875 / 292.6 (8): 0.0040 / 0.0094,
+   3 % / 25 %; 5000 / 62.5 / 500 (1): 0.0069 / 0.0144, 8 % / 33 %; 5000 / 41.67 / 292.6 (3.4):
+   0.0035 / 0.0090, 2 % / 14 %; 5000 / 31.25 / 292.6 (8): 0.0030 / 0.0060, 1 % / 6 %. A finer cell
+   gives the galaxies alone far more (σ(`sigma8`) 0.050 → 0.013 at cell 46.875) and leaves κ a
+   smaller share: κ matters where the galaxies stop at large scales. Caveats: the galaxy Fisher is
+   linear, with `b1` and `b∇²` only (no `b2`, `b_{s²}`, `b∇∥`, no non-linearity), so it flatters
+   the galaxies more the higher k_max goes; `chi_min` 500 is the lattice rule 2π χ_min/d ≳ 80, not
+   validated (700 at 93.75 and 292.6 at 46.875 are, §7.6); a 5000 box no longer matches the
+   published IC grid (the test of §7.6). json `$SCRATCH/outputs/fisher_cosmo/fisher_cosmo_resolution.json`.
+   **Blocked by item 17**: the chains start at the
+   fiducial cosmology, which is the Abacus one, and a prior spectrum of the wrong shape moves
+   `sigma8`.
+17. **Linear power spectrum** (raised 2026-09-30 by the supervisor). The model's `P_lin` is jax_cosmo's
+   Eisenstein–Hu (§2.1), and the Limber theory and `C_ℓ^LOS` use its halofit. At the same σ8,
+   against the CLASS spectrum of the Abacus ICs (`scripts/compare_linear_power.py`): 0.966 at
+   k = 0.001, 0.962–0.975 over k = 0.005–0.03, 0.99–1.00 at 0.04–0.06, 1.03 at 0.1 h/Mpc — the prior
+   power is 3–4 % low over the likelihood's band (k ≤ 0.034 h/Mpc, corners to 0.058). montecosmo
+   (`bricks.lin_power`, `run/register.py`) tabulates instead: `lin_kpow` from cosmoprimo at the
+   fiducial cosmology, or the mock's own P(k) file, normalised to σ8 = 1 and scaled by the sampled
+   σ8², so the shape is fixed and `Omega_m` acts through the growth only. To decide: at fixed
+   cosmology, tabulate `data/abacus_cosm000_CLASS_power.txt` (the ICs' own spectrum); with `Omega_m`
+   free, either Eisenstein–Hu times the fixed CLASS/EH ratio at the fiducial or a differentiable
+   emulator; and whether the `f_NL` runs switch too (all Abacus runs of the paper should share one
+   spectrum). Closure is self-consistent with either. Figure
+   `figures/spectra_diagnostic/linear_power_eh_vs_class.png` (spectra at σ8 = 1 and their ratio,
+   band and corner modes shaded).
 
 Optional: a closure on the Abacus ICs (needs a `closure_init_from_abacus_ic` knob; it is the only way
 to tell model error from realisation in the closure/Abacus comparison of §7.3); `bn2` fixed at the
