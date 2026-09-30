@@ -43,7 +43,8 @@ dependencies = [
   "jaxlib>=0.6.1,<0.10.0",
   "jax_cosmo@git+https://github.com/ASKabalan/jax_cosmo@ALL-MODIF",
   "numpyro>=0.20.0",
-  "jaxpm@git+https://github.com/DifferentiableUniverseInitiative/JaxPM.git@41-spherical-lensing",
+  # pinned to the commit installed from the former 41-spherical-lensing branch (deleted upstream after its merge into main)
+  "jaxpm@git+https://github.com/DifferentiableUniverseInitiative/JaxPM.git@3c23f2f0527ac7bed0d265ddcac5ecf34de16568",
   # pinned to the last commit before jax-healpy's main required jax>=0.10.0 (incompatible with our jax<0.10 pin); code path (alm2map/map2alm) unchanged
   "jax-healpy@git+https://github.com/CMBSciPol/jax-healpy.git@3141d3172b970a2bf924ebfc9e6f3afa785197e0",
   "diffrax>=0.4.0",
