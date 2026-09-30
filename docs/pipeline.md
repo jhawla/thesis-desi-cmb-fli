@@ -1093,6 +1093,11 @@ runs decide.
    seeds. Using it requires a `bigfile` reader, Born-integrating κ_CMB from the `usmesh` mass sheets
    (HEALPix nside 8192, 80 shells over a = 0.2–1), and an HOD or mass cut on the RFOF lightcone halos.
 4. Application to real DESI-LRG × Planck/ACT κ data.
+5. **Does κ help on `Omega_m`, `sigma8` where it does not on `f_NL`?** (noted 2026-09-30, after the
+   first paper). The κ–galaxy cross measures the galaxy bias against the matter, which the galaxies
+   alone only reach through RSD. First a Fisher on (`Omega_m`, `sigma8`, `b1`, `b∇²`) in
+   `desi_cmb_fli.fisher` (3-D galaxies with RSD, plus the tomographic κ increment, line of sight as
+   noise and as signal), then, if it predicts a gain, a closure pair with both freed.
 
 ### 7.4 κ-only on Abacus HUGE: validation of the κ model — measured
 
@@ -1610,7 +1615,13 @@ Without a run:
    stiffness vs `chi_min` — done 2026-09-28 (§7.7). Open: the stiffness at cell 46.875
    (`kappa_stiffness.py` has no `--cell_size` yet). Choice kept for the runs (2026-09-29): cell 93.75 with `chi_min` 700 and ℓ ≤ 64 (0.09 and 0.23 ×
    `N_ℓ` of error beyond LOS at ℓ 48–55 and 56–64), against the same with ℓ ≤ 47 or cell 46.875 with
-   a lower `chi_min`; the paper states it with these numbers.
+   a lower `chi_min`; the paper states it with these numbers. A lower `chi_min` carries no two-point
+   information on `f_NL`: the Limber increment of `desi_cmb_fli.fisher` (`kappa_fisher_increment` on
+   the 3-D galaxy Fisher, Abacus geometry, closure truth biases) is 2.84 % at density 1 and 4.15 % at
+   0.03 for every `chi_min` from 292.6 to 700, since κ's total variance (model shells plus line of
+   sight) does not depend on it and the κ–galaxy cross only sees the galaxy range (1094–2447 Mpc/h).
+   The field-level gains at density 0.03, 17 % ± 3 % at 350 and 14 % ± 1 % at 700 (§7.4), are within
+   their errors of each other.
 
 Configurations: `configs/inference/abacus/` (Abacus runs, copied from their run directories),
 `configs/inference/scan/` (closure at the same configuration), `configs/inference/validation/`

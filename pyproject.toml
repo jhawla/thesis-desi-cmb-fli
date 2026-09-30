@@ -48,7 +48,8 @@ dependencies = [
   # pinned to the last commit before jax-healpy's main required jax>=0.10.0 (incompatible with our jax<0.10 pin); code path (alm2map/map2alm) unchanged
   "jax-healpy@git+https://github.com/CMBSciPol/jax-healpy.git@3141d3172b970a2bf924ebfc9e6f3afa785197e0",
   "diffrax>=0.4.0",
-  "blackjax>=1.3",
+  # samplers.py imports blackjax.progress_bar.gen_scan_fn, which the release CI installed on 2026-09-30 no longer has; 1.3 is the tested one
+  "blackjax>=1.3,<1.4",
   "getdist>=1.4",
   "corner>=2.1.0",
   "astropy>=5.0",

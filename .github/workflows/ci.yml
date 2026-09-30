@@ -19,8 +19,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-          # healpy lives in the optional [abacus] extra; a few tests import it directly
-          pip install healpy
+          # healpy and asdf live in the optional [abacus] extra; the tests of the Abacus loader and
+          # of the diagnostic scripts write and read a small fake AbacusLensing asdf map
+          pip install healpy asdf
           # pymaster (NaMaster) is conda-only in pyproject (no PyPI wheel); build it from
           # the sdist against the system GSL/FFTW/CFITSIO installed above so the CMB
           # harmonic tests run on the pip-only CI runner
