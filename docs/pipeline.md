@@ -239,14 +239,14 @@ the MCLMC step size in a joint run. Starting past them removes the pathology at 
 preconditioning around it does not work, because the stiff direction rotates as those few particles
 move between pixels.
 
-The dropped range is not discarded: `C_ℓ(χ_0 → chi_min)` is evaluated at the fiducial cosmology and
-added to the cached line-of-sight correction, exactly like the high-z tail beyond the box (§3.2).
+The dropped range is not discarded: `C_ℓ(χ_0 → chi_min)` enters the line-of-sight correction and
+follows `high_z_mode` exactly like the high-z tail beyond the box (§3.2).
 `χ_0` (`FieldLevelModel.low_z_matter_start`) is where the matter of the observed map starts: 1 Mpc/h
 for real data (the observer; 1 rather than 0 keeps the Limber integrand finite), and
 `cmb_lensing.chi_low_z_min` for a simulated map whose light cone stops before z = 0 — the AbacusSummit
 HUGE runs stop at z = 0.1 (`FinalRedshift` in `abacus.par`), so their κ holds no matter below
 χ = 292.6 Mpc/h. With `chi_low_z_min ≥ chi_min` there is no low-z term.
-`chi_min > 0` therefore requires `full_los_correction` with `high_z_mode` `fixed` or `taylor`. What is
+`chi_min > 0` therefore requires `full_los_correction`. What is
 given up is the field information of those shells, not their power, which stays in the covariance;
 it matters most at low ℓ (§7.4 gives its share of the κ power per ℓ band).
 
@@ -445,9 +445,10 @@ contribution treated as structured Gaussian variance). Two modes (`cmb_lensing.l
 
 **Line-of-sight correction (`full_los_correction`, `high_z_mode`, `chi_min`).** `C_ℓ^{high-z}` for the
 missing depth `χ_box → χ_high_z_max` is the Limber convergence power (`jax_cosmo`), added to the
-variance. When `cmb_lensing.chi_min > 0` (§2.6) the near end `χ_0 → χ_min` is added to the same cached
-term at the fiducial cosmology, so `C_ℓ^{high-z}` in the formulas above is really the correction for
-both unmodelled ends of the line of sight; only the high-z part carries `taylor` gradients. The
+variance. When `cmb_lensing.chi_min > 0` (§2.6) the near end `χ_0 → χ_min` is added to the same
+term, so `C_ℓ^{high-z}` in the formulas above is really the correction for both unmodelled ends of
+the line of sight, and every mode below treats the two ends alike (one cache, one pair of `taylor`
+gradients, one recomputation in the `exact` modes; `test_every_high_z_mode_carries_the_low_z_term_alike`). The
 term carries no angular window (`model.cl_high_z_cached`), while on Abacus the line-of-sight matter
 reaches the data through the projector's bilinear window (§4): the assumed covariance of that part
 is `1/w_ℓ²` too large, 1.14 × at ℓ = 50 and 1.24 × at ℓ = 64 at `proj_nside` 64 — conservative. Modes:
@@ -1442,20 +1443,20 @@ Runs, each in a 4 h interactive `salloc` with a bare `run_inference.py` (`docs/h
      the bilinear window w_ℓ (`bilinear_window`), the radial window of the shells
      (`kappa_radial_window`, `chi_min` 700 to 3750 Mpc/h), the source redshift, the band and a short
      note of the conventions; truth parameters sent separately (blind or not: to decide).
-   - **To decide with him before generating the map:**
-     (a) the line of sight as noise (his theory = the box κ with our radial and angular windows,
-     noise N_ℓ + C_ℓ^LOS) or as signal (noise N_ℓ only). The closure map holds no matter beyond
-     `chi_high_z_max` = 3942 Mpc/h (§3.2): a CCL theory to z = 1089 needs that run at
-     `chi_high_z_max` = χ_s, or his lensing kernel cut at 3942;
-     (b) accordingly `high_z_mode`: `fixed` (C_ℓ^LOS at the fiducial cosmology, pure noise) or
-     `taylor` (C_ℓ^{high-z} follows `Omega_m`, `sigma8`); both analyses must treat it the same way;
-     (c) the top of the band: the model's particle discreteness (+11 % and +23 % over the windowed
-     Limber at ℓ = 51 and 59, item 6b) is in the map; the field level models it exactly in closure,
-     a CCL theory does not — cut ℓ ≤ 47 for him, or state it;
-     (d) the noise level: ACT DR6 baseline × 1 (`cmb_noise_scaling` 1.0, as the current closures)
-     or × 0.4 (Simons Observatory-like);
-     (e) the priors on `Omega_m` and `sigma8` (ours: normal 0.315 ± 0.15 in [0.10, 0.60] and
-     0.811 ± 0.15 in [0.5, 1.2] in the scan configs), the same for both.
+   - **Choices** (decided 2026-10-01 on our side, to confirm with him before generating the map):
+     (a)–(b) the line of sight as noise, `high_z_mode: fixed`. In closure the particles stop at the
+     box edge (3750 Mpc/h); the map's matter below `chi_min` and between the box edge and
+     `chi_high_z_max` = 3942 is the Gaussian draw of C_ℓ^LOS, so his signal theory is the box κ from
+     700 to 3750 with our radial and angular windows, his noise N_ℓ + C_ℓ^LOS as we send it;
+     (c) ℓ ≤ 47 for both: the model's particle discreteness (+11 % and +23 % over the windowed
+     Limber at ℓ = 51 and 59, item 6b) is in the map, the field level models it exactly in closure,
+     a CCL theory does not. The likelihood band is `cmb_lmax` = 2·nside today; an ℓ cut needs a
+     config knob (to implement);
+     (d) ACT DR6 baseline × 1 (`cmb_noise_scaling` 1.0, as the current closures);
+     (e) the same priors on `Omega_m` and `sigma8` for both (ours: normal 0.315 ± 0.15 in
+     [0.10, 0.60] and 0.811 ± 0.15 in [0.5, 1.2] in the scan configs);
+     (f) not blind on the truth (it is the fiducial); every choice fixed in writing first, and he
+     sends his contour before seeing ours. His linear spectrum must be ours (item 17).
    - **Config to write**: `configs/inference/twopt/closure_kappaonly_cosmo.yaml`, from
      `scan/closure_d1p00_joint_chimin700.yaml` with `galaxies_enabled: false`,
      `fixed_params: [fNL]`, `high_z_mode` per (b). κ-only with `Omega_m` and `sigma8` free last ran in
@@ -1504,7 +1505,11 @@ Runs, each in a 4 h interactive `salloc` with a bare `run_inference.py` (`docs/h
    cosmology, tabulate `data/abacus_cosm000_CLASS_power.txt` (the ICs' own spectrum); with `Omega_m`
    free, either Eisenstein–Hu times the fixed CLASS/EH ratio at the fiducial or a differentiable
    emulator; and whether the `f_NL` runs switch too (all Abacus runs of the paper should share one
-   spectrum). Closure is self-consistent with either. Figure
+   spectrum). Closure is self-consistent with either. Decided 2026-10-01: one spectrum for every
+   Abacus run of the paper. The ACE emulators the supervisor pointed to (`jaxace`, Bonici; the two
+   shipped `ACE_mnuw0wacdm_*_basis`, trained on CLASS) return scalars only — ln10As, σ8(z), r_drag,
+   H(z), r(z), D(z), f(z), for z ≤ 3 — not P(k); the JAX matter-power emulator of the same group,
+   `jaxmapse`, is an empty repository (both checked 2026-10-01). Figure
    `figures/spectra_diagnostic/linear_power_eh_vs_class.png` (spectra at σ8 = 1 and their ratio,
    band and corner modes shaded).
 

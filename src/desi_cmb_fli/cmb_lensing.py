@@ -769,8 +769,11 @@ def compute_cl_high_z(
     gradients=None,
     loc_fid=None,
     n_steps=100,
+    low_z_range=None,
 ):
-    """High-z C_ell^{kappa kappa} correction.
+    """Line-of-sight C_ell^{kappa kappa} correction: the matter beyond the box, ``[chi_min,
+    chi_max]``, plus, if ``low_z_range = (chi_lo, chi_hi)``, the matter below the Born shells.
+    Every mode treats both terms alike (``cl_cached`` and ``gradients`` hold their sum).
 
     Modes:
       'fixed'  : returns cached C_ell at fiducial cosmology.
@@ -793,19 +796,19 @@ def compute_cl_high_z(
         cl = cl_cached + gradients["dCl_dOm"] * dOm + gradients["dCl_ds8"] * ds8
         return jnp.maximum(cl, 1e-30)
 
-    elif mode == "exact":
+    elif mode in ("exact", "exact_linear"):
+        linear_pk = mode == "exact_linear"
         chi_source = jc.background.radial_comoving_distance(cosmo, 1.0 / (1.0 + z_source))[0]
         chi_max_eff = chi_source if chi_max is None else chi_max
-        return compute_theoretical_cl_kappa(
-            cosmo, ell_1d, chi_min, chi_max_eff, z_source, n_steps=n_steps
+        cl = compute_theoretical_cl_kappa(
+            cosmo, ell_1d, chi_min, chi_max_eff, z_source, n_steps=n_steps, linear_pk=linear_pk
         )
-
-    elif mode == "exact_linear":
-        chi_source = jc.background.radial_comoving_distance(cosmo, 1.0 / (1.0 + z_source))[0]
-        chi_max_eff = chi_source if chi_max is None else chi_max
-        return compute_theoretical_cl_kappa(
-            cosmo, ell_1d, chi_min, chi_max_eff, z_source, n_steps=n_steps, linear_pk=True
-        )
+        if low_z_range is not None:
+            cl = cl + compute_theoretical_cl_kappa(
+                cosmo, ell_1d, low_z_range[0], low_z_range[1], z_source, n_steps=n_steps,
+                linear_pk=linear_pk,
+            )
+        return cl
 
     else:
         raise ValueError(f"Unknown mode '{mode}'. Must be 'fixed', 'taylor', 'exact', or 'exact_linear'")

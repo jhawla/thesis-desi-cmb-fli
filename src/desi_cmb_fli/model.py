@@ -1004,6 +1004,7 @@ class FieldLevelModel(Model):
             # Cache/Precompute High-Z Correction (1-D ell)
             self.cl_high_z_cached = None
             self.high_z_gradients = None
+            self.cmb_low_z_range = None
 
             if self.full_los_correction:
                 chi_source_fid = float(
@@ -1015,33 +1016,29 @@ class FieldLevelModel(Model):
                         f"  [high-z] chi_high_z_max={self.chi_high_z_max:.0f} Mpc/h "
                         f"(chi_CMB={chi_source_fid:.0f})"
                     )
+                low_z_from = self.low_z_matter_start
+                if chi_min > low_z_from:
+                    self.cmb_low_z_range = (low_z_from, chi_min)
+                    print(
+                        f"  C_l^{{low-z}} (chi={low_z_from:.0f}->{chi_min:.0f} Mpc/h) in the LOS "
+                        f"correction (mode={self.high_z_mode})"
+                    )
+
+                def _cl_los(c_, chi_up_):
+                    cl = compute_theoretical_cl_kappa(
+                        c_, self.ell_1d, self.chi_boundary, chi_up_, self.cmb_z_source
+                    )
+                    if self.cmb_low_z_range is not None:
+                        cl = cl + compute_theoretical_cl_kappa(
+                            c_, self.ell_1d, *self.cmb_low_z_range, self.cmb_z_source
+                        )
+                    return cl
 
                 if self.high_z_mode in ["fixed", "taylor"]:
-                    self.cl_high_z_cached = compute_theoretical_cl_kappa(
-                        cosmo_fid,
-                        self.ell_1d,
-                        self.chi_boundary,
-                        chi_high_z_upper,
-                        self.cmb_z_source,
-                    )
+                    self.cl_high_z_cached = _cl_los(cosmo_fid, chi_high_z_upper)
                     print(
                         f"  Cached C_l^{{high-z}} at fiducial "
                         f"(mode={self.high_z_mode}, chi={self.chi_boundary:.0f}->{chi_high_z_upper:.0f} Mpc/h)"
-                    )
-                    low_z_from = self.low_z_matter_start
-                    if chi_min > low_z_from:
-                        cl_low_z = compute_theoretical_cl_kappa(
-                            cosmo_fid, self.ell_1d, low_z_from, chi_min, self.cmb_z_source
-                        )
-                        self.cl_high_z_cached = self.cl_high_z_cached + cl_low_z
-                        print(
-                            f"  Added C_l^{{low-z}} at fiducial (chi={low_z_from:.0f}->{chi_min:.0f} "
-                            "Mpc/h) to the cached LOS correction"
-                        )
-                elif chi_min > 0.0:
-                    raise ValueError(
-                        "cmb_lensing.chi_min > 0 needs the dropped low-z C_l in the covariance, "
-                        "which only high_z_mode 'fixed' or 'taylor' provide."
                     )
 
                 if self.high_z_mode == "taylor":
@@ -1050,10 +1047,7 @@ class FieldLevelModel(Model):
                     def _cl_wrapper(theta):
                         c_ = get_cosmology(Omega_m=theta[0], sigma8=theta[1])
                         chi_src_ = jc.background.radial_comoving_distance(c_, 1.0 / (1.0 + self.cmb_z_source))[0]
-                        chi_up_ = jnp.minimum(jnp.array(chi_high_z_upper), chi_src_)
-                        return compute_theoretical_cl_kappa(
-                            c_, self.ell_1d, self.chi_boundary, chi_up_, self.cmb_z_source
-                        )
+                        return _cl_los(c_, jnp.minimum(jnp.array(chi_high_z_upper), chi_src_))
 
                     om_fid = self.loc_fid["Omega_m"]
                     s8_fid = self.loc_fid["sigma8"]
@@ -1589,6 +1583,7 @@ class FieldLevelModel(Model):
                             cl_cached=self.cl_high_z_cached,
                             gradients=self.high_z_gradients,
                             loc_fid=self.loc_fid,
+                            low_z_range=self.cmb_low_z_range,
                         )
 
                     total_cl_1d = jnp.asarray(self.nell_1d)

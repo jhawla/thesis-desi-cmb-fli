@@ -104,8 +104,42 @@ def test_the_kappa_window_removes_only_the_matter_the_map_does_not_hold():
 def test_chi_min_requires_the_los_correction():
     with pytest.raises(ValueError, match="full_los_correction"):
         FieldLevelModel(**_cfg(cmb_chi_min=60.0, full_los_correction=False))
-    with pytest.raises(ValueError, match="high_z_mode"):
-        FieldLevelModel(**_cfg(cmb_chi_min=60.0, high_z_mode="exact"))
+
+
+def test_every_high_z_mode_carries_the_low_z_term_alike():
+    """fixed, taylor and exact agree at the fiducial; away from it taylor follows exact to first
+    order and fixed does not move; both the beyond-box and the below-chi_min matter follow the mode."""
+    from desi_cmb_fli.bricks import get_cosmology
+    from desi_cmb_fli.cmb_lensing import compute_cl_high_z, compute_theoretical_cl_kappa
+
+    def los(m, cosmo, linear=False):
+        lin = {"linear_pk": True} if linear else {}
+        return sum(np.asarray(compute_theoretical_cl_kappa(cosmo, m.ell_1d, lo, hi,
+                                                           m.cmb_z_source, **lin))
+                   for lo, hi in ((m.chi_boundary, 300.0), (25.0, 60.0)))
+
+    models = {mode: FieldLevelModel(**_cfg(cmb_chi_min=60.0, chi_low_z_min=25.0, high_z_mode=mode))
+              for mode in ("fixed", "taylor", "exact", "exact_linear")}
+    fid = models["fixed"].loc_fid
+    for ds8 in (0.0, 0.01):
+        cosmo = get_cosmology(Omega_m=fid["Omega_m"], sigma8=fid["sigma8"] + ds8)
+        cl = {mode: np.asarray(compute_cl_high_z(
+            cosmo, m.ell_1d, m.chi_boundary, m.chi_high_z_max, m.cmb_z_source, mode=mode,
+            cl_cached=m.cl_high_z_cached, gradients=m.high_z_gradients, loc_fid=m.loc_fid,
+            low_z_range=m.cmb_low_z_range))[2:] for mode, m in models.items()}
+        np.testing.assert_allclose(cl["exact"], los(models["exact"], cosmo)[2:], rtol=1e-10)
+        np.testing.assert_allclose(cl["exact_linear"],
+                                   los(models["exact"], cosmo, linear=True)[2:], rtol=1e-10)
+        np.testing.assert_allclose(cl["taylor"], cl["exact"], rtol=2e-3)
+        np.testing.assert_allclose(cl["fixed"], los(models["fixed"], get_cosmology(**fid))[2:],
+                                   rtol=1e-10)
+    # the Taylor gradients are those of both terms (the low-z one is 3-11 % of the total here)
+    eps = 1e-3
+    for name, step in (("dCl_dOm", {"Omega_m": eps}), ("dCl_ds8", {"sigma8": eps})):
+        up = los(models["taylor"], get_cosmology(**{k: v + step.get(k, 0.0) for k, v in fid.items()}))
+        dn = los(models["taylor"], get_cosmology(**{k: v - step.get(k, 0.0) for k, v in fid.items()}))
+        np.testing.assert_allclose(np.asarray(models["taylor"].high_z_gradients[name])[2:],
+                                   ((up - dn) / (2 * eps))[2:], rtol=1e-6)
 
 
 def test_chi_min_out_of_range_is_rejected():
