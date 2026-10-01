@@ -22,7 +22,8 @@ This work is a step toward applying FLI to real data.
 
 This repository builds upon the [benchmark-field-level](https://github.com/hsimonfroy/benchmark-field-level) framework by Hugo Simon.
 
-The `cmb_lensing.py` module is built upon the implementation by François Lanusse (see [repository](https://github.com/EiffL/LPTLensingComparison/blob/c407fdc8c70ebc37bd213be4e79eadd3a619d848/jax_lensing/model.py)).
+The curved-sky Born projection of the particles onto HEALPix shells (`cmb_lensing.py`) is built on
+Wassim Kabalan's spherical lensing in [JaxPM](https://github.com/DifferentiableUniverseInitiative/JaxPM/tree/3c23f2f0527ac7bed0d265ddcac5ecf34de16568).
 
 ## Quick Start
 
