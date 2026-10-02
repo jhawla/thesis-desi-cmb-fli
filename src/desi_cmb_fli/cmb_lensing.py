@@ -391,7 +391,11 @@ def convergence_Born_spherical(
     import healpy as hp
     import jax_healpy as jhp
 
-    chi_s = jc.background.radial_comoving_distance(cosmo, 1.0 / (1.0 + z_source))[0]
+    from desi_cmb_fli.nbody import a2chi
+
+    # the background emulator, as for every other distance of the model: jax_cosmo's own distance
+    # goes through a host callback that re-solves for every sampled cosmology
+    chi_s = a2chi(cosmo, jnp.array([1.0 / (1.0 + z_source)]))[0]
     observer_pos_mpc = jnp.asarray(observer_pos_mpc, dtype=float)
     box_size_jnp = jnp.asarray(box_shape, dtype=float)
     mesh_shape_tuple = tuple(int(x) for x in mesh_shape)

@@ -85,6 +85,21 @@ def lin_pk_ratio(path, cosmo_fid, n=1024):
     return np.log(ks), p_tab / p_eh
 
 
+def _is_one(a):
+    return isinstance(a, int | float) and a == 1.0
+
+
+def _eh_power(cosmo, k, a=1.0):
+    """jax_cosmo's ``linear_matter_power`` (Eisenstein-Hu), without its growth factor at a = 1, where
+    it is 1 by definition: the fork computes the growth through a host callback that re-solves the
+    ODE for every new cosmology, which exhausts the compiler's memory once Omega_m is sampled."""
+    pk = jc.power.primordial_matter_power(cosmo, k) * jc.transfer.Eisenstein_Hu(cosmo, k) ** 2
+    pk = pk * cosmo.sigma8**2 / jc.power.sigmasqr(cosmo, 8.0, jc.transfer.Eisenstein_Hu)
+    if not _is_one(a):
+        pk = pk * jc.background.growth_factor(cosmo, jnp.atleast_1d(a)) ** 2
+    return pk
+
+
 def lin_power_interp(cosmo=Cosmology, a=1.0, n_interp=256, pk_ratio=None):
     """
     Return a light emulation of the linear matter power spectrum: Eisenstein-Hu, times the shape
@@ -93,15 +108,12 @@ def lin_power_interp(cosmo=Cosmology, a=1.0, n_interp=256, pk_ratio=None):
     Omega_m dependence of the shape is Eisenstein-Hu's.
     """
     ks = jnp.logspace(-4, 1, n_interp)
-    pows = jc.power.linear_matter_power(cosmo, ks, a=a)
+    pows = _eh_power(cosmo, ks, a)
     if pk_ratio is not None:
-        lnk_r, ratio = jnp.asarray(pk_ratio[0]), jnp.asarray(pk_ratio[1])
-        # Normalised to the requested sigma8 itself, on a grid fine enough for the top hat: jax_cosmo's
-        # own normalisation leaves EH with a true sigma8 0.17 % above it at the Abacus cosmology.
-        kq = jnp.logspace(-4, 1, 8192)
-        pq = jc.power.linear_matter_power(cosmo, kq, a=1.0) * jnp.interp(jnp.log(kq), lnk_r, ratio)
-        renorm = cosmo.sigma8**2 / _tophat8_variance(kq, pq)  # at a=1; pows(a) carries D(a)^2
-        pows = pows * jnp.interp(jnp.log(ks), lnk_r, ratio) * renorm
+        ratio = jnp.interp(jnp.log(ks), jnp.asarray(pk_ratio[0]), jnp.asarray(pk_ratio[1]))
+        # normalised to the requested sigma8 with the top hat itself, at a = 1
+        at_one = pows if _is_one(a) else _eh_power(cosmo, ks)
+        pows = pows * ratio * (cosmo.sigma8**2 / _tophat8_variance(ks, at_one * ratio))
     logpows = jnp.log(pows)
 
     # Interpolate in semilogy space with logspaced k values, correctly handles k==0,

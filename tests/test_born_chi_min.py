@@ -253,3 +253,24 @@ def test_forward_and_gradient_run_with_proj_oversamp(oversamp):
     model.block()
     g = jax.grad(model.logpdf)({"init_mesh_": jnp.asarray(truth["init_mesh_"])})["init_mesh_"]
     assert np.all(np.isfinite(np.asarray(g))) and float(jnp.abs(g).max()) > 0
+
+
+@pytest.mark.parametrize("table", [None, "data/abacus_cosm000_CLASS_power.txt"])
+def test_sampling_omega_m_puts_no_jax_cosmo_callback_in_the_graph(table):
+    """The jax_cosmo fork computes growth and distances through host callbacks that re-solve for
+    every new cosmology; with Omega_m sampled they exhaust the compiler's memory on a GPU run. Every
+    background quantity of the model must come from the emulator or be evaluated at a = 1."""
+    from pathlib import Path
+
+    table = None if table is None else str(Path(__file__).resolve().parents[1] / table)
+    model = FieldLevelModel(**_cfg(galaxies_enabled=True, png_type="fNL", a_obs=None, cmb_chi_min=60.0,
+                                   cmb_shell_weights="linear", lin_pk_table=table))
+    truth = model.predict(samples={"Omega_m": 0.315192, "sigma8": 0.811355, "b1": 1.0, "fNL": 10.0},
+                          hide_base=False, hide_samp=False, hide_det=False, frombase=True, rng=0)
+    model.reset()
+    model.condition({k: truth[k] for k in ("obs", "kappa_obs")})
+    model.condition({n: truth[n] for n in model.sampled_scalar_latents()
+                     if n not in ("Omega_m", "sigma8")}, frombase=True)
+    model.block()
+    pos = {k: jnp.asarray(truth[k]) for k in ("init_mesh_", "Omega_m_", "sigma8_")}
+    assert "pure_callback" not in str(jax.make_jaxpr(jax.grad(model.logpdf))(pos))
