@@ -62,12 +62,47 @@ AbacusSummit0 = partial(
 )
 
 
-def lin_power_interp(cosmo=Cosmology, a=1.0, n_interp=256):
+def _tophat8_variance(k, pow):
+    """sigma_8^2 of ``pow`` sampled at the log-spaced ``k`` (trapezoid in ln k)."""
+    x = 8.0 * k
+    w = 3.0 * (jnp.sin(x) - x * jnp.cos(x)) / x**3
+    f = k**3 * pow * w**2 / (2.0 * jnp.pi**2)
+    dlnk = jnp.diff(jnp.log(k))
+    return jnp.sum(0.5 * (f[1:] + f[:-1]) * dlnk)
+
+
+def lin_pk_ratio(path, cosmo_fid, n=1024):
     """
-    Return a light emulation of the linear matter power spectrum.
+    Shape ratio ``R(k) = P_tab(k) / P_EH(k)`` of a tabulated linear spectrum to Eisenstein-Hu at
+    the cosmology it was computed for. ``path`` holds two columns, k [h/Mpc] and P [(Mpc/h)^3], at
+    any redshift: the amplitude of R is irrelevant, ``lin_power_interp`` renormalises to sigma8.
+    Returns ``(ln k, R)`` on ``n`` log-spaced points over the range of ``lin_power_interp``.
+    """
+    kt, pt = np.loadtxt(path, unpack=True)
+    ks = np.logspace(-4, 1, n)
+    p_tab = np.exp(np.interp(np.log(ks), np.log(kt), np.log(pt)))
+    p_eh = np.asarray(jc.power.linear_matter_power(cosmo_fid, jnp.asarray(ks), a=1.0))
+    return np.log(ks), p_tab / p_eh
+
+
+def lin_power_interp(cosmo=Cosmology, a=1.0, n_interp=256, pk_ratio=None):
+    """
+    Return a light emulation of the linear matter power spectrum: Eisenstein-Hu, times the shape
+    ratio ``pk_ratio = (ln k, R)`` of ``lin_pk_ratio`` if given, renormalised to the sigma8 of
+    ``cosmo``. At the cosmology of the ratio this is the tabulated spectrum; away from it the
+    Omega_m dependence of the shape is Eisenstein-Hu's.
     """
     ks = jnp.logspace(-4, 1, n_interp)
-    logpows = jnp.log(jc.power.linear_matter_power(cosmo, ks, a=a))
+    pows = jc.power.linear_matter_power(cosmo, ks, a=a)
+    if pk_ratio is not None:
+        lnk_r, ratio = jnp.asarray(pk_ratio[0]), jnp.asarray(pk_ratio[1])
+        # Normalised to the requested sigma8 itself, on a grid fine enough for the top hat: jax_cosmo's
+        # own normalisation leaves EH with a true sigma8 0.17 % above it at the Abacus cosmology.
+        kq = jnp.logspace(-4, 1, 8192)
+        pq = jc.power.linear_matter_power(cosmo, kq, a=1.0) * jnp.interp(jnp.log(kq), lnk_r, ratio)
+        renorm = cosmo.sigma8**2 / _tophat8_variance(kq, pq)  # at a=1; pows(a) carries D(a)^2
+        pows = pows * jnp.interp(jnp.log(ks), lnk_r, ratio) * renorm
+    logpows = jnp.log(pows)
 
     # Interpolate in semilogy space with logspaced k values, correctly handles k==0,
     # as interpolation in loglog space can produce nan gradients
@@ -79,11 +114,11 @@ def lin_power_interp(cosmo=Cosmology, a=1.0, n_interp=256):
     return pow_fn
 
 
-def lin_power_mesh(cosmo: Cosmology, mesh_shape, box_shape, a=1.0, n_interp=256):
+def lin_power_mesh(cosmo: Cosmology, mesh_shape, box_shape, a=1.0, n_interp=256, pk_ratio=None):
     """
     Return linear matter power spectrum field.
     """
-    pow_fn = lin_power_interp(cosmo, a=a, n_interp=n_interp)
+    pow_fn = lin_power_interp(cosmo, a=a, n_interp=n_interp, pk_ratio=pk_ratio)
     kvec = rfftk(mesh_shape)
     kmesh = (
         sum(
@@ -112,7 +147,7 @@ def _kmesh_phys(mesh_shape, box_shape):
     )
 
 
-def trans_phi2delta_interp(cosmo: Cosmology, a=1.0, n_interp=256):
+def trans_phi2delta_interp(cosmo: Cosmology, a=1.0, n_interp=256, pk_ratio=None):
     """
     Return a light emulation of the transfer function M(k) from the primordial
     potential phi to the linear matter density field: delta(k) = M(k) phi(k).
@@ -125,7 +160,7 @@ def trans_phi2delta_interp(cosmo: Cosmology, a=1.0, n_interp=256):
     with T_lin(k) = sqrt(P_lin(k) / k^{n_s}) normalized to 1 as k -> 0, and
     D_norm(a) = D(a) / D(a_norm) * a_norm with a_norm in the matter-dominated era.
     """
-    pow_fn = lin_power_interp(cosmo, a, n_interp=n_interp)
+    pow_fn = lin_power_interp(cosmo, a, n_interp=n_interp, pk_ratio=pk_ratio)
     ks = jnp.logspace(-4, 1, n_interp)
     pow_large = ks**cosmo.n_s  # primordial power spectrum on large scales
     pow_lin = pow_fn(ks)
@@ -140,7 +175,7 @@ def trans_phi2delta_interp(cosmo: Cosmology, a=1.0, n_interp=256):
     return lambda x: jnp.interp(x.reshape(-1), ks, trans, left=0.0, right=0.0).reshape(x.shape)
 
 
-def add_png(cosmo: Cosmology, fNL, init_mesh, box_shape):
+def add_png(cosmo: Cosmology, fNL, init_mesh, box_shape, pk_ratio=None):
     """
     Add local-type Primordial Non-Gaussianity (PNG) to the linear matter density field.
 
@@ -151,7 +186,7 @@ def add_png(cosmo: Cosmology, fNL, init_mesh, box_shape):
     """
     mesh_shape = ch2rshape(init_mesh.shape)
     kmesh = _kmesh_phys(mesh_shape, box_shape)
-    trans_phi2delta = trans_phi2delta_interp(cosmo)(kmesh)
+    trans_phi2delta = trans_phi2delta_interp(cosmo, pk_ratio=pk_ratio)(kmesh)
 
     phi = jnp.fft.irfftn(safe_div(init_mesh, trans_phi2delta))
     phi2 = phi**2
@@ -197,7 +232,8 @@ def fNL_bias(fNL, b1, b2, p=1.0, png_type=None, fNL_bp=0.0, fNL_bpd=0.0):
     return 0.0, 0.0
 
 
-def kaiser_posterior(delta_obs, cosmo: Cosmology, bE, a, box_shape, gxy_count, los=None):
+def kaiser_posterior(delta_obs, cosmo: Cosmology, bE, a, box_shape, gxy_count, los=None,
+                     pk_ratio=None):
     """
     Return posterior mean and std fields of the linear matter field (at a=1) given the observed field,
     by assuming Kaiser model. All fields are in fourier space.
@@ -206,7 +242,7 @@ def kaiser_posterior(delta_obs, cosmo: Cosmology, bE, a, box_shape, gxy_count, l
     """
     # Compute linear matter power spectrum
     mesh_shape = ch2rshape(delta_obs.shape)
-    pmeshk = lin_power_mesh(cosmo, mesh_shape, box_shape)
+    pmeshk = lin_power_mesh(cosmo, mesh_shape, box_shape, pk_ratio=pk_ratio)
     boost = kaiser_boost(cosmo, a, bE, mesh_shape, los)
 
     gxy_count = jnp.asarray(gxy_count)
@@ -459,7 +495,7 @@ def samp2base_mesh(init: dict, precond=False, transfer=None, inv=False, temp=1.0
 
 def lagrangian_weights(
     cosmo: Cosmology, a, pos, box_shape, b1, b2, bs2, bn2, init_mesh,
-    fNL_bp=0.0, fNL_bpd=0.0, png_type=None,
+    fNL_bp=0.0, fNL_bpd=0.0, png_type=None, pk_ratio=None,
 ):
     """
     Return Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
@@ -495,7 +531,7 @@ def lagrangian_weights(
 
     # Apply primordial non-Gaussianity scale-dependent bias terms
     if png_type is not None:
-        trans_phi2delta = trans_phi2delta_interp(cosmo)(kk_box**0.5)
+        trans_phi2delta = trans_phi2delta_interp(cosmo, pk_ratio=pk_ratio)(kk_box**0.5)
         phi = jnp.fft.irfftn(safe_div(delta_k, trans_phi2delta))
 
         # Apply bphi, primordial term (phi is primordial: no growth factor)
@@ -614,7 +650,7 @@ def naive_mu2_delta(delta_k, los, mesh_shape):
 
 def kaiser_boost(
     cosmo: Cosmology, a, bE, mesh_shape, los: np.ndarray = None,
-    fNL_bp=0.0, png_type=None, box_shape=None,
+    fNL_bp=0.0, png_type=None, box_shape=None, pk_ratio=None,
 ):
     """
     Return Eulerian Kaiser boost including linear growth, Eulerian linear bias, RSD,
@@ -635,14 +671,14 @@ def kaiser_boost(
         boost = a2g(cosmo, a) * (bE + a2f(cosmo, a) * mumesh**2)
 
     if png_type is not None:
-        trans = trans_phi2delta_interp(cosmo)(_kmesh_phys(mesh_shape, box_shape))
+        trans = trans_phi2delta_interp(cosmo, pk_ratio=pk_ratio)(_kmesh_phys(mesh_shape, box_shape))
         boost = boost + safe_div(fNL_bp, trans)  # delta += fNL_bp * phi in Fourier space
     return boost
 
 
 def kaiser_model(
     cosmo: Cosmology, a, bE, init_mesh, los: np.ndarray = None,
-    fNL_bp=0.0, png_type=None, box_shape=None,
+    fNL_bp=0.0, png_type=None, box_shape=None, pk_ratio=None,
 ):
     """
     Kaiser model, with linear growth, Eulerian linear bias, RSD, and (optionally) the
@@ -652,7 +688,7 @@ def kaiser_model(
 
     # Fast path: scalar time and fixed LOS (standard snapshot Kaiser in Fourier space).
     if jnp.ndim(a) == 0 and (los is None or jnp.ndim(los) == 1):
-        boost = kaiser_boost(cosmo, a, bE, mesh_shape, los, fNL_bp, png_type, box_shape)
+        boost = kaiser_boost(cosmo, a, bE, mesh_shape, los, fNL_bp, png_type, box_shape, pk_ratio)
         return 1 + jnp.fft.irfftn(init_mesh * boost)  # 1 + delta
 
     delta_lin = jnp.fft.irfftn(init_mesh)
@@ -673,7 +709,7 @@ def kaiser_model(
     delta = a2g(cosmo, a) * delta
 
     if png_type is not None:
-        trans = trans_phi2delta_interp(cosmo)(_kmesh_phys(mesh_shape, box_shape))
+        trans = trans_phi2delta_interp(cosmo, pk_ratio=pk_ratio)(_kmesh_phys(mesh_shape, box_shape))
         phi = jnp.fft.irfftn(safe_div(init_mesh, trans))
         delta = delta + fNL_bp * phi  # scale-dependent bias (lightcone / curved-sky)
     return 1 + delta

@@ -34,7 +34,21 @@ oversampling table in §2.5).
 ### 2.1 Initial conditions
 
 A 3-D Gaussian random field on the **init grid** (`init_oversamp`, e.g. 48³ for a 32³ final grid).
-The power spectrum is `jax_cosmo` (Eisenstein–Hu transfer). The field is the inference latent
+The power spectrum is `jax_cosmo` (Eisenstein–Hu transfer), optionally corrected by a tabulated
+Boltzmann spectrum (`model.lin_pk_table`): `bricks.lin_power_interp` multiplies Eisenstein–Hu at the
+sampled cosmology by the fixed shape ratio `R(k) = P_tab / P_EH` taken at the fiducial cosmology
+(`lin_pk_ratio`, latents' `loc_fid`, which must be the table's cosmology) and renormalises the product
+to the sampled σ8 with its own top-hat integral on a fine k grid (jax_cosmo's normalisation leaves
+Eisenstein–Hu 0.17 % above its nominal σ8 at the Abacus cosmology). At the fiducial this is the
+table exactly; away from it, the change of shape with `Omega_m` is Eisenstein–Hu's, the error being
+how the Boltzmann/EH ratio itself moves with `Omega_m`. montecosmo's tabulated mode instead holds the
+fiducial shape fixed, which is exact only at fixed `Omega_m` (its runs fix `Omega_m` when they
+tabulate, `run/script_pipe_fpm.py`) — at fixed σ8 the large-scale shape moves by tens of per cent
+over the `Omega_m` prior. Everything built on the linear spectrum takes the same ratio: the prior
+and the Kaiser preconditioner (`lin_power_mesh`), the φ→δ transfer of `add_png` and of the
+scale-dependent bias (`trans_phi2delta_interp`), the Kaiser model and the Wiener start. The Limber
+C_ℓ (line-of-sight term, diagnostics) keep jax_cosmo's Eisenstein–Hu halofit. Without a table
+(closure configs) the spectrum is Eisenstein–Hu alone. The field is the inference latent
 `init_mesh` (sampled as `init_mesh_` in the Kaiser-whitened basis, see §5). Mesh dimensions are
 auto-adjusted (`get_model_from_config`) so all axes have an **even** number of cells: the real↔complex
 Gaussian repacking `utils._rg2cgh`/`cgh2rg` asserts `all(shape % 2 == 0)`, because the
@@ -834,6 +848,10 @@ against closed forms in `tests/test_fisher.py`).
   `figures/fisher_diagnostic/fisher_cosmo_contours.png` (68 % contours) and
   `$SCRATCH/outputs/fisher_cosmo/fisher_cosmo.json` (§8 item 16); `--resolution_scan` repeats it
   over box size, cell and `chi_min` (§8 item 16).
+- **`compare_linear_power.py --omega_m_scan`** (needs `camb`, not in the environment) — at fixed σ8,
+  each linear-power option against CAMB as `Omega_m` moves off the fiducial: Eisenstein–Hu times the
+  fiducial Boltzmann/EH ratio (`lin_pk_table`), Eisenstein–Hu alone, and the fiducial shape held
+  fixed; `figures/spectra_diagnostic/linear_power_omega_m_accuracy.png` and its `.npz` (§8 item 17).
 - **`compare_linear_power.py`** — the model's linear P(k) (jax_cosmo Eisenstein–Hu) against the CLASS
   spectrum the AbacusSummit ICs were drawn from (`data/abacus_cosm000_CLASS_power.txt`, AbacusSummit
   `Cosmologies/abacus_cosm000/CLASS_power`, the `ZD_Pk_filename` of the HUGE IC header), both
@@ -1421,9 +1439,10 @@ Runs, each in a 4 h interactive `salloc` with a bare `run_inference.py` (`docs/h
 4g. **κ recorded per batch** — done 2026-09-25 (`kappa_batch_*.npz`, `kappa_posterior_mean.png`):
    every run launched from now on has the posterior mean and spread of κ; the runs of §7.3–7.4
    predate it.
-5. **Resume the Abacus galaxy-only reference** `run_20260910_033019_58153868` (55 batches) to 140, at
-   least 92 (caps the precision of every ratio in §7.1–7.2 and 7.5); it pairs with the Abacus joint
-   at 700 of item 4h.
+5. **Rerun the Abacus galaxy-only reference** (`abacus/abacus_gxyonly.yaml`) from scratch to 140
+   batches, at least 92 (caps the precision of every ratio in §7.1–7.2 and 7.5); it pairs with the
+   Abacus joint at 700 of item 4h. `run_20260910_033019_58153868` (55 batches) cannot be resumed with
+   `lin_pk_table` (item 17).
 
 15. **Field level vs. an independent two-point analysis on the same κ map** (with Constantin
    Payerne; decided 2026-09-30, to prepare before the runs; paper §6, `sec:res_twopt`). We send one
@@ -1491,8 +1510,8 @@ Runs, each in a 4 h interactive `salloc` with a bare `run_inference.py` (`docs/h
    the galaxies more the higher k_max goes; `chi_min` 500 is the lattice rule 2π χ_min/d ≳ 80, not
    validated (700 at 93.75 and 292.6 at 46.875 are, §7.6); a 5000 box no longer matches the
    published IC grid (the test of §7.6). json `$SCRATCH/outputs/fisher_cosmo/fisher_cosmo_resolution.json`.
-   **Blocked by item 17**: the chains start at the
-   fiducial cosmology, which is the Abacus one, and a prior spectrum of the wrong shape moves
+   Unblocked by item 17 (`lin_pk_table` set in the three configs): the chains start at the
+   fiducial cosmology, which is the Abacus one, and a prior spectrum of the wrong shape would move
    `sigma8`.
 17. **Linear power spectrum** (raised 2026-09-30 by the supervisor). The model's `P_lin` is jax_cosmo's
    Eisenstein–Hu (§2.1), and the Limber theory and `C_ℓ^LOS` use its halofit. At the same σ8,
@@ -1511,7 +1530,43 @@ Runs, each in a 4 h interactive `salloc` with a bare `run_inference.py` (`docs/h
    H(z), r(z), D(z), f(z), for z ≤ 3 — not P(k); the JAX matter-power emulator of the same group,
    `jaxmapse`, is an empty repository (both checked 2026-10-01). Figure
    `figures/spectra_diagnostic/linear_power_eh_vs_class.png` (spectra at σ8 = 1 and their ratio,
-   band and corner modes shaded).
+   band and corner modes shaded). **Implemented 2026-10-01**: `model.lin_pk_table` (§2.1, EH × the
+   fiducial ratio, renormalised to σ8), set to `data/abacus_cosm000_CLASS_power.txt` in the Abacus
+   configs to run; closures stay Eisenstein–Hu (self-consistent; to state in the paper). Accuracy
+   when `Omega_m` moves (`compare_linear_power.py --omega_m_scan`, CAMB 2.0.4 as reference — it
+   matches the Abacus CLASS table to 0.9994–1.0026 at σ8 = 1 over k = 0.001–0.3 — at fixed σ8, max
+   |option/CAMB − 1| over k = 0.001–0.034 h/Mpc, corners to 0.058 in brackets): `lin_pk_table`
+   0 / 1.06 (1.21) / 0.81 (1.00) / 2.24 (2.42) / 1.69 (2.17) % at `Omega_m` = 0.315 / 0.28 / 0.35 /
+   0.25 / 0.40; Eisenstein–Hu alone 3.89 / 3.38 / 4.32 / 3.00 / 4.84 %; the fiducial shape held
+   fixed 0 / 30 / 36 / 52 / 100 %. Below k = 0.02 the `lin_pk_table` error is a near-constant
+   offset (+0.7 % at 0.25, −0.8 % at 0.40). Every Abacus run is a rerun from scratch: a prior
+   change makes the gxy-only reference `run_20260910_033019_58153868` non-resumable.
+
+18. **Per-shell multipole cut of the Born κ** (proposed 2026-10-01 by Wassim Kabalan, his
+   `resolution_cut`; bench agreed 2026-10-02). Each shell is low-passed above the multipole the
+   model resolves at its distance, ℓ_res = k_Nyq r_eff (cosine taper over ℓ_res/4), and the power
+   removed — real structure at k > k_Nyq on Abacus and on real data — enters the covariance as the
+   per-shell Limber C_ℓ above ℓ_res, following `high_z_mode` like the line-of-sight term. At cell
+   93.75 (init grid 62.5) ℓ_res reaches 64 at r ≈ 1270 Mpc/h (1910 with the final grid): it acts on the
+   shells beyond `chi_min` 700 that carry the top-of-band discreteness, which `chi_min` does not.
+   Implementation in a_ℓm (the likelihood's space): one `map2alm` per cut shell, filter, sum. To
+   measure before adopting (bench): the IC test (`validate_kappa_from_ic.py`, (model + LOS)/Abacus per
+   ℓ bin), the closure C_ℓ against Limber (`quick_cl_spectra.py`), the stiffness at `chi_min` 700, 350,
+   292.6 (`kappa_stiffness.py`), the cost of a gradient. Open with it: which k_Nyq (init or final
+   grid), whether `chi_min` can go down, the radial tents stay (they solve the shell-crossing jumps, a
+   radial problem). The IC test at the current setting, (model + LOS)/Abacus: 1.09 / 1.06 / 1.03 /
+   1.09 / 1.13 / 1.11 in ℓ 2–10 / 11–20 / 21–36 / 37–47 / 48–55 / 56–64
+   (`$SCRATCH/outputs/kappa_from_ic/poles_fixed/kappa_from_ic.npz`, chi_min 700).
+19. **Closure Ω_m–σ8 triplet** (2026-10-02, priority for a conference abstract): galaxies only, κ only,
+   joint at density 1, `fixed_params: [fNL]`, Ω_m and σ8 free — the Fisher κ gain without model
+   error. Configs to write (`scan/closure_d1p00_{gxyonly,kappaonly,joint}_cosmo_chimin700.yaml`); the κ
+   only one is the run of item 15.
+20. **ℓ_max knob** (`cmb_lensing.ell_max` < 2·nside, a_ℓm above it dropped from the observable): for
+   the two-point comparison if the cut option is chosen (item 15c) and a κ-only Ω_m–σ8 robustness run
+   on Abacus at ℓ ≤ 47.
+21. **Power-mismatch bias in `fisher_cosmo.py`**: the first-order Fisher shift of (Ω_m, σ8) from a
+   given C_ℓ mismatch (closure discreteness against a CCL theory; the IC-test mismatch on Abacus), so
+   that the estimates behind items 15c, 18 and 20 are reproducible before they are quoted.
 
 Optional: a closure on the Abacus ICs (needs a `closure_init_from_abacus_ic` knob; it is the only way
 to tell model error from realisation in the closure/Abacus comparison of §7.3); `bn2` fixed at the

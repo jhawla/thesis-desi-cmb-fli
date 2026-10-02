@@ -32,6 +32,7 @@ model:
   gxy_density: 8.43318125e-4 # used only in closure mode; overwritten by load_abacus_galaxy_observation in abacus mode
   # los: null  # Disable RSD (comment out to enable RSD)
   png_type: fNL  # 'fNL' = universality (b_phi/b_phi_delta derived from b1/b2); 'fNL_bias' = infer fNL, fNL*b_phi, fNL*b_phi_delta as free params. null/omit = Gaussian
+  lin_pk_table: data/abacus_cosm000_CLASS_power.txt  # CLASS spectrum of the Abacus ICs: EH x its shape ratio at the fiducial (pipeline 2.1); remove for closure
 
 # CMB lensing configuration
 cmb_lensing:
