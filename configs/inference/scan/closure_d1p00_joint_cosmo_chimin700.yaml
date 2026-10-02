@@ -128,7 +128,7 @@ mcmc:
   num_warmup: 8192
 
   # Fix some scalar latents to their truth/fiducial value (only the rest are inferred).
-  fixed_params: [fNL]  # Omega_m and sigma8 inferred (pipeline.md §8 item 19), fNL at its truth
+  fixed_params: [fNL]  # Omega_m and sigma8 inferred, fNL at its truth
 
   # Sampling
   num_samples: 50

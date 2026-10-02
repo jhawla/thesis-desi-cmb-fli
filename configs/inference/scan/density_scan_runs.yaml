@@ -1,6 +1,6 @@
 # Paired closure runs of the tracer-density scan (docs/pipeline.md §7.3), read by
 # scripts/density_scan.py. One entry per density; `joint: null` until the
-# joint run exists. Every joint runs at chi_min 700 (pipeline.md §8 item 4h); the chi_min 350 pairs
+# joint run exists. Every joint runs at chi_min 700; the chi_min 350 pairs
 # are compared with them in §7.3-7.4, not here.
 # Run directories are relative to $SCRATCH/outputs.
 fisher_config: configs/inference/scan/closure_d1p00_joint_chimin700.yaml  # kappa geometry, cell, truth biases
