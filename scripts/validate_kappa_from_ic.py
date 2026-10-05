@@ -5,15 +5,15 @@ The most direct test of the κ model: the published HUGE ICs go through our forw
 cone, Born projector) at the Abacus cosmology, and the resulting κ is compared with the AbacusLensing
 map of the same simulation, mode by mode, in the band the likelihood uses (ℓ ≤ 2·cmb_nside). No
 sampling is involved, so any difference is model error (resolution, LPT vs N-body, discreteness,
-projector) plus the matter the model does not hold (below `chi_min`, beyond the box), which the
-likelihood already treats as Gaussian noise (`C_ℓ^LOS`).
+projector) plus the matter the model does not hold (beyond the box, and what the per-shell multipole
+cut removes), which the likelihood already treats as Gaussian noise (`C_ℓ^LOS`).
 
 Per ℓ bin it reports the coherence r = C_tm / sqrt(C_tt C_mm), the transfer sqrt(C_mm / C_tt), and the
 power of the error t − m against N_ℓ and against C_ℓ^LOS. For a model that is exact on the matter it
 holds, t = m + u with u the unmodelled line of sight: C_err = C_LOS and r = sqrt(1 − C_LOS / C_tt).
 
     python scripts/validate_kappa_from_ic.py --config configs/inference/abacus/abacus_joint_Nl1p0_chimin700.yaml \\
-        --chi_min 292.6 350 500 700
+        --shell_kmax 0 0.0503
 
 Needs a compute node the first time (the nside-16384 κ map does not fit a login node); the map
 resampled to the projection sphere is cached in the output directory and reused. The figure
@@ -60,13 +60,14 @@ from desi_cmb_fli.validation import conditioning_params  # noqa: E402
 BIN_EDGES = [2, 12, 24, 36, 48, 56]
 
 
-def build_model(cfg, chi_min, cell_size=None):
+def build_model(cfg, shell_kmax=None, cell_size=None):
     cfg = copy.deepcopy(cfg)
     if cell_size:
         cfg["model"]["cell_size"] = float(cell_size)
+    if shell_kmax is not None:
+        cfg["cmb_lensing"]["shell_kmax"] = float(shell_kmax)
     cfg["model"]["galaxies_enabled"] = False
     cfg["cmb_lensing"]["enabled"] = True
-    cfg["cmb_lensing"]["chi_min"] = float(chi_min)
     model, _ = get_model_from_config(cfg)
     return model
 
@@ -120,7 +121,7 @@ def polar_report(t, m, label):
     print(f"    Abacus map rms {t.std():.4f}")
 
 
-def plot_polar_maps(t, m, lmax, chi_min, cell, fig_path, half_width_deg=25.0):
+def plot_polar_maps(t, m, lmax, kmax, cell, fig_path, half_width_deg=25.0):
     """Abacus, model and model − Abacus around both poles, at full pixel resolution and at ℓ ≤ lmax."""
     rows = [("full resolution", t, m), (f"ℓ ≤ {lmax}", band_limit(t, lmax), band_limit(m, lmax))]
     vmax = 3 * float(np.std(t))
@@ -152,7 +153,7 @@ def plot_polar_maps(t, m, lmax, chi_min, cell, fig_path, half_width_deg=25.0):
                 )
     fig.suptitle(
         f"κ around the poles (±{half_width_deg:g}°, gnomonic, pole at the centre), "
-        f"chi_min {chi_min:g}, cell {cell} Mpc/h; colour range ±3 × the Abacus map rms",
+        f"shell_kmax {kmax:.4g}, cell {cell} Mpc/h; colour range ±3 × the Abacus map rms",
         fontsize=12,
         y=1.02,
     )
@@ -162,22 +163,23 @@ def plot_polar_maps(t, m, lmax, chi_min, cell, fig_path, half_width_deg=25.0):
 
 
 def plot_spectra(results, lmax, config_name, cell_size, fig=None):
-    """Spectra, coherence and error power per chi_min; dotted: what a model exact on the matter it
+    """Spectra, coherence and error power per shell_kmax; dotted: what a model exact on the matter it
     holds would give, since the Abacus map also holds the line of sight the model does not."""
     fine = np.arange(2, lmax + 2, 4)
     ell = 0.5 * (fine[:-1] + fine[1:] - 1)
-    fig_, axes = plt.subplots(1, 3, figsize=(18, 5))
-    for i, (chi_min, cl) in enumerate(results.items()):
+    fig_, axes = plt.subplots(1, 4, figsize=(24, 5))
+    for i, (kmax, cl) in enumerate(results.items()):
         b = {k: binned(v, fine) for k, v in cl.items()}
         c = f"C{i}"
         if i == 0:
             axes[0].plot(ell, b["tt"] / 4, "k", lw=2, label="AbacusLensing")
-        axes[0].plot(ell, b["mm"] / 4, c, label=f"model from the Abacus IC, chi_min {chi_min:g}")
+        axes[0].plot(ell, b["mm"] / 4, c, label=f"model from the Abacus IC, shell_kmax {kmax:.4g}")
         axes[0].plot(ell, (b["tt"] - b["los"]) / 4, c, ls=":")
-        axes[1].plot(ell, b["tm"] / np.sqrt(b["tt"] * b["mm"]), c, label=f"chi_min {chi_min:g}")
+        axes[1].plot(ell, b["tm"] / np.sqrt(b["tt"] * b["mm"]), c, label=f"shell_kmax {kmax:.4g}")
         axes[1].plot(ell, np.sqrt(np.clip(1 - b["los"] / b["tt"], 0, 1)), c, ls=":")
-        axes[2].plot(ell, b["err"] / b["nell"], c, label=f"model error, chi_min {chi_min:g}")
+        axes[2].plot(ell, b["err"] / b["nell"], c, label=f"model error, shell_kmax {kmax:.4g}")
         axes[2].plot(ell, b["los"] / b["nell"], c, ls=":")
+        axes[3].plot(ell, (b["mm"] + b["los"]) / b["tt"], c, label=f"shell_kmax {kmax:.4g}")
     axes[0].set(
         yscale="log",
         ylabel=r"$C_\ell$",
@@ -194,6 +196,11 @@ def plot_spectra(results, lmax, config_name, cell_size, fig=None):
         title="Error power over the ACT DR6 noise (dotted: LOS covariance)",
     )
     axes[2].axhline(1, color="k", lw=0.6)
+    axes[3].set(
+        ylabel=r"$(C_\ell^{mm} + C_\ell^{\rm LOS}) / C_\ell^{tt}$",
+        title="Model power plus its covariance term over AbacusLensing (1 = consistent)",
+    )
+    axes[3].axhline(1, color="k", lw=0.6)
     for ax in axes:
         ax.set_xlabel(r"$\ell$")
         ax.grid(alpha=0.3)
@@ -223,12 +230,18 @@ def main():
     ap.add_argument(
         "--config", default="configs/inference/abacus/abacus_joint_Nl1p0_chimin700.yaml"
     )
-    ap.add_argument("--chi_min", type=float, nargs="+", default=[292.6, 350.0, 500.0, 700.0])
     ap.add_argument(
         "--cell_size",
         type=float,
         default=None,
         help="override model.cell_size (the Abacus map cache does not depend on it)",
+    )
+    ap.add_argument(
+        "--shell_kmax",
+        type=float,
+        nargs="+",
+        default=[None],
+        help="per-shell multipole cut(s) to compare (h/Mpc; 0 = no cut; default: the config's)",
     )
     ap.add_argument("--abacus_map", default=None, help=".npy map or .npz with kappa_pred")
     ap.add_argument(
@@ -263,26 +276,27 @@ def main():
     cfg = yaml.safe_load(open(args.config))
     if args.replot:
         d = np.load(args.replot)
-        chis = sorted({float(k.split("_", 1)[1]) for k in d.files})
+        kmaxs = sorted({float(k.split("_", 1)[1]) for k in d.files})
         results = {
-            c: {k.split("_", 1)[0]: d[k] for k in d.files if k.endswith(f"_{c}")} for c in chis
+            c: {k.split("_", 1)[0]: d[k] for k in d.files if k.endswith(f"_{c}")} for c in kmaxs
         }
-        lmax = results[chis[0]]["tt"].size - 1
+        lmax = results[kmaxs[0]]["tt"].size - 1
         cell = float(args.cell_size or cfg["model"]["cell_size"])
         print(f"Saved {plot_spectra(results, lmax, Path(args.config).name, cell, args.fig)}")
         return
     out = Path(args.out_dir or Path(os.environ.get("SCRATCH", ".")) / "outputs" / "kappa_from_ic")
     out.mkdir(parents=True, exist_ok=True)
     truth_params = conditioning_params(
-        build_model(cfg, args.chi_min[0], args.cell_size),
+        build_model(cfg, args.shell_kmax[0], args.cell_size),
         cfg.get("truth_params", {}),
         cfg.get("abacus_truth_params", {}),
     )
 
     results, t_map, ic = {}, None, None
-    for chi_min in args.chi_min:
-        print(f"\n=== chi_min {chi_min}")
-        model = build_model(cfg, chi_min, args.cell_size)
+    for kmax_arg in args.shell_kmax:
+        model = build_model(cfg, kmax_arg, args.cell_size)
+        kmax = float(model.cmb_shell_kmax)
+        print(f"\n=== shell_kmax {kmax:.4g}")
         lmax, nside = int(model.cmb_lmax), int(model.cmb_proj_nside)
         if ic is None:
             ic = load_abacus_ic_truth(cfg["abacus_ic"], model)["init_mesh"]
@@ -299,19 +313,19 @@ def main():
         m_map = np.asarray(pred["kappa_pred"], dtype=float)
         if args.maps and t_map.size == m_map.size:
             cell = f"{float(model.cell_shape[0]):g}".replace(".", "p")
-            np.save(out / f"model_kappa_chimin{chi_min:g}_cell{cell}.npy", m_map)
+            np.save(out / f"model_kappa_kmax{kmax:.4g}_cell{cell}.npy", m_map)
             polar_report(t_map, m_map, "projection sphere")
             polar_report(band_limit(t_map, lmax), band_limit(m_map, lmax), f"ℓ ≤ {lmax}")
             plot_polar_maps(
                 t_map,
                 m_map,
                 lmax,
-                chi_min,
+                kmax,
                 cell,
                 Path(__file__).resolve().parents[1]
                 / "figures"
                 / "maps"
-                / f"kappa_from_abacus_ic_poles_cell{cell}_chimin{chi_min:g}.png",
+                / f"kappa_from_abacus_ic_poles_cell{cell}_kmax{kmax:.4g}.png",
             )
 
         mask_m = np.asarray(model.cmb_proj_mask, dtype=float)
@@ -328,16 +342,16 @@ def main():
             los = np.asarray(model.cl_high_z_cached, dtype=float)[: lmax + 1]
         nell = np.asarray(model.nell_1d, dtype=float)[: lmax + 1]
         cl.update(los=los, nell=nell)
-        results[chi_min] = cl
+        results[kmax] = cl
 
     edges = np.array(BIN_EDGES + [lmax + 1])
     labels = [f"{a}-{b - 1}" for a, b in zip(edges[:-1], edges[1:], strict=False)]
     print(f"\nPer ℓ bin {labels} (sums over the bin; truth = AbacusLensing)")
-    for chi_min, cl in results.items():
+    for kmax, cl in results.items():
         b = {k: binned(v, edges) for k, v in cl.items()}
         r = b["tm"] / np.sqrt(b["tt"] * b["mm"])
         r_exp = np.sqrt(np.clip(1 - b["los"] / b["tt"], 0, 1))
-        print(f"\nchi_min {chi_min}")
+        print(f"\nshell_kmax {kmax:.4g}")
         print("  coherence r            ", np.round(r, 3))
         print("  r if exact but for LOS ", np.round(r_exp, 3))
         print("  transfer sqrt(Cmm/Ctt) ", np.round(np.sqrt(b["mm"] / b["tt"]), 3))

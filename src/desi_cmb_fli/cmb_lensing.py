@@ -339,6 +339,7 @@ def convergence_Born_spherical(
     t_exit=None,
     return_full=False,
     shell_weights="nearest",
+    per_shell=False,
 ):
     """Compute CMB convergence on a HEALPix mask via the Born approximation.
 
@@ -382,6 +383,9 @@ def convergence_Born_spherical(
         centres bracket its radius, ramping up from zero over the half shell
         below the first edge (uniform shells only), so ``kappa`` is continuous
         in the particle radii, inner edge included.
+    per_shell : bool, optional
+        If True, return each shell's contribution, shape (n_shells, npix), instead of their sum
+        (for the per-shell multipole cut, ``cut_shells``).
 
     Returns
     -------
@@ -492,7 +496,10 @@ def convergence_Born_spherical(
     delta = jnp.where(shell_mask & jnp.isfinite(rho), rho / n_bar - 1.0, 0.0)
 
     W = lensing_kernel(cosmo, r_shells_jnp, a_shells_jnp, chi_s)
-    kappa_hp = (delta * (d_r_arr * W)[:, None]).sum(0)
+    per_shell_kappa = delta * (d_r_arr * W)[:, None]
+    if per_shell:
+        return per_shell_kappa if return_full else per_shell_kappa[:, mask_jnp]
+    kappa_hp = per_shell_kappa.sum(0)
     if return_full:
         return kappa_hp
     return kappa_hp[mask_jnp]
@@ -638,12 +645,17 @@ def compute_theoretical_cl_kappa_windowed(
     z_source,
     shell_weights=None,
     k_nyq=None,
+    ell_taper=None,
 ):
     """Discrete shell theory matching the closure projector geometry.
 
     This approximates the Born integral using the same shell centres and widths
-    as the forward model, with optional per-shell angular support weights.
+    as the forward model, with optional per-shell angular support weights and, with
+    ``ell_taper`` (``shell_ell_taper``), each shell's power times its squared multipole taper.
     """
+    if ell_taper is not None:
+        ell_tab = jnp.arange(np.shape(ell_taper)[1], dtype=float)
+        ell_taper = jnp.asarray(ell_taper, dtype=float)
     chi = jnp.asarray(r_shells, dtype=float)
     a = jnp.asarray(a_shells, dtype=float)
     if np.ndim(d_r) == 0:
@@ -666,9 +678,26 @@ def compute_theoretical_cl_kappa_windowed(
         integrand = shell_weights * (w_val**2 / chi**2) * pk
         if k_nyq is not None:
             integrand = integrand * (k <= k_nyq)
+        if ell_taper is not None:
+            integrand = integrand * jax.vmap(lambda row: jnp.interp(ell_val, ell_tab, row))(ell_taper) ** 2
         return jnp.sum(integrand * dr)
 
     return jax.vmap(get_cl_per_ell)(jnp.asarray(ell, dtype=float))
+
+
+def shell_profiles(r_shells, d_r, shell_weights="nearest", n_per_shell=40):
+    """Radial weight of each Born shell, ``(chi, p)`` with ``p`` of shape (n_shells, n_chi): 1
+    inside the shell for ``nearest``, the tent ``max(0, 1 - |chi - r_i| / d_r)`` for ``linear``, on
+    a grid fine enough to resolve the ramps."""
+    r = np.asarray(r_shells, dtype=float)
+    h = np.broadcast_to(np.asarray(d_r, dtype=float), r.shape)
+    reach = h if shell_weights == "linear" else 0.5 * h
+    chi = np.linspace(float(np.min(r - reach)), float(np.max(r + reach)), n_per_shell * r.size)
+    if shell_weights == "linear":
+        p = np.clip(1.0 - np.abs(chi[None] - r[:, None]) / h[:, None], 0.0, None)
+    else:
+        p = ((chi[None] >= (r - 0.5 * h)[:, None]) & (chi[None] < (r + 0.5 * h)[:, None])).astype(float)
+    return chi, p
 
 
 def kappa_radial_window(r_shells, d_r, shell_weights="nearest", support=None, n_per_shell=40):
@@ -676,18 +705,95 @@ def kappa_radial_window(r_shells, d_r, shell_weights="nearest", support=None, n_
     shell for ``nearest``, the sum of the tents for ``linear`` (1 between the first and last apex,
     ramping to 0 over one ``d_r`` at each end), times the angular support of each shell. Returns
     ``(chi, w)`` on a grid fine enough to resolve the ramps."""
-    r = np.asarray(r_shells, dtype=float)
-    h = np.broadcast_to(np.asarray(d_r, dtype=float), r.shape)
-    s = np.ones_like(r) if support is None else np.asarray(support, dtype=float)
-    reach = h if shell_weights == "linear" else 0.5 * h
-    chi = np.linspace(float(np.min(r - reach)), float(np.max(r + reach)), n_per_shell * r.size)
-    w = np.zeros_like(chi)
-    for ri, hi, si in zip(r, h, s, strict=True):
-        if shell_weights == "linear":
-            w += si * np.clip(1.0 - np.abs(chi - ri) / hi, 0.0, None)
-        else:
-            w += si * ((chi >= ri - 0.5 * hi) & (chi < ri + 0.5 * hi))
-    return chi, w
+    chi, p = shell_profiles(r_shells, d_r, shell_weights, n_per_shell)
+    s = np.ones(p.shape[0]) if support is None else np.asarray(support, dtype=float)
+    return chi, s @ p
+
+
+def shell_ell_taper(r_shells, d_r, shell_weights, k_max, ell_max, lmax):
+    """Multipole taper of the per-shell cut, shape (n_shells, lmax + 1) (docs/pipeline.md 2.6).
+
+    Shell ``s`` resolves ``ell_res = k_max * r_eff``, ``r_eff`` its mass-weighted radius under its
+    radial profile. A shell with ``ell_res < ell_max`` gets W. Kabalan's cosine taper (jax-fli
+    ``resolution_cut``): 1 up to ``l_cut - l_width``, 0 from ``l_cut = floor(ell_res)``, with
+    ``l_width = max(l_cut // 4, 1)``; a shell that resolves no multipole is removed whole. The other
+    rows are 1.
+    """
+    chi, p = shell_profiles(r_shells, d_r, shell_weights, n_per_shell=400)
+    r_eff = np.trapezoid(p * chi**3, chi, axis=1) / np.trapezoid(p * chi**2, chi, axis=1)
+    ell_res = float(k_max) * r_eff
+    ell = np.arange(int(lmax) + 1)
+    taper = np.ones((len(r_eff), ell.size))
+    for s in np.flatnonzero(ell_res < ell_max):
+        l_cut = int(np.floor(ell_res[s]))
+        l_width = max(l_cut // 4, 1)
+        x = (ell - (l_cut - l_width)) / l_width
+        taper[s] = np.where(ell <= l_cut - l_width, 1.0,
+                            np.where(ell >= l_cut, 0.0, 0.5 * (1.0 + np.cos(np.pi * x))))
+    return taper
+
+
+def cut_shells(shells, taper, nside):
+    """Sum of the per-shell Born maps (n_shells, npix), each shell whose ``taper`` row is not all
+    ones low-passed by it in harmonic space; the untouched shells are summed in pixel space."""
+    import healpy as hp
+    import jax_healpy as jhp
+
+    cut = np.flatnonzero((np.asarray(taper) < 1.0).any(axis=1))
+    keep = np.setdiff1d(np.arange(len(taper)), cut)
+    kappa = shells[keep].sum(0)
+    if cut.size == 0:
+        return kappa
+    lmax = 2 * int(nside)
+    if taper.shape[1] != lmax + 1:
+        raise ValueError(f"taper rows must cover l = 0 ... 2 nside = {lmax}, got {taper.shape[1] - 1}")
+    fl = jnp.asarray(np.asarray(taper)[cut][:, hp.Alm.getlm(lmax)[0]])
+    alm = jax.vmap(
+        lambda m: jhp.map2alm(m, lmax=lmax, pol=False, iter=0, healpy_ordering=True)
+    )(shells[cut])
+    return kappa + jnp.real(
+        jhp.alm2map((fl * alm).sum(0), nside=int(nside), lmax=lmax, pol=False, healpy_ordering=True)
+    )
+
+
+def compute_cl_shell_cut(
+    cosmo, ell, r_shells, a_shells, d_r, shell_weights, taper, z_source, n_per_shell=40,
+    linear_pk=False,
+):
+    """Limber C_ell of what the per-shell multipole cut removes from the Born convergence.
+
+    Shell ``s`` holds the matter with the radial kernel ``q_s = d_r W(r_s) p_s(chi) chi^2 / V_s``
+    (its lensing weight at the centre, as in ``convergence_Born_spherical``, times its profile
+    normalised by its volume); the cut removes ``sum_s (1 - w_s(ell)) q_s``, whose Limber power is
+    returned, so neighbouring tents enter with their cross terms. ``ell`` are integers indexing the
+    columns of ``taper``.
+    """
+    taper = np.asarray(taper, dtype=float)
+    ell_idx = np.asarray(ell).astype(int)
+    cut = np.flatnonzero((taper[:, ell_idx] < 1.0).any(axis=1))
+    if cut.size == 0:
+        return jnp.zeros(ell_idx.shape)
+    r = np.asarray(r_shells, dtype=float)[cut]
+    h = np.broadcast_to(np.asarray(d_r, dtype=float), np.shape(r_shells))[cut]
+    chi, p = shell_profiles(r, h, shell_weights, n_per_shell)
+    keep = chi > 1.0
+    chi, p = chi[keep], p[:, keep]
+    vol = np.trapezoid(p * chi**2, chi, axis=1)
+    chi_s = jc.background.radial_comoving_distance(cosmo, 1.0 / (1.0 + z_source))[0]
+    w = lensing_kernel(cosmo, jnp.asarray(r), jnp.asarray(a_shells)[cut], chi_s)
+    q = (jnp.asarray(h) * w)[:, None] * jnp.asarray(p * chi**2 / vol[:, None])
+    chi_j = jnp.asarray(chi)
+    a = jc.background.a_of_chi(cosmo, chi_j)
+    power = jc.power.linear_matter_power if linear_pk else jc.power.nonlinear_matter_power
+
+    def per_ell(ell_val, removed):
+        kern = (removed[:, None] * q).sum(0)
+        k = (ell_val + 0.5) / chi_j
+        pk = jax.vmap(lambda ki, ai: jnp.squeeze(power(cosmo, ki, ai)))(k, a)
+        return jax.scipy.integrate.trapezoid(kern**2 / chi_j**2 * pk, x=chi_j)
+
+    removed = jnp.asarray(1.0 - taper[cut][:, ell_idx].T)  # (n_ell, n_cut)
+    return jax.vmap(per_ell)(jnp.asarray(ell_idx, dtype=float), removed)
 
 
 def _galaxy_kernel(chi, chi_min, chi_max, nz):
@@ -773,11 +879,12 @@ def compute_cl_high_z(
     gradients=None,
     loc_fid=None,
     n_steps=100,
-    low_z_range=None,
+    shell_cut=None,
 ):
     """Line-of-sight C_ell^{kappa kappa} correction: the matter beyond the box, ``[chi_min,
-    chi_max]``, plus, if ``low_z_range = (chi_lo, chi_hi)``, the matter below the Born shells.
-    Every mode treats both terms alike (``cl_cached`` and ``gradients`` hold their sum).
+    chi_max]``, plus, if ``shell_cut`` (the keyword arguments of ``compute_cl_shell_cut`` but
+    ``cosmo`` and ``ell``), the power the per-shell multipole cut removes. Every mode treats both
+    terms alike (``cl_cached`` and ``gradients`` hold their sum).
 
     Modes:
       'fixed'  : returns cached C_ell at fiducial cosmology.
@@ -807,11 +914,8 @@ def compute_cl_high_z(
         cl = compute_theoretical_cl_kappa(
             cosmo, ell_1d, chi_min, chi_max_eff, z_source, n_steps=n_steps, linear_pk=linear_pk
         )
-        if low_z_range is not None:
-            cl = cl + compute_theoretical_cl_kappa(
-                cosmo, ell_1d, low_z_range[0], low_z_range[1], z_source, n_steps=n_steps,
-                linear_pk=linear_pk,
-            )
+        if shell_cut is not None:
+            cl = cl + compute_cl_shell_cut(cosmo, ell_1d, **shell_cut, linear_pk=linear_pk)
         return cl
 
     else:

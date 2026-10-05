@@ -113,6 +113,40 @@ class Background:
         return np.trapezoid(self.w_kappa(chi)[None, :] ** 2 / chi[None, :] ** 2 * P, chi, axis=1)
 
 
+def shell_cut_taper(ell, chi, k_cut, lmax):
+    """The per-shell multipole cut of the Born projector (``cmb_lensing.shell_kmax``) as a weight
+    on the matter at distance chi for multipole ell: the cosine taper of ``shell_ell_taper`` with
+    ell_res = k_cut chi, 1 where ell_res >= lmax or without a cut (``k_cut`` 0 or None)."""
+    chi = np.asarray(chi, dtype=float)
+    if not k_cut:
+        return np.ones_like(chi)
+    ell_res = k_cut * chi
+    l_cut = np.floor(ell_res)
+    l_width = np.maximum(l_cut // 4, 1)
+    x = (ell - (l_cut - l_width)) / l_width
+    t = np.where(ell <= l_cut - l_width, 1.0, np.where(ell >= l_cut, 0.0, 0.5 * (1 + np.cos(np.pi * x))))
+    return np.where(ell_res >= lmax, 1.0, t)
+
+
+def kappa_spectra(bg, ells, kappa, n=800):
+    """Limber C_l^kk of the model's shells (kappa["chi_min"] to kappa["chi_box"], times the squared
+    per-shell taper) and of the line of sight the likelihood puts in its covariance (beyond the box to
+    kappa["chi_high_z_max"], plus the power the cut removes, as independent noise like the model)."""
+    lo, hi, k_cut = kappa["chi_min"], kappa["chi_box"], kappa.get("k_cut")
+    los = bg.c_kappa(ells, hi, kappa["chi_high_z_max"])
+    if not k_cut:
+        return bg.c_kappa(ells, lo, hi), los
+    chi = np.linspace(max(lo, 1.0), hi, n)
+    base = bg.w_kappa(chi) ** 2 / chi**2
+    z = bg.z_of_chi(chi)
+    kept, removed = np.zeros(np.size(ells)), np.zeros(np.size(ells))
+    for i, ell in enumerate(np.atleast_1d(ells)):
+        t = shell_cut_taper(ell, chi, k_cut, kappa["lmax"])
+        p = base * bg.plin((ell + 0.5) / chi, z)
+        kept[i], removed[i] = np.trapezoid(p * t**2, chi), np.trapezoid(p * (1 - t) ** 2, chi)
+    return kept, los + removed
+
+
 def nbar_of_chi(bg, chi, survey, density_scale=1.0):
     """Mean comoving number density (h/Mpc)^3 from the catalogue n(z) histogram, piecewise
     constant over its bins (``zbins`` are the bin centres), zero outside them."""
@@ -179,9 +213,9 @@ def kappa_fisher_increment(
     Delta_F = F[galaxy shells + kappa] - F[galaxy shells], sum over ell_min <= ell <= kappa["lmax"]
     of (2 ell + 1)/2 tr(C^-1 dC_a C^-1 dC_b). Galaxy shells: equal-number bins of the catalogue
     n(z), bias b_E - bn2 k^2 + b_phi fNL / M (no Kaiser term: broad shells). Kappa: the matter
-    between kappa["chi_min"] and kappa["chi_box"], plus as noise N_l x noise_scaling and the line of
-    sight beyond the box (to chi_high_z_max) and below chi_min (from chi_low_z_min). ell_min is the
-    survey's fundamental mode, k_F chi_eff.
+    between kappa["chi_min"] and kappa["chi_box"] under the per-shell cut (``kappa_spectra``), plus
+    as noise N_l x noise_scaling and the line of sight. ell_min is the survey's fundamental mode,
+    k_F chi_eff.
     """
     if nell is None:
         nell = np.loadtxt(NELL_FILE)
@@ -192,11 +226,7 @@ def kappa_fisher_increment(
     bE, bphi = 1 + b1, 2 * DELTA_C * b1
 
     ells = np.arange(ell_min, int(kappa["lmax"]) + 1)
-    ck_mod = bg.c_kappa(ells, kappa["chi_min"], kappa["chi_box"])
-    ck_los = bg.c_kappa(ells, kappa["chi_box"], kappa["chi_high_z_max"])
-    low_z_from = max(1.0, float(kappa.get("chi_low_z_min") or 0.0))
-    if kappa["chi_min"] > low_z_from:
-        ck_los = ck_los + bg.c_kappa(ells, low_z_from, kappa["chi_min"])
+    ck_mod, ck_los = kappa_spectra(bg, ells, kappa)
 
     chi = np.linspace(chi_lo, chi_hi, 400)
     z = bg.z_of_chi(chi)
@@ -233,9 +263,10 @@ def kappa_fisher_increment(
                 C[i, j] = ig(W[i], W[j], B**2)
                 for p in PARAMS:
                     dC[p][i, j] = ig(W[i], W[j], 2 * B * dB[p])
-            C[i, ns] = C[ns, i] = ig(W[i], wk, B)
+            wkt = wk * shell_cut_taper(ell, chi, kappa.get("k_cut"), kappa["lmax"])
+            C[i, ns] = C[ns, i] = ig(W[i], wkt, B)
             for p in PARAMS:
-                dC[p][i, ns] = dC[p][ns, i] = ig(W[i], wk, dB[p])
+                dC[p][i, ns] = dC[p][ns, i] = ig(W[i], wkt, dB[p])
         C[ns, ns] = ck_mod[idx]
 
         Cg = C.copy()
@@ -257,15 +288,21 @@ def kappa_fisher_increment(
 
 
 def kappa_geometry(cfg):
-    """Kappa geometry of a run config: chi_min, matter start, box edge, high-z end, band."""
+    """Kappa geometry of a run config: "chi_min" where the shells start (``chi_matter_min``), box
+    edge, high-z end, band, and the per-shell cut "k_cut" (``shell_kmax``, default the init-grid
+    Nyquist pi oversamp / cell when the line-of-sight correction is on)."""
     cmb = cfg.get("cmb_lensing", {}) or {}
-    box = np.asarray(cfg["model"]["box_shape"], dtype=float)
+    model = cfg["model"]
+    box = np.asarray(model["box_shape"], dtype=float)
+    k_cut = cmb.get("shell_kmax")
+    if k_cut is None and cmb.get("full_los_correction", False):
+        k_cut = np.pi * float(model.get("init_oversamp", 1.0)) / float(model["cell_size"])
     return {
-        "chi_min": float(cmb.get("chi_min", 0.0)),
-        "chi_low_z_min": cmb.get("chi_low_z_min"),
+        "chi_min": float(cmb.get("chi_matter_min", 0.0)),
         "chi_box": float(box.min() / 2 if cmb.get("observer_mode", "face") == "center" else box[2]),
         "chi_high_z_max": float(cmb.get("chi_high_z_max", 3942.0)),
         "lmax": 2 * int(cmb.get("nside", 32)),
+        "k_cut": float(k_cut or 0.0),
     }
 
 
@@ -410,16 +447,22 @@ def galaxy_fisher_3d_cosmo(
 def angular_fisher_cosmo(
     bgs, fid, survey, kappa, probes="gk", params=COSMO_PARAMS, density_scale=1.0,
     noise_scaling=1.0, nell=None, los="noise", n_shells=10, ell_min=2, steps=None, n_chi=400,
+    mismatch=None,
 ):
     """Tomographic Limber Fisher of galaxy shells ('g'), kappa ('k') or both ('gk') on ``params``.
 
     Galaxy shells: equal-number bins of the catalogue n(z) at fiducial distances, bias
     ``_galaxy_bias`` (no Kaiser term, as in ``kappa_fisher_increment``). Kappa signal: the matter
     between kappa["chi_min"] and kappa["chi_box"] at fixed comoving distance, a cosmology moving
-    z(chi), the growth, Omega_m and chi_s in the kernel. Kappa noise: N_l x noise_scaling, plus the
-    line of sight (chi_box -> chi_high_z_max and chi_low_z_min -> chi_min) either at the fiducial as
-    noise (``los='noise'``, high_z_mode fixed) or following the cosmology as signal ('signal').
+    z(chi), the growth, Omega_m and chi_s in the kernel, under the per-shell cut (``kappa_spectra``).
+    Kappa noise: N_l x noise_scaling, plus the line of sight (chi_box -> chi_high_z_max and the power
+    the cut removes) either at the fiducial as noise (``los='noise'``, high_z_mode fixed) or
+    following the cosmology as signal ('signal').
     Sum over ell_min <= ell <= kappa["lmax"] of (2 ell + 1)/2 tr(C^-1 dC_a C^-1 dC_b), times fsky.
+
+    With ``mismatch``, the kappa-kappa power the data hold beyond the model on ``0 ... lmax`` (one
+    value per ell), also returns ``b_a = fsky sum (2 ell + 1)/2 tr(C^-1 dC_a C^-1 Delta C)``: the
+    first-order shift of the maximum-likelihood parameters is ``F_total^-1 b``.
     """
     if nell is None:
         nell = np.loadtxt(NELL_FILE)
@@ -438,20 +481,16 @@ def angular_fisher_cosmo(
         W.append(w / max(frac[-1], 1e-30))
     W, frac = np.array(W), np.array(frac)
     ells = np.arange(ell_min, int(kappa["lmax"]) + 1)
-    low_z_from = max(1.0, float(kappa.get("chi_low_z_min") or 0.0))
 
     def c_los(bg):
-        c = bg.c_kappa(ells, kappa["chi_box"], kappa["chi_high_z_max"])
-        if kappa["chi_min"] > low_z_from:
-            c = c + bg.c_kappa(ells, low_z_from, kappa["chi_min"])
-        return c
+        return kappa_spectra(bg, ells, kappa)[1]
 
     def spectra(theta):
         """Signal matrices (n_ell, n_shells + 1, n_shells + 1), kappa last."""
         bg = bgs(theta)
         z = bg.z_of_chi(chi)
         wk = bg.w_kappa(chi)
-        ck = bg.c_kappa(ells, kappa["chi_min"], kappa["chi_box"])
+        ck = kappa_spectra(bg, ells, kappa)[0]
         if los == "signal":
             ck = ck + c_los(bg)
         out = np.zeros((len(ells), n_shells + 1, n_shells + 1))
@@ -460,8 +499,9 @@ def angular_fisher_cosmo(
             kern = _galaxy_bias(bg, theta, k, z) * W  # (n_shells, n_chi)
             pm = bg.plin(k, z) / chi**2
             out[n, :n_shells, :n_shells] = np.trapezoid(kern[:, None] * kern[None] * pm, chi, axis=2)
+            wkt = wk * shell_cut_taper(ell, chi, kappa.get("k_cut"), kappa["lmax"])
             out[n, :n_shells, n_shells] = out[n, n_shells, :n_shells] = np.trapezoid(
-                kern * wk * pm, chi, axis=1
+                kern * wkt * pm, chi, axis=1
             )
             out[n, n_shells, n_shells] = ck[n]
         return out
@@ -474,7 +514,7 @@ def angular_fisher_cosmo(
     if los == "noise":
         kappa_noise = kappa_noise + c_los(bg0)
     idx = {"g": list(range(n_shells)), "k": [n_shells], "gk": list(range(n_shells + 1))}[probes]
-    F = np.zeros((len(params), len(params)))
+    F, B = np.zeros((len(params), len(params))), np.zeros(len(params))
     for n, ell in enumerate(ells):
         Cn = C[n] + np.diag(noise)
         Cn[n_shells, n_shells] += kappa_noise[n]
@@ -483,7 +523,14 @@ def angular_fisher_cosmo(
         for a in range(len(params)):
             for b in range(a + 1):
                 F[a, b] = F[b, a] = F[a, b] + (2 * ell + 1) / 2 * np.trace(D[a] @ D[b])
-    return F * survey["fsky"]
+        if mismatch is not None and n_shells in idx:
+            dmis = np.zeros((n_shells + 1, n_shells + 1))
+            dmis[n_shells, n_shells] = mismatch[int(ell)]
+            Dm = Ci @ dmis[np.ix_(idx, idx)]
+            B += [(2 * ell + 1) / 2 * np.trace(D[a] @ Dm) for a in range(len(params))]
+    if mismatch is None:
+        return F * survey["fsky"]
+    return F * survey["fsky"], B * survey["fsky"]
 
 
 def prior_fisher(latents, params):

@@ -1,4 +1,5 @@
-"""Model-level behaviour of ``cmb_lensing.chi_min`` and ``cmb_lensing.shell_weights``."""
+"""Model-level behaviour of the Born shells: ``cmb_lensing.chi_matter_min``, ``shell_weights``
+and ``proj_oversamp``."""
 
 import os
 
@@ -43,33 +44,26 @@ def _cfg(**overrides):
     return cfg
 
 
-def test_shells_tile_chi_min_to_chi_boundary_and_low_z_cl_enters_the_covariance():
+def test_shells_tile_the_matter_start_to_chi_boundary():
     ref = FieldLevelModel(**_cfg())
-    cut = FieldLevelModel(**_cfg(cmb_chi_min=60.0))
-    dr = cut.cmb_d_r
-    np.testing.assert_allclose(cut.cmb_r_shells[0] - dr / 2, 60.0)
-    np.testing.assert_allclose(cut.cmb_r_shells[-1] + dr / 2, cut.chi_boundary)
+    late = FieldLevelModel(**_cfg(cmb_chi_matter_min=60.0))
+    dr = late.cmb_d_r
+    np.testing.assert_allclose(late.cmb_r_shells[0] - dr / 2, 60.0)
+    np.testing.assert_allclose(late.cmb_r_shells[-1] + dr / 2, late.chi_boundary)
     np.testing.assert_allclose(ref.cmb_r_shells[0] - ref.cmb_d_r / 2, 0.0)
-    extra = np.asarray(cut.cl_high_z_cached) - np.asarray(ref.cl_high_z_cached)
-    assert np.all(extra[2:] > 0)
+    assert late.low_z_matter_start == 60.0 and ref.low_z_matter_start == 1.0
 
 
-def test_low_z_covariance_starts_where_the_observed_matter_starts():
-    """A simulated map with no matter below chi_low_z_min: the low-z term is the Limber C_l of
-    [chi_low_z_min, chi_min] only, and nothing when the map starts beyond chi_min."""
+def test_without_the_cut_the_los_covariance_is_the_matter_beyond_the_box_alone():
+    """No low-z term any more: the matter below the shells is the matter the map does not hold."""
     from desi_cmb_fli.bricks import get_cosmology
     from desi_cmb_fli.cmb_lensing import compute_theoretical_cl_kappa
 
-    high_z_only = np.asarray(FieldLevelModel(**_cfg()).cl_high_z_cached)
-    for start, model_kw in ((1.0, {}), (25.0, {"chi_low_z_min": 25.0})):
-        m = FieldLevelModel(**_cfg(cmb_chi_min=60.0, **model_kw))
-        assert m.low_z_matter_start == start
-        low_z = np.asarray(compute_theoretical_cl_kappa(get_cosmology(**m.loc_fid), m.ell_1d,
-                                                        start, 60.0, m.cmb_z_source))
-        np.testing.assert_allclose(np.asarray(m.cl_high_z_cached)[2:],
-                                   (high_z_only + low_z)[2:], rtol=1e-6)
-    beyond = FieldLevelModel(**_cfg(cmb_chi_min=60.0, chi_low_z_min=80.0))
-    np.testing.assert_allclose(np.asarray(beyond.cl_high_z_cached), high_z_only, rtol=1e-10)
+    for start in (0.0, 60.0):
+        m = FieldLevelModel(**_cfg(cmb_chi_matter_min=start, cmb_shell_kmax=0.0))
+        beyond = np.asarray(compute_theoretical_cl_kappa(get_cosmology(**m.loc_fid), m.ell_1d,
+                                                         m.chi_boundary, 300.0, m.cmb_z_source))
+        np.testing.assert_allclose(np.asarray(m.cl_high_z_cached), beyond, rtol=1e-10)
 
 
 def test_the_kappa_radial_window_is_one_inside_and_ramps_at_the_ends():
@@ -101,24 +95,18 @@ def test_the_kappa_window_removes_only_the_matter_the_map_does_not_hold():
     assert np.all((cut > 0.2 * ref) & (cut < 0.8 * ref))
 
 
-def test_chi_min_requires_the_los_correction():
-    with pytest.raises(ValueError, match="full_los_correction"):
-        FieldLevelModel(**_cfg(cmb_chi_min=60.0, full_los_correction=False))
-
-
-def test_every_high_z_mode_carries_the_low_z_term_alike():
+def test_every_high_z_mode_carries_the_los_term_alike():
     """fixed, taylor and exact agree at the fiducial; away from it taylor follows exact to first
-    order and fixed does not move; both the beyond-box and the below-chi_min matter follow the mode."""
+    order and fixed does not move."""
     from desi_cmb_fli.bricks import get_cosmology
     from desi_cmb_fli.cmb_lensing import compute_cl_high_z, compute_theoretical_cl_kappa
 
     def los(m, cosmo, linear=False):
         lin = {"linear_pk": True} if linear else {}
-        return sum(np.asarray(compute_theoretical_cl_kappa(cosmo, m.ell_1d, lo, hi,
-                                                           m.cmb_z_source, **lin))
-                   for lo, hi in ((m.chi_boundary, 300.0), (25.0, 60.0)))
+        return np.asarray(compute_theoretical_cl_kappa(cosmo, m.ell_1d, m.chi_boundary, 300.0,
+                                                       m.cmb_z_source, **lin))
 
-    models = {mode: FieldLevelModel(**_cfg(cmb_chi_min=60.0, chi_low_z_min=25.0, high_z_mode=mode))
+    models = {mode: FieldLevelModel(**_cfg(cmb_shell_kmax=0.0, high_z_mode=mode))
               for mode in ("fixed", "taylor", "exact", "exact_linear")}
     fid = models["fixed"].loc_fid
     for ds8 in (0.0, 0.01):
@@ -126,25 +114,33 @@ def test_every_high_z_mode_carries_the_low_z_term_alike():
         cl = {mode: np.asarray(compute_cl_high_z(
             cosmo, m.ell_1d, m.chi_boundary, m.chi_high_z_max, m.cmb_z_source, mode=mode,
             cl_cached=m.cl_high_z_cached, gradients=m.high_z_gradients, loc_fid=m.loc_fid,
-            low_z_range=m.cmb_low_z_range))[2:] for mode, m in models.items()}
+            shell_cut=m.cmb_shell_cut))[2:] for mode, m in models.items()}
         np.testing.assert_allclose(cl["exact"], los(models["exact"], cosmo)[2:], rtol=1e-10)
         np.testing.assert_allclose(cl["exact_linear"],
                                    los(models["exact"], cosmo, linear=True)[2:], rtol=1e-10)
         np.testing.assert_allclose(cl["taylor"], cl["exact"], rtol=2e-3)
         np.testing.assert_allclose(cl["fixed"], los(models["fixed"], get_cosmology(**fid))[2:],
                                    rtol=1e-10)
-    # the Taylor gradients are those of both terms (the low-z one is 3-11 % of the total here)
-    eps = 1e-3
-    for name, step in (("dCl_dOm", {"Omega_m": eps}), ("dCl_ds8", {"sigma8": eps})):
-        up = los(models["taylor"], get_cosmology(**{k: v + step.get(k, 0.0) for k, v in fid.items()}))
-        dn = los(models["taylor"], get_cosmology(**{k: v - step.get(k, 0.0) for k, v in fid.items()}))
-        np.testing.assert_allclose(np.asarray(models["taylor"].high_z_gradients[name])[2:],
-                                   ((up - dn) / (2 * eps))[2:], rtol=1e-6)
 
 
-def test_chi_min_out_of_range_is_rejected():
-    with pytest.raises(ValueError, match="chi_min"):
-        FieldLevelModel(**_cfg(cmb_chi_min=1e4))
+def test_removed_config_keys_are_rejected_with_kappa_on():
+    from pathlib import Path
+
+    import yaml
+
+    from desi_cmb_fli.model import get_model_from_config
+
+    root = Path(__file__).resolve().parents[1]
+    cfg = yaml.safe_load(open(root / "configs/inference/scan/closure_d1p00_joint_chimin700.yaml"))
+    for key in ("chi_min", "chi_low_z_min"):
+        bad = {**cfg, "cmb_lensing": {**cfg["cmb_lensing"], key: 700.0}}
+        with pytest.raises(ValueError, match="chi_matter_min"):
+            get_model_from_config(bad)
+
+
+def test_chi_matter_min_out_of_range_is_rejected():
+    with pytest.raises(ValueError, match="chi_matter_min"):
+        FieldLevelModel(**_cfg(cmb_chi_matter_min=1e4))
 
 
 def test_unknown_shell_weights_is_rejected():
@@ -153,8 +149,8 @@ def test_unknown_shell_weights_is_rejected():
 
 
 @pytest.mark.parametrize("weights", ["nearest", "linear"])
-def test_forward_and_gradient_run_with_chi_min(weights):
-    model = FieldLevelModel(**_cfg(cmb_chi_min=60.0, cmb_shell_weights=weights))
+def test_forward_and_gradient_run_with_a_late_matter_start(weights):
+    model = FieldLevelModel(**_cfg(cmb_chi_matter_min=60.0, cmb_shell_weights=weights))
     truth = model.predict(
         samples={"Omega_m": 0.315192, "sigma8": 0.811355},
         hide_base=False, hide_samp=False, hide_det=False, frombase=True, rng=3,
@@ -263,7 +259,7 @@ def test_sampling_omega_m_puts_no_jax_cosmo_callback_in_the_graph(table):
     from pathlib import Path
 
     table = None if table is None else str(Path(__file__).resolve().parents[1] / table)
-    model = FieldLevelModel(**_cfg(galaxies_enabled=True, png_type="fNL", a_obs=None, cmb_chi_min=60.0,
+    model = FieldLevelModel(**_cfg(galaxies_enabled=True, png_type="fNL", a_obs=None, cmb_chi_matter_min=60.0,
                                    cmb_shell_weights="linear", lin_pk_table=table))
     truth = model.predict(samples={"Omega_m": 0.315192, "sigma8": 0.811355, "b1": 1.0, "fNL": 10.0},
                           hide_base=False, hide_samp=False, hide_det=False, frombase=True, rng=0)

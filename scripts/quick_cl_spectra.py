@@ -56,6 +56,18 @@ def parse_args():
         help="Override cell size in Mpc/h (for testing higher resolution)"
     )
     parser.add_argument(
+        "--chi_matter_min", type=float, default=None,
+        help="Override cmb_lensing.chi_matter_min, where the Born shells start (Mpc/h)"
+    )
+    parser.add_argument(
+        "--shell_kmax", type=float, default=None,
+        help="Override cmb_lensing.shell_kmax, the per-shell multipole cut (h/Mpc; 0 = no cut)"
+    )
+    parser.add_argument(
+        "--fig", type=str, default=None,
+        help="Figure path (default: <output_dir>/cl_spectra_<timestamp>.png)"
+    )
+    parser.add_argument(
         "--seed", type=int, default=None,
         help="Base random seed (subsequent realizations use seed+1, seed+2, ...)"
     )
@@ -96,6 +108,10 @@ def main():
 
     if args.cell_size is not None:
         cfg_dict["model"]["cell_size"] = args.cell_size
+    if args.chi_matter_min is not None:
+        cfg_dict["cmb_lensing"]["chi_matter_min"] = args.chi_matter_min
+    if args.shell_kmax is not None:
+        cfg_dict["cmb_lensing"]["shell_kmax"] = args.shell_kmax
     model, model_config = get_model_from_config(cfg_dict)
 
     truth_params = cfg_dict.get("truth_params", {})
@@ -196,7 +212,7 @@ def main():
                               if k in ("Omega_m", "sigma8")})
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     plot_cl_figure(spectra_list, model, theory_params, observation_mode,
-                   output_dir / f"cl_spectra_{timestamp}.png", show=args.show)
+                   Path(args.fig or output_dir / f"cl_spectra_{timestamp}.png"), show=args.show)
 
 
 if __name__ == "__main__":

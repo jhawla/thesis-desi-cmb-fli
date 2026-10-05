@@ -39,11 +39,13 @@ def reference_born(cosmo, pos, box_shape, mesh_shape, observer, r_shells,
                    a_shells, d_r, nside, mask, z_source, t_enter, t_exit):
     """The previous implementation, transcribed verbatim, but for one deliberate divergence from
     jaxpm: its density is also divided by the per-pixel bilinear normalisation
-    (``bilinear_weight_norm``), which jaxpm's uniform shell volume leaves out."""
-    import jax_cosmo as jc
+    (``bilinear_weight_norm``), which jaxpm's uniform shell volume leaves out, and the source
+    distance from the background emulator, as in the model."""
     from jaxpm.spherical import paint_particles_spherical
 
-    chi_s = jc.background.radial_comoving_distance(cosmo, 1.0 / (1.0 + z_source))[0]
+    from desi_cmb_fli.nbody import a2chi
+
+    chi_s = a2chi(cosmo, jnp.array([1.0 / (1.0 + z_source)]))[0]
     observer = jnp.asarray(observer, dtype=float)
     box_size_jnp = jnp.asarray(box_shape, dtype=float)
     npix_full = hp.nside2npix(nside)
@@ -289,8 +291,8 @@ def test_unknown_shell_weights_is_rejected(setup):
 
 @pytest.mark.parametrize("end", ["inner", "outer"])
 def test_linear_switches_particles_on_and_off_continuously_at_both_ends(setup, end):
-    """Both ends of the radial range sit inside the particle cloud: chi_min at the inner
-    one, the box boundary at the outer one. With hard bins a particle crossing either end
+    """Both ends of the radial range sit inside the particle cloud: the matter start at the
+    inner one, the box boundary at the outer one. With hard bins a particle crossing either end
     switches its whole weight at once; the tent must ramp it. The outer end carries ~100x
     more crossings than the inner one, so it dominates the sampler's energy error."""
     s = dict(setup)

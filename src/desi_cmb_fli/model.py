@@ -88,8 +88,9 @@ default_config = {
     "cmb_noise_scaling": 1.0,  # Artificial noise scaling factor (for tests: 0.01 = divide by 100)
     "cmb_nside": 256,      # HEALPix nside for curved-sky convergence map
     "cmb_n_shells": 189,   # Number of radial shells for Born integration
-    "cmb_chi_min": 0.0,  # Born integration starts here (Mpc/h); C_l of chi < chi_min goes into the noise
+    "cmb_chi_matter_min": 0.0,  # where the observed map's matter starts (Mpc/h): the Born shells start here
     "cmb_shell_weights": "nearest",  # 'nearest' or 'linear' radial shell assignment of the particles
+    "cmb_shell_kmax": None,  # per-shell multipole cut at ell = shell_kmax * r_eff (h/Mpc); None = init-grid Nyquist, 0 = none
     "cmb_proj_oversamp": 1,  # Born projection sphere refined by this factor (anti-aliasing); a_lm band unchanged
     "cmb_observer_mode": "face",  # 'face' or 'center'
     "cmb_observer_position": None,  # Optional explicit [x, y, z] in Mpc/h
@@ -219,9 +220,9 @@ MODEL_CONFIG_KEYS = {
     "los", "galaxies_enabled", "gxy_stoch_noise", "gxy_ngbar_free", "png_type", "lin_pk_table",
 }
 CMB_CONFIG_KEYS = {
-    "enabled", "observer_mode", "observer_position", "nside", "n_shells", "chi_min",
-    "shell_weights", "proj_oversamp", "likelihood", "likelihood_mode", "kl_rcond", "mask",
-    "full_los_correction", "chi_high_z_max", "chi_low_z_min", "z_source", "high_z_mode",
+    "enabled", "observer_mode", "observer_position", "nside", "n_shells", "chi_matter_min",
+    "shell_weights", "shell_kmax", "proj_oversamp", "likelihood", "likelihood_mode", "kl_rcond", "mask",
+    "full_los_correction", "chi_high_z_max", "z_source", "high_z_mode",
     "cmb_noise_nell", "cmb_noise_scaling",
 }
 
@@ -251,7 +252,17 @@ def get_model_from_config(config_or_path):
         cfg = config_or_path
 
     _check_config_keys("model", cfg.get("model"), MODEL_CONFIG_KEYS)
-    _check_config_keys("cmb_lensing", cfg.get("cmb_lensing"), CMB_CONFIG_KEYS)
+    cmb_given = cfg.get("cmb_lensing") or {}
+    removed = sorted({"chi_min", "chi_low_z_min"} & set(cmb_given))
+    if removed and cmb_given.get("enabled", False):
+        raise ValueError(
+            f"cmb_lensing.{removed} removed: the Born shells start where the observed map's matter "
+            "starts, cmb_lensing.chi_matter_min (the former chi_low_z_min; 0 = the observer), and the "
+            "per-shell multipole cut (shell_kmax) replaces chi_min (docs/pipeline.md 2.6). Runs made "
+            "with chi_min need the code before this change."
+        )
+    _check_config_keys("cmb_lensing", {k: v for k, v in cmb_given.items() if k not in removed},
+                       CMB_CONFIG_KEYS)
 
     # Build model config
     model_config = default_config.copy()
@@ -310,8 +321,10 @@ def get_model_from_config(config_or_path):
         # If enabled, setup specific CMB params
         model_config["cmb_nside"] = int(cmb_cfg.get("nside", 256))
         model_config["cmb_n_shells"] = int(cmb_cfg.get("n_shells", 189))
-        model_config["cmb_chi_min"] = float(cmb_cfg.get("chi_min", 0.0))
+        model_config["cmb_chi_matter_min"] = float(cmb_cfg.get("chi_matter_min", 0.0))
         model_config["cmb_shell_weights"] = str(cmb_cfg.get("shell_weights", "nearest"))
+        kmax = cmb_cfg.get("shell_kmax", None)
+        model_config["cmb_shell_kmax"] = None if kmax is None else float(kmax)
         model_config["cmb_proj_oversamp"] = int(cmb_cfg.get("proj_oversamp", 1))
         if "likelihood" in cmb_cfg:
             raise ValueError(
@@ -322,7 +335,6 @@ def get_model_from_config(config_or_path):
         model_config["cmb_mask"] = cmb_cfg.get("mask", None)
         model_config["full_los_correction"] = cmb_cfg.get("full_los_correction", False)
         model_config["chi_high_z_max"] = cmb_cfg.get("chi_high_z_max", None)  # None = integrate to chi_CMB
-        model_config["chi_low_z_min"] = cmb_cfg.get("chi_low_z_min", None)  # None = from the observer
         model_config["cmb_z_source"] = float(cmb_cfg.get("z_source", 1100.0))
         model_config["cmb_lensing_obs"] = None # Will be set via conditioning if needed
 
@@ -631,14 +643,15 @@ class FieldLevelModel(Model):
         HEALPix nside for the curved-sky convergence map (default 256).
     cmb_n_shells : int
         Number of radial Born integration shells (default 189).
-    cmb_chi_min : float
-        Comoving distance where the Born integration starts (default 0). The
-        C_ell of the dropped range is added to the covariance at fiducial.
-    chi_low_z_min : float or None
-        Comoving distance where the matter of the observed map starts (default None: the
-        observer). The low-z covariance term covers [chi_low_z_min, cmb_chi_min] only.
+    cmb_chi_matter_min : float
+        Comoving distance where the matter of the observed map starts and the Born shells
+        start (default 0: the observer; the end of a simulated light cone otherwise).
     cmb_shell_weights : str
         Radial shell assignment of the particles, 'nearest' or 'linear'.
+    cmb_shell_kmax : float or None
+        Per-shell multipole cut (h/Mpc): each Born shell is low-passed above
+        ell = cmb_shell_kmax * r_eff and the power removed goes into the covariance
+        (docs/pipeline.md 2.6). None (default): the Nyquist frequency of the init grid; 0: no cut.
     cmb_proj_oversamp : int
         Power of two. The Born projection is scattered onto nside*proj_oversamp, while the
         observable stays the a_lm with l <= 2*cmb_nside (default 1, no refinement).
@@ -679,8 +692,9 @@ class FieldLevelModel(Model):
     cmb_noise_scaling: float = field(default=default_config["cmb_noise_scaling"])
     cmb_nside: int = field(default=default_config["cmb_nside"])
     cmb_n_shells: int = field(default=default_config["cmb_n_shells"])
-    cmb_chi_min: float = field(default=default_config["cmb_chi_min"])
+    cmb_chi_matter_min: float = field(default=default_config["cmb_chi_matter_min"])
     cmb_shell_weights: str = field(default=default_config["cmb_shell_weights"])
+    cmb_shell_kmax: float | None = field(default=default_config["cmb_shell_kmax"])
     cmb_proj_oversamp: int = field(default=default_config["cmb_proj_oversamp"])
     cmb_observer_mode: str = field(default=default_config["cmb_observer_mode"])
     cmb_observer_position: tuple | None = field(default=default_config["cmb_observer_position"])
@@ -690,7 +704,6 @@ class FieldLevelModel(Model):
 
     full_los_correction: bool = field(default=False)  # Enable high-z kappa correction
     chi_high_z_max: float | None = field(default=None)  # Upper chi limit for high-z correction (None = chi_CMB)
-    chi_low_z_min: float | None = field(default=None)  # Lower chi of the matter in the observed map (None = 0)
     high_z_mode: str = field(default="taylor")  # 'fixed', 'taylor', 'exact'
     cmb_likelihood_mode: str = field(default=default_config["cmb_likelihood_mode"])  # 'diagonal' | 'pixel_exact'
     cmb_kl_rcond: float = field(default=default_config["cmb_kl_rcond"])  # pixel_exact KL eigenmode cutoff
@@ -819,9 +832,11 @@ class FieldLevelModel(Model):
 
             from desi_cmb_fli.cmb_lensing import (
                 _box_ray_intervals,
+                compute_cl_shell_cut,
                 compute_sigma_hp,
                 compute_theoretical_cl_kappa,
                 load_healpix_mask,
+                shell_ell_taper,
             )
 
             # Load N_ell
@@ -882,32 +897,55 @@ class FieldLevelModel(Model):
             self.t_enter = jnp.asarray(t_enter)
             self.t_exit = jnp.asarray(t_exit)
 
-            # 4. Radial shells tiling [chi_min, chi_boundary] exactly
-            chi_min = float(self.cmb_chi_min)
-            if not 0.0 <= chi_min < self.cmb_chi_max_model:
+            # 4. Radial shells tiling [chi_matter_min, chi_boundary] exactly
+            chi_start = float(self.cmb_chi_matter_min)
+            if not 0.0 <= chi_start < self.cmb_chi_max_model:
                 raise ValueError(
-                    f"cmb_lensing.chi_min={chi_min} must lie in [0, chi_boundary={self.cmb_chi_max_model:.1f})"
+                    f"cmb_lensing.chi_matter_min={chi_start} must lie in "
+                    f"[0, chi_boundary={self.cmb_chi_max_model:.1f})"
                 )
             if self.cmb_shell_weights not in ("nearest", "linear"):
                 raise ValueError(
                     f"cmb_lensing.shell_weights must be 'nearest' or 'linear', got {self.cmb_shell_weights!r}"
                 )
             # 'nearest' bins tile the range; 'linear' tents span it, apex to apex, so that
-            # their support ends exactly on chi_min and chi_boundary.
+            # their support ends exactly on chi_matter_min and chi_boundary.
             n_gap = self.cmb_n_shells + (1 if self.cmb_shell_weights == "linear" else 0)
-            dr = (self.cmb_chi_max_model - chi_min) / n_gap
+            dr = (self.cmb_chi_max_model - chi_start) / n_gap
             half = dr if self.cmb_shell_weights == "linear" else dr / 2.0
             self.cmb_d_r = dr
             self.cmb_r_shells = np.linspace(
-                chi_min + half, self.cmb_chi_max_model - half, self.cmb_n_shells
+                chi_start + half, self.cmb_chi_max_model - half, self.cmb_n_shells
             )
             print(
                 f"[CMB] Born shells: {self.cmb_n_shells} x {dr:.1f} Mpc/h over "
-                f"chi=[{chi_min:.0f}, {self.cmb_chi_max_model:.0f}], shell_weights={self.cmb_shell_weights}"
+                f"chi=[{chi_start:.0f}, {self.cmb_chi_max_model:.0f}], shell_weights={self.cmb_shell_weights}"
             )
             self.cmb_a_shells = np.array(
                 [float(jc.background.a_of_chi(cosmo_fid, r)[0]) for r in self.cmb_r_shells]
             )
+            self.cmb_shell_taper = None
+            if self.cmb_shell_kmax is None:
+                # default: the Nyquist frequency of the inferred field, when the line-of-sight
+                # covariance that receives the removed power is on
+                init_cell = np.asarray(self.box_shape, dtype=float) / np.asarray(self.init_shape)
+                self.cmb_shell_kmax = float(np.pi / np.max(init_cell)) if self.full_los_correction else 0.0
+            if self.cmb_shell_kmax > 0:
+                if not self.full_los_correction:
+                    raise ValueError(
+                        "cmb_lensing.shell_kmax requires full_los_correction=True: the power the cut "
+                        "removes goes into the line-of-sight covariance (shell_kmax: 0 = no cut)."
+                    )
+                self.cmb_shell_taper = shell_ell_taper(
+                    self.cmb_r_shells, self.cmb_d_r, self.cmb_shell_weights, self.cmb_shell_kmax,
+                    ell_max=2 * self.cmb_nside, lmax=2 * self.cmb_proj_nside,
+                )
+                n_cut = int((self.cmb_shell_taper < 1.0).any(axis=1).sum())
+                print(
+                    f"[CMB] Per-shell multipole cut at ell = {self.cmb_shell_kmax:.4f} r_eff: "
+                    f"{n_cut} of {self.cmb_n_shells} shells low-passed (those below "
+                    f"r_eff = {2 * self.cmb_nside / self.cmb_shell_kmax:.0f} Mpc/h)"
+                )
 
             # 1-D ell array for high-z correction / harmonic covariance.
             self.cmb_lmax = 2 * self.cmb_nside
@@ -1015,7 +1053,7 @@ class FieldLevelModel(Model):
             # Cache/Precompute High-Z Correction (1-D ell)
             self.cl_high_z_cached = None
             self.high_z_gradients = None
-            self.cmb_low_z_range = None
+            self.cmb_shell_cut = None
 
             if self.full_los_correction:
                 chi_source_fid = float(
@@ -1027,22 +1065,19 @@ class FieldLevelModel(Model):
                         f"  [high-z] chi_high_z_max={self.chi_high_z_max:.0f} Mpc/h "
                         f"(chi_CMB={chi_source_fid:.0f})"
                     )
-                low_z_from = self.low_z_matter_start
-                if chi_min > low_z_from:
-                    self.cmb_low_z_range = (low_z_from, chi_min)
-                    print(
-                        f"  C_l^{{low-z}} (chi={low_z_from:.0f}->{chi_min:.0f} Mpc/h) in the LOS "
-                        f"correction (mode={self.high_z_mode})"
-                    )
+                if self.cmb_shell_taper is not None:
+                    self.cmb_shell_cut = {
+                        "r_shells": self.cmb_r_shells, "a_shells": self.cmb_a_shells,
+                        "d_r": self.cmb_d_r, "shell_weights": self.cmb_shell_weights,
+                        "taper": self.cmb_shell_taper, "z_source": self.cmb_z_source,
+                    }
 
                 def _cl_los(c_, chi_up_):
                     cl = compute_theoretical_cl_kappa(
                         c_, self.ell_1d, self.chi_boundary, chi_up_, self.cmb_z_source
                     )
-                    if self.cmb_low_z_range is not None:
-                        cl = cl + compute_theoretical_cl_kappa(
-                            c_, self.ell_1d, *self.cmb_low_z_range, self.cmb_z_source
-                        )
+                    if self.cmb_shell_cut is not None:
+                        cl = cl + compute_cl_shell_cut(c_, self.ell_1d, **self.cmb_shell_cut)
                     return cl
 
                 if self.high_z_mode in ["fixed", "taylor"]:
@@ -1084,8 +1119,6 @@ class FieldLevelModel(Model):
                         ell_in, nell_in, self.cmb_nside, cl_extra_1d=self.cl_high_z_cached
                     )
                     print(f"[CMB] sigma_hp (with high-z) = {self.sigma_hp:.6f}")
-            elif chi_min > 0.0:
-                raise ValueError("cmb_lensing.chi_min > 0 requires full_los_correction=True.")
 
             if self.cmb_likelihood_mode == "pixel_exact":
                 self._build_cmb_pixel_cov()
@@ -1550,6 +1583,7 @@ class FieldLevelModel(Model):
                 from desi_cmb_fli.cmb_lensing import (
                     compute_cl_high_z,
                     convergence_Born_spherical,
+                    cut_shells,
                 )
 
                 # pos_real is in evol-grid cell units; the Born integrator expects final-grid
@@ -1573,7 +1607,10 @@ class FieldLevelModel(Model):
                     self.t_exit,
                     return_full=True,
                     shell_weights=self.cmb_shell_weights,
+                    per_shell=self.cmb_shell_taper is not None,
                 )
+                if self.cmb_shell_taper is not None:
+                    kappa_pred = cut_shells(kappa_pred, self.cmb_shell_taper, self.cmb_proj_nside)
 
                 kappa_pred = deterministic("kappa_pred", kappa_pred)
 
@@ -1594,7 +1631,7 @@ class FieldLevelModel(Model):
                             cl_cached=self.cl_high_z_cached,
                             gradients=self.high_z_gradients,
                             loc_fid=self.loc_fid,
-                            low_z_range=self.cmb_low_z_range,
+                            shell_cut=self.cmb_shell_cut,
                         )
 
                     total_cl_1d = jnp.asarray(self.nell_1d)
@@ -1681,11 +1718,9 @@ class FieldLevelModel(Model):
 
     @property
     def low_z_matter_start(self):
-        """Comoving distance where the matter of the observed convergence map starts: the
-        observer for real data, the end of the light cone for a simulation that stops before z=0
-        (``cmb_lensing.chi_low_z_min``). The low-z covariance term and the kappa theory start here.
-        1 Mpc/h rather than 0 keeps the Limber integrand finite."""
-        return max(1.0, float(self.chi_low_z_min or 0.0))
+        """Comoving distance where the matter of the observed convergence map starts
+        (``cmb_lensing.chi_matter_min``), 1 Mpc/h rather than 0 to keep a Limber integrand finite."""
+        return max(1.0, float(self.cmb_chi_matter_min))
 
     def reparam(self, params: dict, fourier=True, inv=False, temp=1.0):
         """

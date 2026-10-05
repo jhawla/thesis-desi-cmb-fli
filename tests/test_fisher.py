@@ -107,8 +107,7 @@ def test_galaxy_fisher_is_symmetric_positive_definite():
 
 def test_kappa_adds_nothing_when_its_noise_is_infinite():
     kappa = {
-        "chi_min": 700.0,
-        "chi_low_z_min": 292.6,
+        "chi_min": 292.6,
         "chi_box": 3750.0,
         "chi_high_z_max": 3942.0,
         "lmax": 16,
@@ -184,7 +183,7 @@ def toy_cache():
     return fi.BackgroundCache(factory=lambda om, s8: ToySigma8Background(s8))
 
 
-KAPPA = {"chi_min": 700.0, "chi_low_z_min": 292.6, "chi_box": 3750.0, "chi_high_z_max": 3942.0,
+KAPPA = {"chi_min": 292.6, "chi_box": 3750.0, "chi_high_z_max": 3942.0,
          "lmax": 16}
 NELL = np.column_stack([np.arange(2.0, 200.0), np.full(198, 1e-8)])
 FID = {"Omega_m": 0.3, "sigma8": 0.8, "b1": 1.2, "bn2": 78.0, "fNL": 0.0}
@@ -209,10 +208,41 @@ def test_sigma8_information_of_kappa_alone():
     F = fi.angular_fisher_cosmo(toy_cache(), FID, survey(2e7), KAPPA, "k", params=("sigma8",),
                                 nell=NELL)
     bg, ells = ToyBackground(), np.arange(2, 17)
-    S = bg.c_kappa(ells, 700.0, 3750.0)
-    L = bg.c_kappa(ells, 3750.0, 3942.0) + bg.c_kappa(ells, 292.6, 700.0)
+    S = bg.c_kappa(ells, 292.6, 3750.0)
+    L = bg.c_kappa(ells, 3750.0, 3942.0)
     expected = np.sum((2 * ells + 1) / 2 * (2 * S / (0.8 * (S + 1e-8 + L))) ** 2)
     np.testing.assert_allclose(F[0, 0], expected, rtol=1e-6)
+
+
+def test_a_power_mismatch_along_a_derivative_shifts_that_parameter_by_its_size():
+    """kappa alone: data with C(sigma8 + eps) - C(sigma8) beyond the model shift sigma8 by eps to
+    first order; no mismatch, no shift (kappa alone and joint)."""
+    bg, ells, eps = ToyBackground(), np.arange(0, 17), 0.01
+    dC = 2 * eps / 0.8 * bg.c_kappa(np.maximum(ells, 1), 292.6, 3750.0)
+    kw = {"nell": NELL, "n_shells": 4}
+    F, b = fi.angular_fisher_cosmo(toy_cache(), FID, survey(2e7), KAPPA, "k", params=("sigma8",),
+                                   mismatch=dC, **kw)
+    np.testing.assert_allclose(b / F[0], eps, rtol=1e-6)
+    for probes, params in (("k", ("sigma8",)), ("gk", ("sigma8", "b1"))):
+        _, b0 = fi.angular_fisher_cosmo(toy_cache(), FID, survey(2e7), KAPPA, probes,
+                                        params=params, mismatch=0 * dC, **kw)
+        assert np.all(b0 == 0)
+
+
+def test_the_per_shell_cut_moves_kappa_power_from_signal_to_noise():
+    """With the cut, the model's shells keep the taper squared of their power and the removed part
+    joins the line of sight; everything removed when no distance resolves l >= 2."""
+    bg, ells = ToyBackground(), np.arange(2, 17)
+    chi = np.linspace(292.6, 3750.0, 800)
+    full = np.array([np.trapezoid(bg.w_kappa(chi) ** 2 / chi**2 * bg.plin((ell + 0.5) / chi, 0), chi)
+                     for ell in ells])
+    beyond = bg.c_kappa(ells, 3750.0, 3942.0)
+    kept, los = fi.kappa_spectra(bg, ells, {**KAPPA, "k_cut": 1e-4})
+    np.testing.assert_allclose(kept, 0.0, atol=1e-30)
+    np.testing.assert_allclose(los, beyond + full, rtol=1e-10)
+    kept, los = fi.kappa_spectra(bg, ells, {**KAPPA, "k_cut": 0.01})
+    assert np.all((kept > 0) & (kept < full)) and np.all(los > beyond)
+    assert np.all(fi.shell_cut_taper(10.0, np.array([100.0, 2000.0]), 0.01, 16) == [0.0, 1.0])
 
 
 def test_galaxies_alone_leave_b1_and_sigma8_degenerate_and_kappa_breaks_it():

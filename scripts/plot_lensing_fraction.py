@@ -7,9 +7,10 @@ against cmb_lensing.compute_theoretical_cl_kappa at start). Two figures, both ov
 band l = 2 ... 2 nside:
 
 - lensing_fraction_vs_z.png: power fraction C_l(chi_a -> chi(z_max)) / C_l(0 -> chi_s) against
-  z_max, from the observer and from the model's chi_min; red line at the model's box edge.
-- lensing_spectra_comparison.png: total C_l, what the model shells hold, what the data map holds
-  (Abacus or closure), the line-of-sight term of the likelihood covariance, the part in neither,
+  z_max, from the observer and from the model's chi_matter_min; red line at the model's box edge.
+- lensing_spectra_comparison.png: total C_l, what the model shells hold (before the per-shell
+  multipole cut, which moves part of it to the covariance), what the data map holds (Abacus or
+  closure), the beyond-the-box line-of-sight term of the likelihood covariance, the part in neither,
   and N_l.
 
 Usage: python scripts/plot_lensing_fraction.py [--config configs/inference/abacus/abacus_joint_Nl1p0_chimin700.yaml]
@@ -68,10 +69,10 @@ def run_geometry(cfg):
         "cosmo": {k: float(truth[k]) for k in ("Omega_m", "sigma8") if k in truth},
         "z_source": float(cmb.get("z_source", 1089.28)),
         "lmax": 2 * int(cmb["nside"]),
-        "chi_min": float(cmb.get("chi_min", 0.0)),
+        "chi_min": max(1.0, float(cmb.get("chi_matter_min", 0.0))),
         "chi_boundary": chi_boundary,
         "chi_high_z_max": float(cmb["chi_high_z_max"]),
-        "chi_low_z_min": float(cmb.get("chi_low_z_min") or 1.0),
+        "chi_map_min": max(1.0, float(cmb.get("chi_matter_min", 0.0))),
         "z_gxy": cfg.get("abacus_galaxy", {}).get("z_range"),
         "nell_file": cmb.get("cmb_noise_nell"),
         "nell_scale": float(cmb.get("cmb_noise_scaling", 1.0)),
@@ -107,10 +108,9 @@ def main():
     tot = los.cl(1.0, chi_s)
     parts = {
         "model shells": los.cl(g["chi_min"], g["chi_boundary"]),
-        "data map": los.cl(g["chi_low_z_min"], g["chi_high_z_max"]),
-        "LOS in the covariance": los.cl(g["chi_low_z_min"], g["chi_min"])
-        + los.cl(g["chi_boundary"], g["chi_high_z_max"]),
-        "in neither": los.cl(1.0, g["chi_low_z_min"]) + los.cl(g["chi_high_z_max"], chi_s),
+        "data map": los.cl(g["chi_map_min"], g["chi_high_z_max"]),
+        "LOS in the covariance": los.cl(g["chi_boundary"], g["chi_high_z_max"]),
+        "in neither": los.cl(1.0, g["chi_map_min"]) + los.cl(g["chi_high_z_max"], chi_s),
     }
     nell = None
     if g["nell_file"]:
@@ -119,7 +119,7 @@ def main():
 
     bands = [(2, 4), (5, 10), (11, 20), (21, 36), (37, g["lmax"])]
     print(f"Power fraction of C_l(0 -> chi_s), (2l+1)-weighted per band; data-map matter from chi = "
-          f"{g['chi_low_z_min']:g} to {g['chi_high_z_max']:g} Mpc/h:")
+          f"{g['chi_map_min']:g} to {g['chi_high_z_max']:g} Mpc/h:")
     for lo, hi in bands:
         m = (ell >= lo) & (ell <= hi)
         row = "  ".join(f"{k} {weighted(ell[m], v[m]) / weighted(ell[m], tot[m]):.3f}" for k, v in parts.items())
@@ -147,7 +147,7 @@ def main():
     for chi_a, color, ls, label in (
         (1.0, BLUE, "-", r"matter from the observer to $z_\mathrm{max}$"),
         (g["chi_min"], AQUA, "--",
-         rf"matter from $\chi_\mathrm{{min}}$ = {g['chi_min']:.0f} Mpc/$h$ to $z_\mathrm{{max}}$ (model)"),
+         rf"matter from {g['chi_min']:.0f} Mpc/$h$ (where the map starts) to $z_\mathrm{{max}}$ (model)"),
     ):
         mean, lo, hi = curve(chi_a)
         ok = chi_max > chi_a
@@ -165,7 +165,7 @@ def main():
     ax.annotate(f"{g['data']} holds {f_map:.0%}", (z_map, f_map), xytext=(10, 6),
                 textcoords="offset points", fontsize=9, color="0.15")
     ax.axvline(z_min_model, color=GREY, ls=":", lw=1)
-    ax.text(z_min_model, 0.02, r" $\chi_\mathrm{min}$", fontsize=9, color="0.3", ha="left")
+    ax.text(z_min_model, 0.02, r" map start", fontsize=9, color="0.3", ha="left")
     ax.axhline(1.0, color="0.5", ls=":", lw=1)
     ax.set_xlim(0, z_max[-1])
     ax.set_ylim(0, 1.08)
@@ -186,7 +186,7 @@ def main():
     ax.loglog(ell, parts["model shells"], color=BLUE, lw=2,
               label=rf"model shells, {g['chi_min']:.0f}–{g['chi_boundary']:.0f} Mpc/$h$")
     ax.loglog(ell, parts["data map"], color=AQUA, ls="--", lw=2,
-              label=rf"{g['data']}, {g['chi_low_z_min']:.1f}–{g['chi_high_z_max']:.0f} Mpc/$h$")
+              label=rf"{g['data']}, {g['chi_map_min']:.1f}–{g['chi_high_z_max']:.0f} Mpc/$h$")
     ax.loglog(ell, parts["LOS in the covariance"], color=ORANGE, ls="-.", lw=2,
               label=r"line of sight in the covariance, $C_\ell^\mathrm{LOS}$")
     ax.loglog(ell, parts["in neither"], color=RED, ls=":", lw=2, label=f"in neither (absent from the {g['data']})")

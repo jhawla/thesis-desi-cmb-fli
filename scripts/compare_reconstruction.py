@@ -86,7 +86,7 @@ def load_run(run_dir, smoothing):
         "name": run_dir.name, "true": true_r, "rec": rec_r, "rmesh": rmesh, "box": box,
         "ks": ks, "coh": coh, "chi_gxy": chi_gxy,
         "cmb": bool(getattr(model, "cmb_enabled", False)),
-        "chi_min": float(getattr(model, "cmb_chi_min", 0.0)),
+        "chi_min": float(getattr(model, "cmb_chi_matter_min", 0.0)),
         "chi_max": float(getattr(model, "chi_boundary", box[2])),
     }
 

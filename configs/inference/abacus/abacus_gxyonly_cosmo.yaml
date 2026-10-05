@@ -33,7 +33,7 @@ cmb_lensing:
   z_source: 1089.28
   nside: 32
   n_shells: 32
-  chi_min: 350
+  chi_matter_min: 292.6
   shell_weights: linear
   proj_oversamp: 2
   cmb_noise_nell: /global/homes/j/jhawla/thesis-desi-cmb-fli/data/N_L_kk_act_dr6_lensing_v1_baseline.txt

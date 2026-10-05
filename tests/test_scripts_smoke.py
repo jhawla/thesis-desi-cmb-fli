@@ -34,8 +34,7 @@ def tiny_abacus_config(tmp_path):
     cfg = yaml.safe_load(open(ROOT / "configs/inference/abacus/abacus_kappaonly_Nl1p0_fnlfixed_chimin700.yaml"))
     cfg["model"].update(box_shape=[1000.0] * 3, cell_size=125.0, lpt_order=1, init_oversamp=1.0,
                         evol_oversamp=1.0, ptcl_oversamp=1.0, paint_oversamp=1.0)
-    cfg["cmb_lensing"].update(nside=4, n_shells=4, chi_min=100.0, chi_high_z_max=600.0,
-                              chi_low_z_min=50.0,
+    cfg["cmb_lensing"].update(nside=4, n_shells=4, chi_matter_min=50.0, chi_high_z_max=600.0,
                               cmb_noise_nell=str(ROOT / "data/N_L_kk_act_dr6_lensing_v1_baseline.txt"))
     kappa = np.random.default_rng(0).normal(scale=1e-2, size=hp.nside2npix(32))
     asdf.AsdfFile({"data": {"kappa": kappa}, "header": {}}).write_to(tmp_path / "kappa.asdf")

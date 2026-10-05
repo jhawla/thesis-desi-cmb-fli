@@ -12,7 +12,14 @@ and approximations in docs/pipeline.md §6 ("Fisher forecasts"):
 
 Usage:
   python scripts/fisher_cosmo.py [--config CFG] [--densities 1.0 0.1 0.03] [--fnl]
-  python scripts/fisher_cosmo.py --resolution_scan   # box / cell / chi_min trade-offs
+  python scripts/fisher_cosmo.py --resolution_scan   # box / cell trade-offs
+  python scripts/fisher_cosmo.py --mismatch FILE      # first-order shift from a kappa power mismatch
+
+``--mismatch`` takes the data/model ratio of the kappa power (model = the box kappa plus the line of
+sight): the ``kappa_from_ic.npz`` of ``validate_kappa_from_ic.py`` (C^tt / (C^mm + C^LOS) at the
+config's shell_kmax), or a text file of two columns, ell and ratio. The data then hold
+(ratio - 1) (C_box + C_LOS) beyond the model, and the script prints the shift F^-1 b of
+(Omega_m, sigma8) it causes, kappa alone and joint, in units of the marginal sigma.
 Figure: figures/fisher_diagnostic/fisher_cosmo_contours.png; numbers:
 $SCRATCH/outputs/fisher_cosmo/fisher_cosmo.json.
 """
@@ -47,30 +54,31 @@ def marginalised_2x2(F, params):
     return np.linalg.inv(C)
 
 
-# (label, box side, cell, chi_min, final mesh). chi_min: 700 at cell 93.75 and 292.6 at 46.875 are
-# the values the kappa-from-IC test validates (pipeline.md §7.6); the others follow the lattice rule
-# 2 pi chi_min / d >= ~80 with d = cell / 1.75 the particle spacing, not validated.
+# (label, box side, cell, final mesh); the shells start at the config's chi_matter_min and the
+# per-shell cut sits at the init-grid Nyquist of each cell.
 RESOLUTIONS = [
-    ("7500 / 93.75 / 700 (current)", 7500.0, 93.75, 700.0, 80),
-    ("7500 / 62.5 / 500", 7500.0, 62.5, 500.0, 120),
-    ("7500 / 46.875 / 292.6", 7500.0, 46.875, 292.6, 160),
-    ("5000 / 62.5 / 500", 5000.0, 62.5, 500.0, 80),
-    ("5000 / 41.67 / 292.6", 5000.0, 5000.0 / 120, 292.6, 120),
-    ("5000 / 31.25 / 292.6", 5000.0, 31.25, 292.6, 160),
+    ("7500 / 93.75 (current)", 7500.0, 93.75, 80),
+    ("7500 / 62.5", 7500.0, 62.5, 120),
+    ("7500 / 46.875", 7500.0, 46.875, 160),
+    ("5000 / 62.5", 5000.0, 62.5, 80),
+    ("5000 / 41.67", 5000.0, 5000.0 / 120, 120),
+    ("5000 / 31.25", 5000.0, 31.25, 160),
 ]
 
 
 def resolution_scan(cfg, bgs, fid, params, prior, nell, noise_scaling, out_path):
-    """Galaxies, kappa alone and joint at each (box, cell, chi_min) of RESOLUTIONS, density 1.
+    """Galaxies, kappa alone and joint at each (box, cell) of RESOLUTIONS, density 1.
 
     The box enters through the kappa box edge (observer at the centre: box / 2), the cell through
-    k_max = pi / cell; kappa keeps l <= 2 nside of the config and the data-map depth; the matter
-    between the box edge and chi_high_z_max, and below chi_min, is line-of-sight noise.
+    the galaxies' k_max = pi / cell and the per-shell cut of kappa at the init-grid Nyquist; kappa
+    keeps l <= 2 nside of the config and the data-map depth; the matter between the box edge and
+    chi_high_z_max, and what the cut removes, are line-of-sight noise.
     """
     base = fi.kappa_geometry(cfg)
+    oversamp = float(cfg["model"].get("init_oversamp", 1.0))
     rows, out = [], {}
-    for label, box, cell, chi_min, mesh in RESOLUTIONS:
-        kappa = {**base, "chi_min": chi_min, "chi_box": box / 2, "chi_low_z_min": 292.6}
+    for label, box, cell, mesh in RESOLUTIONS:
+        kappa = {**base, "chi_box": box / 2, "k_cut": np.pi * oversamp / cell}
         Fg = fi.galaxy_fisher_3d_cosmo(bgs, fid, fi.HUGE_LRG, np.pi / cell, params=params) + prior
         kw = {"params": params, "noise_scaling": noise_scaling, "nell": nell, "los": "noise"}
         dF = fi.angular_fisher_cosmo(bgs, fid, fi.HUGE_LRG, kappa, "gk", **kw) - (
@@ -83,10 +91,10 @@ def resolution_scan(cfg, bgs, fid, params, prior, nell, noise_scaling, out_path)
         sj = [fi.marginal(Fg + dF, params, p) for p in ("Omega_m", "sigma8")]
         cost = (mesh / 80) ** 3
         rows.append((label, cost, sg, sk, sj))
-        out[label] = {"box": box, "cell": cell, "chi_min": chi_min, "mesh": mesh, "cost_vs_current": cost,
+        out[label] = {"box": box, "cell": cell, "mesh": mesh, "cost_vs_current": cost,
                       "galaxies": sg, "kappa": list(sk), "joint": sj}
     print("\nResolution scan, density 1, LOS as noise; sigma(Omega_m) / sigma(sigma8):")
-    print(f"  {'box / cell / chi_min':30s} {'cost':>5s}  {'galaxies':>15s}  {'kappa alone':>15s}  "
+    print(f"  {'box / cell':30s} {'cost':>5s}  {'galaxies':>15s}  {'kappa alone':>15s}  "
           f"{'joint':>15s}  gain Om, s8")
     for label, cost, sg, sk, sj in rows:
         print(f"  {label:30s} {cost:5.1f}  {sg[0]:.4f} / {sg[1]:.4f}  {sk[0]:.4f} / {sk[1]:.4f}  "
@@ -94,6 +102,54 @@ def resolution_scan(cfg, bgs, fid, params, prior, nell, noise_scaling, out_path)
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     json.dump(out, open(out_path, "w"), indent=1)
     print(f"Saved {out_path}")
+
+
+def load_mismatch_ratio(path, k_cut, lmax):
+    """Data/model kappa power ratio on l = 0 ... lmax (1 outside the file's range); from a
+    ``kappa_from_ic.npz``, the spectra at the config's per-shell cut ``k_cut``."""
+    if str(path).endswith(".npz"):
+        d = np.load(path)
+        keys = [k for k in d.files if k.startswith("tt_")]
+        key = next((k for k in keys if np.isclose(float(k[3:]), k_cut, rtol=1e-3, atol=1e-6)), None)
+        if key is None:
+            raise ValueError(f"{path} holds no spectra at shell_kmax {k_cut:.4g}: {keys}")
+        c = key[3:]
+        ell, ratio = np.arange(d[key].size), d[f"tt_{c}"] / (d[f"mm_{c}"] + d[f"los_{c}"])
+    else:
+        ell, ratio = np.loadtxt(path, unpack=True)
+    out = np.ones(lmax + 1)
+    ok = (ell >= 2) & (ell <= lmax)
+    out[ell[ok].astype(int)] = ratio[ok]
+    return out
+
+
+def mismatch_shift(args, cfg, bgs, fid, params, prior, kappa, kmax, nell, noise_scaling):
+    """First-order shift of the parameters from the kappa power mismatch of ``args.mismatch``."""
+    lmax, ells = int(kappa["lmax"]), np.arange(int(kappa["lmax"]) + 1)
+    bg0 = bgs(fid)
+    model_power = sum(fi.kappa_spectra(bg0, np.maximum(ells, 1), kappa))
+    ratio = load_mismatch_ratio(args.mismatch, kappa["k_cut"], lmax)
+    dC = (ratio - 1.0) * model_power
+    print(f"\nmismatch {args.mismatch}: data/model kappa power, l 2-{lmax}: "
+          + " ".join(f"{x:.3f}" for x in ratio[2:]))
+    kw = {"noise_scaling": noise_scaling, "nell": nell, "los": "noise", "mismatch": dC}
+    p2 = ("Omega_m", "sigma8")
+    Fk, bk = fi.angular_fisher_cosmo(bgs, fid, fi.HUGE_LRG, kappa, "k", params=p2, **kw)
+    Fk = Fk + fi.prior_fisher(cfg["latents"], p2)
+    Fg = fi.galaxy_fisher_3d_cosmo(bgs, fid, fi.HUGE_LRG, kmax, params=params) + prior
+    Fgk, bj = fi.angular_fisher_cosmo(bgs, fid, fi.HUGE_LRG, kappa, "gk", params=params, **kw)
+    Fj = Fg + Fgk - fi.angular_fisher_cosmo(bgs, fid, fi.HUGE_LRG, kappa, "g", params=params,
+                                            noise_scaling=noise_scaling, nell=nell, los="noise")
+    out = {}
+    for name, F, b, names in (("kappa alone", Fk, bk, p2), ("joint", Fj, bj, params)):
+        C = np.linalg.inv(F)
+        shift = C @ b
+        out[name] = {}
+        for i, p in enumerate(names[:2]):
+            out[name][p] = {"shift": float(shift[i]), "sigma": float(np.sqrt(C[i, i]))}
+        print(f"  {name:12s}: " + "  ".join(
+            f"d{p} {v['shift']:+.4f} ({v['shift'] / v['sigma']:+.2f} sigma)" for p, v in out[name].items()))
+    return out
 
 
 def main():
@@ -104,7 +160,9 @@ def main():
     ap.add_argument("--densities", type=float, nargs="+", default=[1.0])
     ap.add_argument("--fnl", action="store_true", help="free fNL too (default: fixed at its truth)")
     ap.add_argument("--resolution_scan", action="store_true",
-                    help="only the (box, cell, chi_min) scan of RESOLUTIONS, density 1")
+                    help="only the (box, cell) scan of RESOLUTIONS, density 1")
+    ap.add_argument("--mismatch", default=None, metavar="FILE",
+                    help="only the first-order shift from a kappa power mismatch (see the docstring)")
     ap.add_argument("--fig", default=str(ROOT / "figures/fisher_diagnostic/fisher_cosmo_contours.png"))
     ap.add_argument(
         "--out",
@@ -125,6 +183,14 @@ def main():
     bgs = fi.BackgroundCache(z_source=float(cmb.get("z_source", 1089.28)))
     print(f"config {Path(args.config).name}: kmax {kmax:.4f} h/Mpc, kappa {kappa}, N_l x{noise_scaling}")
     print(f"fiducial {fid}; free {params}; priors (config latents) on every parameter")
+
+    if args.mismatch:
+        shift = mismatch_shift(args, cfg, bgs, fid, params, prior, kappa, kmax, nell_tab, noise_scaling)
+        out = Path(args.out).with_name(f"fisher_cosmo_mismatch_{Path(args.mismatch).stem}.json")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        json.dump({"mismatch": args.mismatch, "config": args.config, **shift}, open(out, "w"), indent=1)
+        print(f"Saved {out}")
+        return
 
     if args.resolution_scan:
         resolution_scan(cfg, bgs, fid, params, prior, nell_tab, noise_scaling,

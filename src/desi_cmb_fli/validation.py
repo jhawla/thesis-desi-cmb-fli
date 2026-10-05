@@ -721,15 +721,19 @@ def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
     ``measure_spectra`` returns noiseless maps with the galaxy pixel window removed and the galaxy
     shot noise subtracted, so no noise term enters here:
 
-    * kappa-kappa, closure: the model's Born shells, chi_min to chi_boundary, with k_perp below the
-      init-grid Nyquist -- the inferred linear field has no power above it.
+    * kappa-kappa, closure: the model's Born shells, chi_matter_min to chi_boundary, with k_perp below the
+      init-grid Nyquist -- the inferred linear field has no power above it -- and, with
+      ``cmb_lensing.shell_kmax``, each shell times its squared multipole taper.
     * kappa-kappa, abacus: the line of sight from ``low_z_matter_start`` to ``chi_high_z_max`` at
-      full resolution, times
-      the pixel window of the ud_grade that brings the simulation map to ``cmb_nside``.
+      full resolution.
+    * Both kappa-kappa curves carry the squared bilinear window of the projection sphere
+      (``bilinear_window``): the model map gets it from the Born scatter, the Abacus map from the
+      loader's ``bilinear_resample_healpix``.
     * gg and kappa-g: the survey's dN/dchi (``gxy_kernel``), constant Eulerian bias ``bE``,
       nonlinear P(k); the same k cut in closure, none on data. In closure kappa-g also carries the
-      radial window of the Born shells (``kappa_radial_window``): where ``chi_min`` cuts into the
-      galaxies, the model map does not hold their matter.
+      radial window of the Born shells (``kappa_radial_window``): where the shells start or stop
+      inside the galaxies, the model map does not hold their matter. It leaves out the per-shell
+      multipole cut, which acts on shells mostly nearer than the galaxies.
     """
 
     ell_j = jnp.asarray(ell_theory, dtype=float)
@@ -756,6 +760,7 @@ def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
             out["cl_kk"] = np.asarray(compute_theoretical_cl_kappa_windowed(
                 cosmo_val, ell_j, model.cmb_r_shells, model.cmb_a_shells, model.cmb_d_r,
                 z_source, shell_weights=support, k_nyq=k_cut,
+                ell_taper=getattr(model, "cmb_shell_taper", None),
             )) * w_kappa**2
         else:
             out["cl_kk"] = np.asarray(compute_theoretical_cl_kappa(
