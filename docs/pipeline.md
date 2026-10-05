@@ -1876,7 +1876,11 @@ settle. Optional: a closure on the Abacus ICs (needs a `closure_init_from_abacus
 way to tell model error from realisation in the closure/Abacus comparison of §7.3); `bn2` fixed at the
 current configuration; a projection of the evolved Abacus particles through the Born projector, to
 separate the projector from LPT in §7.6; the CLASS/EH ratio in the line-of-sight term and in
-`desi_cmb_fli.fisher`.
+`desi_cmb_fli.fisher`; the closure `Omega_m`–`sigma8` triplet at the depth of a real map
+(`chi_matter_min: 0`, `chi_high_z_max` unset, i.e. to χ_CMB): the line-of-sight draw in the data and
+its variance then cover the matter from the observer to the CMB, so the κ error bars are those of a
+real map rather than of the AbacusLensing range (§3.2), within the Gaussian, box-independent line of
+sight and the idealised reconstruction noise.
 
 Configurations: `configs/inference/abacus/` (Abacus runs), `configs/inference/scan/` (closure at the
 same configuration), `configs/inference/validation/` (forward model vs theory), all with the current κ
