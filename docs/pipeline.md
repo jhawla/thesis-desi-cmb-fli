@@ -1789,9 +1789,12 @@ model now starts its shells where the map's matter starts and applies the per-sh
    and `sigma8` on [0.5, 1.2] (the run's `model.yaml`). In that batch the latents of both reached
    ≈ 37 σ_fid, which puts both parameters on their upper bound, the bias latents left too (`b1_` up
    to 168, `bn2_` to 784), and three of the four chains are NaN. Galaxy-only runs of montecosmo on Abacus
-   did not reach an unbiased `sigma8` either (H. Simon-Onfroy, private communication). To understand before relaunching: the warmup
-   of the cosmological directions; the closure member (c) runs first, to tell the sampler from the
-   Abacus posterior.
+   did not reach an unbiased `sigma8` either (H. Simon-Onfroy, private communication). The closure member (c),
+   `run_20261005_021418_59363213`, same priors and target, ends its warmup at `Omega_m` 0.293–0.316
+   and `sigma8` 0.78–0.83 (truth 0.315, 0.811) with the same step size, 134, and its first batch
+   holds the energy variance at 0.47–0.84 × the target in all four chains: the sampler handles
+   `Omega_m` and `sigma8` free at that step, and what differs on Abacus is where its warmup goes.
+   The relaunch targets an energy variance of 10⁻⁸, a step near the 85 of `59194575`.
    (b) `scan/closure_d0p20_gxyonly.yaml`.
    (c) `scan/closure_d1p00_gxyonly_cosmo.yaml`, the galaxy member of the closure
    `Omega_m`–`sigma8` triplet (step 3).

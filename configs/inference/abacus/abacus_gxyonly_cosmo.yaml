@@ -117,7 +117,7 @@ mcmc:
   save_large_fields: false
   mesh_desired_energy_var: 1.0e-05
   mclmc:
-    desired_energy_var: 1.0e-07
+    desired_energy_var: 1.0e-08  # 1e-7 diverged (run_20261002_070145_59203212, step 133); 1e-8 targets a step near the fNL run's 85 (Var E ~ eps^6)
     diagonal_preconditioning: true
     thinning: 5
 observation_mode: abacus
