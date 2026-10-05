@@ -1855,6 +1855,18 @@ model now starts its shells where the map's matter starts and applies the per-sh
    degeneracy at densities 0.1 and 0.2 (§7.3); the density-scan figure (`density_scan.py`, filling
    `scan/density_scan_runs.yaml`); the field and κ reconstructions of the new runs; the stiffness at
    cell 46.875 (`kappa_stiffness.py` needs a `--cell_size`); the cost of the cut in a joint gradient.
+   **To understand before any conclusion: the closure widths against the Fisher.** Second half of
+   140 batches, R-hat ≤ 1.008: galaxy-only `run_20261005_021418_59363213`
+   (`scan/closure_d1p00_gxyonly_cosmo.yaml`) σ(`Omega_m`) 0.0093, σ(`sigma8`) 0.048; κ-only
+   `run_20261005_030253_59364089` (`scan/closure_d1p00_kappaonly_cosmo.yaml`) 0.026 and 0.031.
+   The Fisher of §7.10 at the same configuration: galaxies 0.0183 and 0.0503, κ alone 0.0608 and
+   0.0461. `Omega_m` is about 2 × narrower than the Fisher in both runs; `sigma8` agrees for the
+   galaxies and is 1.5 × narrower for κ, a nearly Gaussian field at ℓ ≤ 64 on the full sky, where a
+   field-level posterior is expected to carry about the information of its power spectrum. One
+   realisation each. Checks: the bias of the unadjusted sampler (the κ-only run again at a smaller
+   `desired_energy_var`); the `Omega_m` dependences the Fisher has and the model has, or not
+   (linear spectrum shape, growth, distances of the light cone, lensing kernel); the two-point
+   analysis of C. Payerne on the κ-only map (step 2c, paper `sec:res_twopt`).
 
 Open, without a run planned: the remaining +8–15 % of `(C^mm + C^LOS)/C^tt` at ℓ 44–64 at cell 93.75,
 from the shells the cut leaves (§7.12); the lensing prefactor, which uses `Omega_m` where AbacusLensing
