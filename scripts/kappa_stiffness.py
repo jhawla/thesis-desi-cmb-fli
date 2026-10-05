@@ -148,8 +148,7 @@ def main():
         print(f"  {spec:18s} {res['lambda']:10.4g}   variance <350/<700/<1100: "
               + " / ".join(f"{res['variance_fraction'][k]:.2f}" for k in ("<350", "<700", "<1100"))
               + f"   {res['s_per_hvp']:.3f} s/HVP" + (f", peak {res['peak_gb']:.1f} GB" if "peak_gb" in res else ""))
-    with open(out / "kappa_stiffness.json", "w") as f:
-        json.dump(results, f, indent=1)
+    (out / "kappa_stiffness.json").write_text(json.dumps(results, indent=1) + "\n")
     print(f"Saved {out / 'kappa_stiffness.json'}")
 
 

@@ -99,7 +99,7 @@ def resolution_scan(cfg, bgs, fid, params, prior, nell, noise_scaling, out_path)
         print(f"  {label:30s} {cost:5.1f}  {sg[0]:.4f} / {sg[1]:.4f}  {sk[0]:.4f} / {sk[1]:.4f}  "
               f"{sj[0]:.4f} / {sj[1]:.4f}  {1 - sj[0] / sg[0]:.0%}, {1 - sj[1] / sg[1]:.0%}")
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    json.dump(out, open(out_path, "w"), indent=1)
+    Path(out_path).write_text(json.dumps(out, indent=1) + "\n")
     print(f"Saved {out_path}")
 
 
@@ -188,7 +188,7 @@ def main():
         shift = mismatch_shift(args, cfg, bgs, fid, params, prior, kappa, kmax, nell_tab, noise_scaling)
         out = Path(args.out).with_name(f"fisher_cosmo_mismatch_{Path(args.mismatch).stem}.json")
         out.parent.mkdir(parents=True, exist_ok=True)
-        json.dump({"mismatch": args.mismatch, "config": args.config, **shift}, open(out, "w"), indent=1)
+        out.write_text(json.dumps({"mismatch": args.mismatch, "config": args.config, **shift}, indent=1) + "\n")
         print(f"Saved {out}")
         return
 
@@ -235,7 +235,7 @@ def main():
                   + f"  corr(Om, s8) {r:+.2f}{gain}")
             out["densities"][str(d)][name] = {**s, "corr_Om_s8": r}
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    json.dump(out, open(args.out, "w"), indent=1)
+    Path(args.out).write_text(json.dumps(out, indent=1) + "\n")
 
     fig, axes = plt.subplots(1, len(results), figsize=(5.2 * len(results), 4.6), squeeze=False)
     c0 = (fid["Omega_m"], fid["sigma8"])

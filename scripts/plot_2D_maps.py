@@ -57,7 +57,11 @@ def parse_args():
     parser.add_argument("--no-smooth", action="store_true",
                         help="Skip HEALPix alm cut in abacus mode (diagnostic)")
     parser.add_argument("--save-healpix", action="store_true",
-                        help="Save generated kappa maps as HEALPix FITS files")
+                        help="Save the kappa maps as HEALPix FITS files, and the noise spectrum the "
+                             "likelihood uses next to them")
+    parser.add_argument("--from-run", type=str, default=None,
+                        help="closure: take the maps from this run's config/truth.npz (the very data "
+                             "the run analysed) instead of a new draw; --config should be its config")
     return parser.parse_args()
 
 def _infer_flat_sky_geometry(model):
@@ -172,7 +176,12 @@ def main():
                 out["obs"] = res.get("obs")
             return out
 
-        truth = generate_truth(jr.key(seed))
+        if args.from_run:
+            truth = dict(np.load(Path(args.from_run) / "config" / "truth.npz"))
+            truth["kappa_obs"] = truth.get("kappa_obs_packed")
+            print(f"  maps from {args.from_run}/config/truth.npz")
+        else:
+            truth = generate_truth(jr.key(seed))
         kappa_pred = None if truth.get("kappa_pred") is None else np.asarray(truth.get("kappa_pred"))
         # In closure mode, "kappa_obs" is the packed real a_lm observable (length
         # ~2*n_alm), not a pixel map. Reconstruct a HEALPix map for plotting/saving.
@@ -220,6 +229,22 @@ def main():
 
         save_hp_map(kappa_pred, "pred_noiseless")
         save_hp_map(kappa_obs, "obs_noisy")
+
+        # What a two-point analysis of the observed map needs besides it: the noise the likelihood
+        # assumes, N_l + w_l^2 C_l^LOS (the line of sight beyond the box and the power the per-shell
+        # cut removes, both through the projection sphere's bilinear window w_l), and w_l itself.
+        ell = np.arange(int(model.cmb_lmax) + 1)
+        nell = np.asarray(model.nell_1d, dtype=float)[: ell.size]
+        los = (np.zeros(ell.size) if model.cl_high_z_cached is None
+               else np.asarray(model.cl_high_z_cached, dtype=float)[: ell.size])
+        w = (np.ones(ell.size) if model.cmb_los_window2 is None
+             else np.sqrt(np.asarray(model.cmb_los_window2, dtype=float))[: ell.size])
+        spec = output_dir / f"kappa_noise_spectrum_{timestamp}.txt"
+        np.savetxt(spec, np.c_[ell, nell, los, nell + los, w], fmt=["%d", "%.6e", "%.6e", "%.6e", "%.6f"],
+                   header=f"config {args.config}; run {args.from_run}; nside {model.cmb_nside}, "
+                          f"l <= {model.cmb_lmax}, projection nside {model.cmb_proj_nside}\n"
+                          "ell  N_ell  w^2*C_ell^LOS(incl. per-shell cut)  total noise  w_ell(bilinear)")
+        print(f"  Saved noise spectrum: {spec}")
 
     # ── Assemble panels ───────────────────────────────────────────────────────
     panels = []   # list of (array, title, cmap, label, extent, xlabel, ylabel)

@@ -174,11 +174,9 @@ def main():
         )
 
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    json.dump(
-        {"curve": curve, "points": points, "fisher_config": reg["fisher_config"], "kmax": kmax},
-        open(args.out, "w"),
-        indent=1,
-    )
+    Path(args.out).write_text(json.dumps(
+        {"curve": curve, "points": points, "fisher_config": reg["fisher_config"], "kmax": kmax}, indent=1,
+    ) + "\n")
     plot(curve, points, args.fig)
     print(f"\nSaved {args.fig} and {args.out}")
 

@@ -1,0 +1,24 @@
+{
+ "mismatch": "figures/spectra_diagnostic/kappa_from_abacus_ic_cell93p75_maps_cut.npz",
+ "config": "/global/u1/j/jhawla/thesis-desi-cmb-fli/configs/inference/scan/closure_d1p00_joint.yaml",
+ "kappa alone": {
+  "Omega_m": {
+   "shift": -0.05511680616722781,
+   "sigma": 0.06080904355982662
+  },
+  "sigma8": {
+   "shift": -0.060935968013103414,
+   "sigma": 0.046116144132208964
+  }
+ },
+ "joint": {
+  "Omega_m": {
+   "shift": 0.0003731255459123641,
+   "sigma": 0.013065025918099675
+  },
+  "sigma8": {
+   "shift": -0.013530037774956162,
+   "sigma": 0.018831170302706444
+  }
+ }
+}

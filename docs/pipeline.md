@@ -1776,7 +1776,13 @@ as a two-column file): κ alone Δ`Omega_m` −0.074 (−1.25σ), Δ`sigma8` −
 +0.05σ and −0.25σ; with it set to 1 below ℓ = 48: κ alone −1.17σ and −1.60σ, joint 0.00σ and −0.81σ.
 The shift comes from the top of the band, the far-shell residual. One realisation, as in §7.10: bias
 plus line-of-sight scatter. The ratio used holds the unwindowed covariance term, 2–4 points too high
-at ℓ ≥ 44 (above).
+at ℓ ≥ 44 (above). With the windowed term (the ratio of the IC test with the current code,
+`fisher_cosmo.py --mismatch figures/spectra_diagnostic/kappa_from_abacus_ic_cell93p75_maps_cut.npz`;
+`figures/fisher_diagnostic/fisher_cosmo_mismatch_kappa_from_abacus_ic_cell93p75_maps_cut*.json`, the
+Fisher σ being those of the current κ model, §7.10): κ alone Δ`Omega_m` −0.055 (−0.91σ), Δ`sigma8`
+−0.061 (−1.32σ); joint +0.000 (+0.03σ) and −0.014 (−0.72σ). The mismatch at ℓ ≤ 47 alone: κ alone
+−0.11σ and −0.23σ, joint +0.03σ and −0.18σ; at ℓ ≥ 48 alone: κ alone −0.80σ and −1.09σ, joint 0.00σ
+and −0.54σ.
 
 ## 8. Remaining steps before the paper
 
@@ -1809,9 +1815,10 @@ model now starts its shells where the map's matter starts and applies the per-sh
    covariance term as in the likelihood): the κ gains the runs of step 3 are compared with.
    (b) **`cmb_lensing.ell_max`** below 2·nside (a_ℓm above it dropped from the observable), for a
    κ-only `Omega_m`–`sigma8` robustness run on Abacus at ℓ ≤ 47: the remaining top-of-band excess
-   shifts `sigma8` by −1.6σ in κ alone and −0.8σ joint at first order, the band below by −0.25σ
-   (§7.12). First the expected scatter of that shift from the line-of-sight realisation, and the
-   shift again with the windowed covariance term (§3.2).
+   shifts `sigma8` by −1.1σ in κ alone and −0.5σ joint at first order with the windowed covariance
+   term, the band below by −0.2σ (§7.12). First the expected scatter of that shift from the
+   line-of-sight realisation; the Abacus κ-only `Omega_m`–`sigma8` run at the full band (step 3b)
+   measures the actual shift.
    (c) **Two-point comparison material** (paper §6, `sec:res_twopt`; an independent analysis by
    C. Payerne, C_ℓ^κκ and an MCMC with a CCL theory, on exactly the map our field level analyses).
    A script to write, `scripts/export_kappa_map.py`, exports from the `truth.npz` of the κ-only
