@@ -17,8 +17,6 @@ Likelihood:
 """
 
 import functools
-import os
-import tempfile
 from pathlib import Path
 
 import jax
@@ -30,11 +28,10 @@ import numpy as np
 
 NYQUIST_FRACTION = 0.5
 
-# Where the reduced randoms meshes are cached. Set abacus_galaxy.randoms_cache_dir
-# in the config to override, or to null to disable caching.
-_DEFAULT_RANDOMS_CACHE_DIR = (
-    Path(os.environ.get("SCRATCH", tempfile.gettempdir())) / "desi_cmb_fli_cache"
-)
+# Where the reduced randoms meshes are cached: data/cache in the repository (git-ignored; scratch
+# holds run directories only, docs/hpc.md). Set abacus_galaxy.randoms_cache_dir in the config to
+# override, or to null to disable caching.
+_DEFAULT_RANDOMS_CACHE_DIR = Path(__file__).resolve().parents[2] / "data" / "cache"
 
 
 # =========================================================================

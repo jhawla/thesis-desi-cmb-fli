@@ -52,6 +52,25 @@ squeue -u $USER
 - Config used: `$SCRATCH/outputs/run_<timestamp>/config/`
 - Samples: `$SCRATCH/outputs/run_<timestamp>/config/*.npz`
 
+### Storage
+
+- **Scratch** (`$SCRATCH/outputs/`) holds the run directories of `run_inference.py` and nothing else:
+  it is the fastest file system for the jobs to write to, but NERSC purges files not accessed for
+  8 weeks and keeps no backup. The conda environment (`$SCRATCH/envs/desi-cmb-fli`) is the one
+  exception, and must not be deleted.
+- **Kept runs** live on CFS, permanent with 7-day snapshots, in
+  `/global/cfs/cdirs/desi/users/$USER/desi-cmb-fli/runs/`. `run_inference.py` copies its run there at
+  the end (after the analysis, even if the analysis fails), and `analyze_run.py` run by hand copies
+  the new figures (`desi_cmb_fli.storage.keep_run`, `rsync -a`, so only what changed is sent). A failed
+  copy prints a warning and does not stop the job; then, or for a run interrupted by the time limit:
+  ```bash
+  rsync -a $SCRATCH/outputs/run_<timestamp>_<jobid> /global/cfs/cdirs/desi/users/$USER/desi-cmb-fli/runs/
+  ```
+  For many runs at once, use a data-transfer node (`ssh dtn01.nersc.gov`). `density_scan.py` looks a
+  run up on scratch first, then there; the other scripts take run paths explicitly.
+- **Everything else** stays in the repository: figures in `figures/<topic>/` with the small data
+  behind them next to them (`.npz`, `.json` of the same name), caches in `data/cache/` (git-ignored).
+
 ### Interactive job
 
 ```bash

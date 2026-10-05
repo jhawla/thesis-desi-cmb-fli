@@ -855,8 +855,9 @@ has failed and compute is being wasted (since `Var[E] = O(ε⁶)`, the step is s
   model consistent with the map. The first call loads the
   nside-16384 map (compute node) and caches it on the projection sphere; `--abacus_map` takes a
   map already on disk. The figure goes to
-  `figures/spectra_diagnostic/kappa_from_abacus_ic_cell<cell>.png`, the spectra npz in `--out_dir`
-  with the caches (`--replot` redraws from it).
+  `figures/spectra_diagnostic/kappa_from_abacus_ic_cell<cell>.png` (or `--fig`), the spectra next to it
+  as the same name `.npz` (`--replot` redraws from it); the Abacus map on the projection sphere is
+  cached in `data/cache/` (git-ignored).
   `--maps` also saves the model maps and plots Abacus, model and their difference around both
   poles, at full resolution and at ℓ ≤ `cmb_lmax`
   (`figures/maps/kappa_from_abacus_ic_poles_cell<cell>_kmax<shell_kmax>.png`), printing the difference in the
@@ -876,7 +877,8 @@ has failed and compute is being wasted (since `Var[E] = O(ε⁶)`, the step is s
   the Limber increment added to it). The κ geometry, cell and fiducial biases come from the
   registry's `fisher_config`. `--noise_table RUN --config CFG [--density d]` prints `σ_κ` and the
   Fisher gain per `N_ℓ` scaling on the galaxy Fisher measured from `RUN` (§7.2). Numbers also in
-  `$SCRATCH/outputs/density_scan/density_scan.json`.
+  `figures/results/density_scan.json`. Runs are looked up on scratch, then among the runs kept on CFS
+  (`docs/hpc.md`).
 
 **Fisher forecasts** (`desi_cmb_fli.fisher`, parameters `(f_NL, b1, b∇²)`, fiducial `f_NL` = 0; tested
 against closed forms in `tests/test_fisher.py`).
@@ -926,7 +928,7 @@ against closed forms in `tests/test_fisher.py`).
   κ alone and joint, at a run config's geometry, band, noise, truth biases and priors (default the
   closure at the Abacus geometry), line of sight as noise or as signal; table,
   `figures/fisher_diagnostic/fisher_cosmo_contours.png` (68 % contours) and
-  `$SCRATCH/outputs/fisher_cosmo/fisher_cosmo.json` (§7.10); `--resolution_scan` repeats it
+  `figures/fisher_diagnostic/fisher_cosmo.json` (§7.10); `--resolution_scan` repeats it
   over box size and cell, the cut at each cell's init-grid Nyquist (§7.10); `--mismatch FILE` gives
   the first-order shift F⁻¹b of the parameters from a κ power mismatch (data/model ratio per ℓ: the
   `kappa_from_ic.npz` of `validate_kappa_from_ic.py` at the config's `shell_kmax`, or two columns ℓ,
@@ -1397,7 +1399,8 @@ XLA_PYTHON_CLIENT_ALLOCATOR=cuda_async python scripts/validate_kappa_from_ic.py 
 
 Figures `figures/spectra_diagnostic/kappa_from_abacus_ic_cell93p75.png` (cell 93.75, the inference
 resolution: init 120³, particles 140³) and `figures/spectra_diagnostic/kappa_from_abacus_ic_cell46p875.png`
-(cell 46.875: init 240³, particles 280³); numbers in `kappa_from_ic.npz` of the two `--out_dir`.
+(cell 46.875: init 240³, particles 280³), made with the code at the tag `pre-shell-cut` (commands as
+run); their spectra files were overwritten by the §7.12 bench and are not kept.
 Same band in both, ℓ ≤ 64 (`cmb_lensing.nside` 32). In each ℓ bin, "max" is the coherence of a model
 exact on the matter it holds, `√(1 − C^LOS/C^tt)`, and the error beyond LOS is
 `(C^err − C^LOS)/N_ℓ`, the model error the likelihood's covariance does not hold.
@@ -1472,7 +1475,7 @@ low ℓ; it is not attributed further.
 
 `scripts/kappa_stiffness.py` (§6), `archive/abacus/abacus_joint_Nl1p0_chimin700.yaml` at cell 93.75, galaxies
 off, scalars fixed, one closure draw (`seed` 77), 60 power iterations of exact reverse-over-reverse
-Hessian-vector products; `$SCRATCH/outputs/kappa_stiffness/kappa_stiffness.json` and `log.txt`.
+Hessian-vector products; `figures/conditioning/kappa_stiffness.json`.
 λ_max of −log p with respect to `init_mesh_`, and the fraction of the variance of the top
 eigenvector (real-space initial field) within 350 / 700 / 1100 Mpc/h of the observer (volume
 fractions 0.0004 / 0.0034 / 0.0132):
@@ -1598,7 +1601,8 @@ Maps: `scripts/plot_2D_maps.py` on the Abacus config, `figures/maps/maps2d_abacu
 
 The per-pixel normalisation of §2.6 measured on the Abacus ICs through the forward model
 (`scripts/validate_kappa_from_ic.py --maps`, cell 93.75, `archive/abacus/abacus_joint_Nl1p0_chimin700.yaml`;
-spectra in `$SCRATCH/outputs/kappa_from_ic/poles_fixed/kappa_from_ic.npz`; maps
+spectra in `figures/maps/kappa_from_abacus_ic_poles_cell93p75_chimin700.npz`, model maps in the `.npy` of
+the same name; maps
 `figures/maps/kappa_from_abacus_ic_poles_cell93p75_chimin700.png` with `bilinear_weight_norm`,
 `figures/maps/kappa_from_abacus_ic_poles_cell93p75_chimin700_before_fix.png` with a uniform solid
 angle per pixel). The poles lie on the z axis, where two lattice planes cross (§2.6), so the
@@ -1637,7 +1641,7 @@ depend on `chi_min`). The field-level gains at density 0.03, 17 % ± 3 % at 350 
 config at the Abacus geometry, `scan/closure_d1p00_joint.yaml`, its truth biases and priors, `f_NL`
 fixed, the current κ model — shells from 292.6, per-shell cut at π/62.5, bilinear window of the
 projection sphere on the κ signal and the covariance term —, ACT DR6 ×1;
-`$SCRATCH/outputs/fisher_cosmo/fisher_cosmo.json`). Marginal σ of `Omega_m` / `sigma8`: galaxies
+`figures/fisher_diagnostic/fisher_cosmo.json`). Marginal σ of `Omega_m` / `sigma8`: galaxies
 0.0183 / 0.0503, κ alone 0.0608 / 0.0461, joint 0.0131 / 0.0188 at density 1, a κ gain of 29 % and
 63 %; 31 % and 68 % at 0.1, 31 % and 72 % at 0.03; with the line of sight as signal, κ alone 0.0444 /
 0.0273 and the gains 30 % and 68 % at density 1. The two probes' degeneracy directions in the
@@ -1648,7 +1652,7 @@ at density 1, 35 % and 73 % at 0.1, 38 % and 78 % at 0.03.
 
 **Resolution** (`fisher_cosmo.py --resolution_scan`, density 1, line of sight as noise; the box
 enters as κ's box edge, box/2, the cell as the galaxies' k_max = π/cell and as the per-shell cut at the
-init-grid Nyquist; cost ∝ mesh³; `$SCRATCH/outputs/fisher_cosmo/fisher_cosmo_resolution.json`):
+init-grid Nyquist; cost ∝ mesh³; `figures/fisher_diagnostic/fisher_cosmo_resolution.json`):
 σ(`Omega_m`) / σ(`sigma8`) joint and κ gain on them — 7500 / cell 93.75 (the inference setting, cost
 1): 0.0131 / 0.0188, 29 % / 63 %; 7500 / 62.5 (3.4): 0.0071 / 0.0132, 6 % / 38 %; 7500 / 46.875 (8):
 0.0040 / 0.0097, 2 % / 23 %; 5000 / 62.5 (1): 0.0070 / 0.0147, 7 % / 31 %; 5000 / 41.67 (3.4):
@@ -1660,7 +1664,7 @@ matters where the galaxies stop at large scales. The galaxy Fisher is linear, wi
 cell 93.75, 500 at 62.5, 292.6 below) and no window: `fisher_cosmo_resolution_chimin700.json`.
 
 **Shift from a κ power mismatch** (`python scripts/fisher_cosmo.py --mismatch
-$SCRATCH/outputs/kappa_from_ic/poles_fixed/kappa_from_ic.npz`, closure config at the Abacus geometry,
+figures/maps/kappa_from_abacus_ic_poles_cell93p75_chimin700.npz`, closure config at the Abacus geometry,
 the per-ℓ data/model ratio `C^tt / (C^mm + C^LOS)` of the §7.6 test at `chi_min` 700, first order:
 F⁻¹ b with b_a = f_sky Σ (2ℓ+1)/2 tr(C⁻¹ ∂_a C C⁻¹ ΔC); `fisher_cosmo_mismatch_kappa_from_ic.json`):
 κ alone Δ`Omega_m` −0.024 (−0.57σ), Δ`sigma8` −0.047 (−1.67σ); joint −0.002 (−0.16σ) and −0.026
@@ -1705,7 +1709,7 @@ list in `validate_kappa_from_ic.py` and a variant field in `kappa_stiffness.py`,
 decided the current κ model (§2.6).
 
 **IC test** (§7.6 set-up, `validate_kappa_from_ic.py --chi_min 292.6 700 --shell_kmax K`, outputs
-`$SCRATCH/outputs/kappa_from_ic/{cell93,cell93_kinit,cell93_kfinal,cell47,cell47_kinit}/kappa_from_ic.npz`;
+the `.npz` next to each figure in `figures/spectra_diagnostic/`;
 figures `kappa_from_abacus_ic_cell93p75_{nocut,kinit,kfinal}.png`,
 `kappa_from_abacus_ic_cell46p875_{nocut,kinit}.png`). `(C^mm + C^LOS)/C^tt` in ℓ 2–11 / 12–23 /
 24–35 / 36–43 / 44–47 / 48–51 / 52–55 / 56–64:
@@ -1731,8 +1735,8 @@ bilinear window w_ℓ² that the code now applies to it (§3.2; the saved spectr
 
 **IC test with the current code** (window on the covariance term, shells from 292.6;
 `validate_kappa_from_ic.py --config configs/inference/abacus/abacus_joint_Nl1p0.yaml --shell_kmax 0
-0.0503 --maps`, `$SCRATCH/outputs/kappa_from_ic/maps_cut/kappa_from_ic.npz`, figure
-`figures/spectra_diagnostic/kappa_from_abacus_ic_cell93p75_maps_cut.png`), cell 93.75, same bins as the
+0.0503 --maps --fig figures/spectra_diagnostic/kappa_from_abacus_ic_cell93p75_maps_cut.png`, the
+spectra in the `.npz` next to the figure), cell 93.75, same bins as the
 table: with the cut 0.95 0.99 1.01 1.05 1.08 1.11 1.15 1.08, without 0.95 1.01 1.02 1.15 1.37 1.77
 1.83 2.25; coherence at ℓ 48–51 / 52–55 / 56–64 0.87 0.87 0.85 with the cut, against 0.89 0.89 0.89
 for a model exact but for its covariance term, and 0.69 0.71 0.60 without. The error power beyond
@@ -1757,7 +1761,7 @@ bins at `chi_min` 0: 1.23 1.40 without cut, 0.97 1.00 with it (the discreteness 
 galaxy map).
 
 **Stiffness and cost** (§7.7 set-up, `kappa_stiffness.py --variants linear:0 linear:350 linear:700
---shell_kmax K`; `$SCRATCH/outputs/kappa_stiffness/kappa_stiffness_kmax{0,0.0503}.json`). λ_max without
+--shell_kmax K`; `figures/conditioning/kappa_stiffness_kmax{0,0.0503}.json`). λ_max without
 cut 486 / 10.9 / 2.43 at `chi_min` 0 / 350 / 700, with the cut 2.61 / 2.67 / 2.40: the cut removes the
 near-observer stiffness, its top eigenvector no longer near the observer (variance within 350 / 700 /
 1100 Mpc/h at `chi_min` 0: 0.005 / 0.11 / 0.30). A κ-only Hessian-vector product costs 0.057–0.060 s
@@ -1766,7 +1770,7 @@ cost about the same), device peak 3.16 → 3.39 GB.
 
 **First-order shift of the remaining mismatch** (`fisher_cosmo.py --mismatch` on the closure config
 at the current κ model — shells from 292.6, cut at π/62.5 — with the per-ℓ ratio `C^tt / (C^mm +
-C^LOS)` of the cut IC test at 292.6, `$SCRATCH/outputs/kappa_from_ic/cell93_kinit/kappa_from_ic.npz`,
+C^LOS)` of the cut IC test at 292.6, `figures/spectra_diagnostic/kappa_from_abacus_ic_cell93p75_kinit.npz`,
 as a two-column file): κ alone Δ`Omega_m` −0.074 (−1.25σ), Δ`sigma8` −0.082 (−1.85σ); joint +0.001
 (+0.05σ) and −0.020 (−1.06σ). With the ratio set to 1 above ℓ = 47: κ alone −0.08σ and −0.25σ, joint
 +0.05σ and −0.25σ; with it set to 1 below ℓ = 48: κ alone −1.17σ and −1.60σ, joint 0.00σ and −0.81σ.

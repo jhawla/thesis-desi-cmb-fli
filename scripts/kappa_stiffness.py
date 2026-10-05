@@ -122,7 +122,7 @@ def main():
     args = ap.parse_args()
 
     cfg = yaml.safe_load(open(args.config))
-    out = Path(args.out_dir or Path(os.environ.get("SCRATCH", ".")) / "outputs" / "kappa_stiffness")
+    out = Path(args.out_dir or Path(__file__).resolve().parents[1] / "figures" / "conditioning")
     out.mkdir(parents=True, exist_ok=True)
 
     results = {}

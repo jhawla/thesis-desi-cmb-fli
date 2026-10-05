@@ -1,0 +1,24 @@
+{
+ "mismatch": "/tmp/claude-109372/-global-u1-j-jhawla-thesis-desi-cmb-fli/9daf211a-9e59-48ed-bd9f-559d35bdb40e/scratchpad/ratio_high.txt",
+ "config": "/global/u1/j/jhawla/thesis-desi-cmb-fli/configs/inference/scan/closure_d1p00_joint_chimin700.yaml",
+ "kappa alone": {
+  "Omega_m": {
+   "shift": -0.06916442536834723,
+   "sigma": 0.05927189829315638
+  },
+  "sigma8": {
+   "shift": -0.07086587932367094,
+   "sigma": 0.04427871344175527
+  }
+ },
+ "joint": {
+  "Omega_m": {
+   "shift": 1.3179016992083403e-05,
+   "sigma": 0.012925178355959705
+  },
+  "sigma8": {
+   "shift": -0.014913366371381305,
+   "sigma": 0.01830273922253956
+  }
+ }
+}

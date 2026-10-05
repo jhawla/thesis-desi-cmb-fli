@@ -32,9 +32,9 @@ import numpy as np
 import yaml
 
 from desi_cmb_fli import fisher as fi
+from desi_cmb_fli.storage import run_path
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUTS = Path(os.environ.get("SCRATCH", ".")) / "outputs"
 GXY_COLOR, JOINT_COLOR = "#2a78d6", "#eb6834"
 
 
@@ -53,16 +53,16 @@ def measure(entry, burn_in=0.5):
     out = dict(entry)
     if not entry.get("gxy"):
         return out
-    gxy = fi.load_scalar_chains(OUTPUTS / entry["gxy"])
+    gxy = fi.load_scalar_chains(run_path(entry["gxy"]))
     half = gxy["fNL"].shape[1] // 2
     out["sigma_gxy"] = float(gxy["fNL"][:, half:].std())
     out["b1"] = float(gxy["b1"][:, half:].mean())
     out["bn2"] = float(gxy["bn2"][:, half:].mean())
     out["F_gxy"] = fi.chain_fisher(gxy, burn_in)
     if entry.get("joint"):
-        n = min(fi.n_batches(OUTPUTS / entry["gxy"]), fi.n_batches(OUTPUTS / entry["joint"]))
-        g = fi.load_scalar_chains(OUTPUTS / entry["gxy"], ("fNL",), n_batches=n)["fNL"]
-        j = fi.load_scalar_chains(OUTPUTS / entry["joint"], ("fNL",), n_batches=n)["fNL"]
+        n = min(fi.n_batches(run_path(entry["gxy"])), fi.n_batches(run_path(entry["joint"])))
+        g = fi.load_scalar_chains(run_path(entry["gxy"]), ("fNL",), n_batches=n)["fNL"]
+        j = fi.load_scalar_chains(run_path(entry["joint"]), ("fNL",), n_batches=n)["fNL"]
         ratio, err, _ = fi.paired_sigma_ratio(g, j, burn_in)
         out.update(
             matched_batches=n,
@@ -77,7 +77,7 @@ def noise_table(args, cfg):
     om, s8, *_ = fiducial(cfg)
     bg = fi.Background(om, s8)
     kappa = fi.kappa_geometry(cfg)
-    chains = fi.load_scalar_chains(OUTPUTS / args.noise_table)
+    chains = fi.load_scalar_chains(run_path(args.noise_table))
     F_g = fi.chain_fisher(chains)
     half = chains["b1"].shape[1] // 2
     b1, bn2 = chains["b1"][:, half:].mean(), chains["bn2"][:, half:].mean()
@@ -107,7 +107,7 @@ def main():
         help="log grid of the Fisher curves",
     )
     ap.add_argument("--fig", default=str(ROOT / "figures/results/density_scan.png"))
-    ap.add_argument("--out", default=str(OUTPUTS / "density_scan" / "density_scan.json"))
+    ap.add_argument("--out", default=str(ROOT / "figures" / "results" / "density_scan.json"))
     ap.add_argument(
         "--noise_table",
         default=None,

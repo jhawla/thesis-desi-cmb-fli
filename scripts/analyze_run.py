@@ -24,6 +24,7 @@ import numpy as np
 from desi_cmb_fli import utils
 from desi_cmb_fli.bricks import radius_mesh
 from desi_cmb_fli.chains import Chains
+from desi_cmb_fli.storage import keep_run
 from desi_cmb_fli.utils import ObservationMode, restore_model_state_from_truth
 
 # Enable x64 (needed for some operations)
@@ -781,6 +782,7 @@ def main():
 
     analyze_run(args.run_dir, args.burn_in, args.exclude_chains,
                 field_plots=not args.no_field_plots)
+    keep_run(args.run_dir)  # bring the new figures to the kept copy on CFS
 
 if __name__ == "__main__":
     main()

@@ -256,11 +256,6 @@ def main():
         help="also save the model maps and plot model vs Abacus around the poles (§8 item 11)",
     )
     ap.add_argument(
-        "--out_dir",
-        default=None,
-        help="caches and the spectra npz; default $SCRATCH/outputs/kappa_from_ic",
-    )
-    ap.add_argument(
         "--fig",
         default=None,
         help="figure path; default figures/spectra_diagnostic/kappa_from_abacus_ic_cell<cell>.png",
@@ -269,7 +264,7 @@ def main():
         "--replot",
         default=None,
         metavar="NPZ",
-        help="only redraw the figure from a kappa_from_ic.npz (with --cell_size for its title)",
+        help="only redraw the figure from the .npz saved next to one (with --cell_size for its title)",
     )
     args = ap.parse_args()
 
@@ -284,8 +279,9 @@ def main():
         cell = float(args.cell_size or cfg["model"]["cell_size"])
         print(f"Saved {plot_spectra(results, lmax, Path(args.config).name, cell, args.fig)}")
         return
-    out = Path(args.out_dir or Path(os.environ.get("SCRATCH", ".")) / "outputs" / "kappa_from_ic")
-    out.mkdir(parents=True, exist_ok=True)
+    repo = Path(__file__).resolve().parents[1]
+    cache = repo / "data" / "cache"  # git-ignored
+    cache.mkdir(parents=True, exist_ok=True)
     truth_params = conditioning_params(
         build_model(cfg, args.shell_kmax[0], args.cell_size),
         cfg.get("truth_params", {}),
@@ -300,7 +296,7 @@ def main():
         lmax, nside = int(model.cmb_lmax), int(model.cmb_proj_nside)
         if ic is None:
             ic = load_abacus_ic_truth(cfg["abacus_ic"], model)["init_mesh"]
-            t_map = abacus_map(cfg, model, out / f"abacus_kappa_nside{nside}.npy", args.abacus_map)
+            t_map = abacus_map(cfg, model, cache / f"abacus_kappa_nside{nside}.npy", args.abacus_map)
         model.reset()
         pred = model.predict(
             samples={**truth_params, "init_mesh": jnp.asarray(ic)},
@@ -313,20 +309,11 @@ def main():
         m_map = np.asarray(pred["kappa_pred"], dtype=float)
         if args.maps and t_map.size == m_map.size:
             cell = f"{float(model.cell_shape[0]):g}".replace(".", "p")
-            np.save(out / f"model_kappa_kmax{kmax:.4g}_cell{cell}.npy", m_map)
+            poles_fig = repo / "figures" / "maps" / f"kappa_from_abacus_ic_poles_cell{cell}_kmax{kmax:.4g}.png"
+            np.save(poles_fig.with_suffix(".npy"), m_map)  # the model map, next to its figure
             polar_report(t_map, m_map, "projection sphere")
             polar_report(band_limit(t_map, lmax), band_limit(m_map, lmax), f"ℓ ≤ {lmax}")
-            plot_polar_maps(
-                t_map,
-                m_map,
-                lmax,
-                kmax,
-                cell,
-                Path(__file__).resolve().parents[1]
-                / "figures"
-                / "maps"
-                / f"kappa_from_abacus_ic_poles_cell{cell}_kmax{kmax:.4g}.png",
-            )
+            plot_polar_maps(t_map, m_map, lmax, kmax, cell, poles_fig)
 
         mask_m = np.asarray(model.cmb_proj_mask, dtype=float)
         mask_t = mask_m if t_map.size == m_map.size else np.asarray(model.cmb_mask, dtype=float)
@@ -361,8 +348,8 @@ def main():
     fig_path = plot_spectra(
         results, lmax, Path(args.config).name, float(model.cell_shape[0]), args.fig
     )
-    # The spectra behind the figure go with the caches; --replot redraws from them.
-    npz_path = out / "kappa_from_ic.npz"
+    # The spectra behind the figure, next to it; --replot redraws from them.
+    npz_path = fig_path.with_suffix(".npz")
     np.savez(npz_path, **{f"{k}_{c}": v for c, cl in results.items() for k, v in cl.items()})
     print(f"\nSaved {fig_path} and {npz_path}")
 

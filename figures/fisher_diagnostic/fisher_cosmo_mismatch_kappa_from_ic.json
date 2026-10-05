@@ -1,0 +1,24 @@
+{
+ "mismatch": "/pscratch/sd/j/jhawla/outputs/kappa_from_ic/poles_fixed/kappa_from_ic.npz",
+ "config": "/global/u1/j/jhawla/thesis-desi-cmb-fli/configs/inference/scan/closure_d1p00_joint_chimin700.yaml",
+ "kappa alone": {
+  "Omega_m": {
+   "shift": -0.024218846057893168,
+   "sigma": 0.04241890297320801
+  },
+  "sigma8": {
+   "shift": -0.04666741034623869,
+   "sigma": 0.02788849500595366
+  }
+ },
+ "joint": {
+  "Omega_m": {
+   "shift": -0.001966018358183056,
+   "sigma": 0.012250271072032184
+  },
+  "sigma8": {
+   "shift": -0.025875496309927935,
+   "sigma": 0.016595723027031453
+  }
+ }
+}

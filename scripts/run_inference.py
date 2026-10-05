@@ -39,6 +39,7 @@ from desi_cmb_fli.cmb_lensing import (
 )
 from desi_cmb_fli.model import get_model_from_config
 from desi_cmb_fli.samplers import get_mclmc_run, get_mclmc_warmup
+from desi_cmb_fli.storage import keep_run
 from desi_cmb_fli.utils import (
     ObservationMode,
     check_model_state,
@@ -796,7 +797,10 @@ print("ANALYSIS")
 print("-" * 40)
 
 print("\nRunning final analysis...")
-analyze_run(run_dir, burn_in=0.5)
+try:
+    analyze_run(run_dir, burn_in=0.5)
+finally:
+    keep_run(run_dir)  # scratch is purged: the run is copied to CFS even if the analysis fails
 
 print("\nAnalysis complete. Check figures folder.")
 

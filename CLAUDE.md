@@ -40,6 +40,10 @@ python scripts/run_inference.py --config configs/inference/config.yaml --resume 
 - Outputs land in `$SCRATCH/outputs/run_<timestamp>_<jobid>/` with `config/` (copied
   `config.yaml`, `model.yaml`, `truth.npz`, `samples_batch_*.npz`, `sampler_state.pkl`) and
   `figures/`. `analyze_run.py` runs automatically at the end of a job.
+- **Storage rule** ([docs/hpc.md](docs/hpc.md), "Storage"): scratch holds run directories only (purged
+  after 8 weeks without access); `run_inference.py` and `analyze_run.py` copy the run to
+  `/global/cfs/cdirs/desi/users/jhawla/desi-cmb-fli/runs/` at their end (`storage.keep_run`); script outputs go next to their figure in
+  `figures/<topic>/` (`.npz`/`.json`), caches in `data/cache/` — never to scratch.
 - `samples_batch_*.npz` hold **scalars only**; the sampled field survives only in
   `sampler_state.pkl` — that is what the field-level figures read. With CMB lensing,
   `kappa_batch_*.npz` hold the κ observable of each chain after every batch (posterior mean/std).

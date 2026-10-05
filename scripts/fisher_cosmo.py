@@ -21,12 +21,11 @@ config's shell_kmax), or a text file of two columns, ell and ratio. The data the
 (ratio - 1) (C_box + C_LOS) beyond the model, and the script prints the shift F^-1 b of
 (Omega_m, sigma8) it causes, kappa alone and joint, in units of the marginal sigma.
 Figure: figures/fisher_diagnostic/fisher_cosmo_contours.png; numbers:
-$SCRATCH/outputs/fisher_cosmo/fisher_cosmo.json.
+figures/fisher_diagnostic/fisher_cosmo.json (next to the figure).
 """
 
 import argparse
 import json
-import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -166,7 +165,7 @@ def main():
     ap.add_argument("--fig", default=str(ROOT / "figures/fisher_diagnostic/fisher_cosmo_contours.png"))
     ap.add_argument(
         "--out",
-        default=str(Path(os.environ.get("SCRATCH", ".")) / "outputs/fisher_cosmo/fisher_cosmo.json"),
+        default=str(ROOT / "figures/fisher_diagnostic/fisher_cosmo.json"),
     )
     args = ap.parse_args()
 
