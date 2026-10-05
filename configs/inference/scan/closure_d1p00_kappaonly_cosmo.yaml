@@ -3,7 +3,7 @@
 
 # SLURM configuration for NERSC Perlmutter
 slurm:
-  job_name: cosmo_closure_abacusgeom_d1p00_gxyonly_chimin700
+  job_name: cosmo_closure_abacusgeom_d1p00_kappaonly
   account: desi
   qos: regular
   constraint: gpu
@@ -15,7 +15,7 @@ slurm:
 model:
   cell_size: 93.75  # Mpc/h
   box_shape: [7500.0, 7500.0, 7500.0]  # Mpc/h
-  galaxies_enabled: true  # Set to false for cmb-only runs
+  galaxies_enabled: false  # Set to false for cmb-only runs
   gxy_stoch_noise: false  # false : s_e fixed to 1 (pure Poisson), true : s_e inferred
   gxy_ngbar_free: false  # Free per-z-shell mean density -> marginalise the integral constraint
   lightcone: true
@@ -35,7 +35,7 @@ model:
 
 # CMB lensing configuration
 cmb_lensing:
-  enabled: false # Set to false for galaxy-only runs
+  enabled: true # Set to false for galaxy-only runs
   z_source: 1089.28   # CMB redshift
   nside: 32          # HEALPix nside for curved-sky convergence map
   n_shells: 32      # number of radial Born integration shells
@@ -71,7 +71,7 @@ latents:
   fNL:
     loc: 0.0
     scale: 10000.0
-    scale_fid: 2.0  # Use 2.0 for png_type: fNL and 100.0 for png_type: fNL_bias
+    scale_fid: 1000.0  # Use 2.0 for png_type: fNL and 100.0 for png_type: fNL_bias
     loc_fid: 0.0
   fNL_bp:
     loc: 0.0

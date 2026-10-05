@@ -1,13 +1,13 @@
 # Paired closure runs of the tracer-density scan (docs/pipeline.md §7.3), read by
 # scripts/density_scan.py. One entry per density; `joint: null` until the
-# joint run exists. Every joint runs at chi_min 700; the chi_min 350 pairs
-# are compared with them in §7.3-7.4, not here.
+# joint run exists. The joints run with the current kappa model (shells from chi_matter_min,
+# per-shell multipole cut); the chi_min 350 and 700 pairs are compared in §7.3-7.4, not here.
 # Run directories are relative to $SCRATCH/outputs.
-fisher_config: configs/inference/scan/closure_d1p00_joint_chimin700.yaml  # kappa geometry, cell, truth biases
+fisher_config: configs/inference/scan/closure_d1p00_joint.yaml  # kappa geometry, cell, truth biases
 pairs:
   - {density: 1.00, gxy: run_20260922_071921_58748954, joint: null}
   - {density: 0.20, gxy: null, joint: null}
   - {density: 0.10, gxy: run_20260924_071600_58822464, joint: null}
-  # joint run before the polar-cap fix of the projector (2026-09-29): a self-consistent closure of
-  # the previous kappa model (8 of 49152 projection pixels differ); rerun it for identical code
+  # joint run with the abandoned chi_min 700 (archive/scan/closure_d0p03_joint_chimin700.yaml, code
+  # at the git tag pre-shell-cut): rerun it with the current kappa model for identical code
   - {density: 0.03, gxy: run_20260923_054507_58787249, joint: run_20260925_020200_58859522}

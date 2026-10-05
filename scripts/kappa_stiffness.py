@@ -13,7 +13,7 @@ taken there.
 For the top eigenvector it also reports where it lives: the fraction of its variance, in the real
 space initial field, within given distances of the observer.
 
-    python scripts/kappa_stiffness.py --config configs/inference/abacus/abacus_joint_Nl1p0_chimin700.yaml \\
+    python scripts/kappa_stiffness.py --config configs/inference/abacus/abacus_joint_Nl1p0.yaml \\
         --variants linear:auto linear:0 nearest:auto linear:auto:1e8
 """
 
@@ -111,7 +111,7 @@ def stiffness(model, scalars, key, n_iter):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--config", default="configs/inference/abacus/abacus_joint_Nl1p0_chimin700.yaml")
+    ap.add_argument("--config", default="configs/inference/abacus/abacus_joint_Nl1p0.yaml")
     ap.add_argument("--variants", nargs="+",
                     default=["linear:auto", "linear:0", "nearest:auto", "linear:auto:1e8"],
                     help="shell_weights:shell_kmax[:cmb_noise_scaling]; shell_kmax in h/Mpc, 0 = no "

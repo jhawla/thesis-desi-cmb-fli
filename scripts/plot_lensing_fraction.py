@@ -13,7 +13,7 @@ band l = 2 ... 2 nside:
   closure), the beyond-the-box line-of-sight term of the likelihood covariance, the part in neither,
   and N_l.
 
-Usage: python scripts/plot_lensing_fraction.py [--config configs/inference/abacus/abacus_joint_Nl1p0_chimin700.yaml]
+Usage: python scripts/plot_lensing_fraction.py [--config configs/inference/abacus/abacus_joint_Nl1p0.yaml]
 """
 
 import argparse
@@ -87,7 +87,7 @@ def weighted(ell, x):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument(
-        "--config", default=str(ROOT / "configs/inference/abacus/abacus_joint_Nl1p0_chimin700.yaml")
+        "--config", default=str(ROOT / "configs/inference/abacus/abacus_joint_Nl1p0.yaml")
     )
     ap.add_argument("--out_dir", default=str(ROOT / "figures/lensing_fraction"))
     args = ap.parse_args()

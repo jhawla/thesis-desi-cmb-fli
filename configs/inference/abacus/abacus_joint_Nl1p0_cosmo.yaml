@@ -1,5 +1,5 @@
 slurm:
-  job_name: fNL_joint_abacushuge_universality_cut03_ngbarsfixed_chimin700
+  job_name: cosmo_joint_abacushuge_cut03_ngbarsfixed
   account: desi
   qos: regular
   constraint: gpu
@@ -109,9 +109,8 @@ latents:
     loc_fid: 0.0
 mcmc:
   num_warmup: 8192
-  fixed_params:
-  - Omega_m
-  - sigma8
+  fixed_params:  # Omega_m and sigma8 inferred, fNL at its truth
+  - fNL
   num_samples: 50
   num_batches: 140
   num_chains: 4

@@ -14,7 +14,7 @@ the Fisher gain per N_l scaling (docs/pipeline.md §7.2).
 
     python scripts/density_scan.py
     python scripts/density_scan.py --noise_table run_20260910_033019_58153868 \\
-        --config configs/inference/abacus/abacus_joint_Nl1p0_chimin700.yaml
+        --config configs/inference/abacus/abacus_joint_Nl1p0.yaml
 """
 
 import argparse

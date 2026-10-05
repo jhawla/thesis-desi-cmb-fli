@@ -31,7 +31,7 @@ def tiny_abacus_config(tmp_path):
     import asdf
     import healpy as hp
 
-    cfg = yaml.safe_load(open(ROOT / "configs/inference/abacus/abacus_kappaonly_Nl1p0_fnlfixed_chimin700.yaml"))
+    cfg = yaml.safe_load(open(ROOT / "configs/inference/abacus/abacus_kappaonly_Nl1p0_fnlfixed.yaml"))
     cfg["model"].update(box_shape=[1000.0] * 3, cell_size=125.0, lpt_order=1, init_oversamp=1.0,
                         evol_oversamp=1.0, ptcl_oversamp=1.0, paint_oversamp=1.0)
     cfg["cmb_lensing"].update(nside=4, n_shells=4, chi_matter_min=50.0, chi_high_z_max=600.0,

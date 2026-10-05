@@ -1,5 +1,5 @@
 slurm:
-  job_name: cosmo_joint_abacushuge_cut03_ngbarsfixed_chimin700
+  job_name: cosmo_kappaonly_abacushuge_Nl1p0
   account: desi
   qos: regular
   constraint: gpu
@@ -12,7 +12,7 @@ model:
   - 7500.0
   - 7500.0
   - 7500.0
-  galaxies_enabled: true
+  galaxies_enabled: false
   gxy_stoch_noise: false
   gxy_ngbar_free: false
   lightcone: true
@@ -56,7 +56,7 @@ latents:
   fNL:
     loc: 0.0
     scale: 10000.0
-    scale_fid: 2.0
+    scale_fid: 1000.0
     loc_fid: 0.0
   fNL_bp:
     loc: 0.0

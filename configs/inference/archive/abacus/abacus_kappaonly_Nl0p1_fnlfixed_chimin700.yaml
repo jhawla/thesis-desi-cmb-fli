@@ -1,5 +1,5 @@
 slurm:
-  job_name: kappaonly_abacushuge_Nl1p0_fnlfixed_chimin700
+  job_name: kappaonly_abacushuge_Nl0p1_fnlfixed_chimin700
   account: desi
   qos: regular
   constraint: gpu
@@ -33,16 +33,17 @@ cmb_lensing:
   z_source: 1089.28
   nside: 32
   n_shells: 32
-  chi_matter_min: 292.6
+  chi_min: 700
   shell_weights: linear
   proj_oversamp: 2
   cmb_noise_nell: /global/homes/j/jhawla/thesis-desi-cmb-fli/data/N_L_kk_act_dr6_lensing_v1_baseline.txt
-  cmb_noise_scaling: 1.0
+  cmb_noise_scaling: 0.1
   full_los_correction: true
   high_z_mode: fixed
   likelihood_mode: diagonal
   kl_rcond: 1e-2
   chi_high_z_max: 3942
+  chi_low_z_min: 292.6  # the HUGE light cone stops at z = 0.1: no matter below in the kappa map
   observer_mode: center
 truth_params:
   Omega_m: 0.315192

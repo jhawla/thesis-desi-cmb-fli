@@ -3,7 +3,7 @@
 
 # SLURM configuration for NERSC Perlmutter
 slurm:
-  job_name: validation_closure_chimin700
+  job_name: validation_closure_nside128_cell47
   account: desi
   qos: regular
   constraint: gpu
@@ -13,7 +13,7 @@ slurm:
 
 # Model configuration
 model:
-  cell_size: 93.75  # Mpc/h
+  cell_size: 46.875  # Mpc/h
   box_shape: [7500.0, 7500.0, 7500.0]  # Mpc/h
   galaxies_enabled: true  # Set to false for cmb-only runs
   gxy_stoch_noise: false  # false : s_e fixed to 1 (pure Poisson), true : s_e inferred
@@ -37,7 +37,7 @@ model:
 cmb_lensing:
   enabled: true # Set to false for galaxy-only runs
   z_source: 1089.28   # CMB redshift
-  nside: 32          # HEALPix nside for curved-sky convergence map
+  nside: 128          # HEALPix nside for curved-sky convergence map
   n_shells: 32      # number of radial Born integration shells
   chi_matter_min: 292.6  # Mpc/h; where the observed map's matter starts and the Born shells start (the Abacus HUGE light cone stops at z = 0.1)
   shell_weights: linear  # nearest (hard shell bins) | linear (particle split between the two bracketing shells; kappa continuous in the radii)

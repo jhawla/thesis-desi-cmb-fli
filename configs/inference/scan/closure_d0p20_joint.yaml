@@ -3,7 +3,7 @@
 
 # SLURM configuration for NERSC Perlmutter
 slurm:
-  job_name: fNL_closure_abacusgeom_scan_d0p10_joint_chimin700
+  job_name: fNL_closure_abacusgeom_scan_d0p20_joint
   account: desi
   qos: regular
   constraint: gpu
@@ -155,7 +155,7 @@ closure_geometry_from_abacus: true
 
 # Closure density knob: multiplies the catalog n_bar, so 1.0 reproduces the abacus-mode
 # density exactly. This is what the density scan varies (pipeline.md 7 roadmap item 1).
-closure_gxy_density_scale: 0.1
+closure_gxy_density_scale: 0.2
 
 # AbacusSummit c000 true cosmology (used as corner-plot markers in abacus mode)
 abacus_truth_params:

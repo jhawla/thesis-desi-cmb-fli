@@ -155,7 +155,7 @@ def mismatch_shift(args, cfg, bgs, fid, params, prior, kappa, kmax, nell, noise_
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument(
-        "--config", default=str(ROOT / "configs/inference/scan/closure_d1p00_joint_chimin700.yaml")
+        "--config", default=str(ROOT / "configs/inference/scan/closure_d1p00_joint.yaml")
     )
     ap.add_argument("--densities", type=float, nargs="+", default=[1.0])
     ap.add_argument("--fnl", action="store_true", help="free fNL too (default: fixed at its truth)")

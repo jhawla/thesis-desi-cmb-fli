@@ -3,7 +3,7 @@
 
 # SLURM configuration for NERSC Perlmutter
 slurm:
-  job_name: fNL_closure_abacusgeom_scan_d1p00_joint
+  job_name: validation_closure
   account: desi
   qos: regular
   constraint: gpu

@@ -1,5 +1,5 @@
 slurm:
-  job_name: cosmo_kappaonly_abacushuge_Nl1p0_chimin700
+  job_name: kappaonly_abacushuge_Nl0p1_fnlfixed
   account: desi
   qos: regular
   constraint: gpu
@@ -37,7 +37,7 @@ cmb_lensing:
   shell_weights: linear
   proj_oversamp: 2
   cmb_noise_nell: /global/homes/j/jhawla/thesis-desi-cmb-fli/data/N_L_kk_act_dr6_lensing_v1_baseline.txt
-  cmb_noise_scaling: 1.0
+  cmb_noise_scaling: 0.1
   full_los_correction: true
   high_z_mode: fixed
   likelihood_mode: diagonal
@@ -109,7 +109,9 @@ latents:
     loc_fid: 0.0
 mcmc:
   num_warmup: 8192
-  fixed_params:  # Omega_m and sigma8 inferred, fNL at its truth
+  fixed_params:
+  - Omega_m
+  - sigma8
   - fNL
   num_samples: 50
   num_batches: 140

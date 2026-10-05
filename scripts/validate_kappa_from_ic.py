@@ -12,7 +12,7 @@ Per ℓ bin it reports the coherence r = C_tm / sqrt(C_tt C_mm), the transfer sq
 power of the error t − m against N_ℓ and against C_ℓ^LOS. For a model that is exact on the matter it
 holds, t = m + u with u the unmodelled line of sight: C_err = C_LOS and r = sqrt(1 − C_LOS / C_tt).
 
-    python scripts/validate_kappa_from_ic.py --config configs/inference/abacus/abacus_joint_Nl1p0_chimin700.yaml \\
+    python scripts/validate_kappa_from_ic.py --config configs/inference/abacus/abacus_joint_Nl1p0.yaml \\
         --shell_kmax 0 0.0503
 
 Needs a compute node the first time (the nside-16384 κ map does not fit a login node); the map
@@ -228,7 +228,7 @@ def plot_spectra(results, lmax, config_name, cell_size, fig=None):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument(
-        "--config", default="configs/inference/abacus/abacus_joint_Nl1p0_chimin700.yaml"
+        "--config", default="configs/inference/abacus/abacus_joint_Nl1p0.yaml"
     )
     ap.add_argument(
         "--cell_size",

@@ -3,7 +3,7 @@
 
 # SLURM configuration for NERSC Perlmutter
 slurm:
-  job_name: fNL_joint_abacushuge_universality_cut03_ngbarsfixed_chimin700
+  job_name: fNL_joint_abacushuge_universality_cut03_ngbarsfixed
   account: desi
   qos: regular
   constraint: gpu

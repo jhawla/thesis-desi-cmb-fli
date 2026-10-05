@@ -131,7 +131,7 @@ def test_removed_config_keys_are_rejected_with_kappa_on():
     from desi_cmb_fli.model import get_model_from_config
 
     root = Path(__file__).resolve().parents[1]
-    cfg = yaml.safe_load(open(root / "configs/inference/scan/closure_d1p00_joint_chimin700.yaml"))
+    cfg = yaml.safe_load(open(root / "configs/inference/scan/closure_d1p00_joint.yaml"))
     for key in ("chi_min", "chi_low_z_min"):
         bad = {**cfg, "cmb_lensing": {**cfg["cmb_lensing"], key: 700.0}}
         with pytest.raises(ValueError, match="chi_matter_min"):

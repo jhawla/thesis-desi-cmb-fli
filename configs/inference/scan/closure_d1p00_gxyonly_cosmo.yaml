@@ -3,7 +3,7 @@
 
 # SLURM configuration for NERSC Perlmutter
 slurm:
-  job_name: fNL_closure_abacusgeom_scan_d1p00_joint_chimin700
+  job_name: cosmo_closure_abacusgeom_d1p00_gxyonly
   account: desi
   qos: regular
   constraint: gpu
@@ -35,7 +35,7 @@ model:
 
 # CMB lensing configuration
 cmb_lensing:
-  enabled: true # Set to false for galaxy-only runs
+  enabled: false # Set to false for galaxy-only runs
   z_source: 1089.28   # CMB redshift
   nside: 32          # HEALPix nside for curved-sky convergence map
   n_shells: 32      # number of radial Born integration shells
@@ -128,7 +128,7 @@ mcmc:
   num_warmup: 8192
 
   # Fix some scalar latents to their truth/fiducial value (only the rest are inferred).
-  fixed_params: [Omega_m, sigma8]
+  fixed_params: [fNL]  # Omega_m and sigma8 inferred, fNL at its truth
 
   # Sampling
   num_samples: 50
