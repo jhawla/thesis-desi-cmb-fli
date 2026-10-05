@@ -1725,9 +1725,27 @@ below (0.95 against 1.10: no low-z Limber term). The final-grid Nyquist sends re
 covariance (coherence 0.73 at the top, 1.25 at ℓ 48–51). The remaining +8–15 % at ℓ 44–64 is common
 to every cut at cell 93.75 and falls to +2–6 % at cell 46.875: resolution, from the shells beyond
 r_eff = 1272 Mpc/h that the cut leaves. The table's covariance term carries no window; with the
-bilinear window w_ℓ² that the code now applies to it (§3.2; the saved spectra of `cell93_kinit` and
-`cell47_kinit` with `bilinear_window(64, 64)²` on their `C^LOS`) the ratio in ℓ 44–47 / 48–51 / 52–55 /
-56–64 at 292.6 becomes 1.08 1.11 1.15 1.08 at cell 93.75 and 1.01 1.02 1.04 1.02 at cell 46.875.
+bilinear window w_ℓ² that the code now applies to it (§3.2; the saved spectra of `cell47_kinit` with
+`bilinear_window(64, 64)²` on their `C^LOS`) the ratio at cell 46.875 becomes 1.01 1.02 1.04 1.02 in
+ℓ 44–47 / 48–51 / 52–55 / 56–64.
+
+**IC test with the current code** (window on the covariance term, shells from 292.6;
+`validate_kappa_from_ic.py --config configs/inference/abacus/abacus_joint_Nl1p0.yaml --shell_kmax 0
+0.0503 --maps`, `$SCRATCH/outputs/kappa_from_ic/maps_cut/kappa_from_ic.npz`, figure
+`figures/spectra_diagnostic/kappa_from_abacus_ic_cell93p75_maps_cut.png`), cell 93.75, same bins as the
+table: with the cut 0.95 0.99 1.01 1.05 1.08 1.11 1.15 1.08, without 0.95 1.01 1.02 1.15 1.37 1.77
+1.83 2.25; coherence at ℓ 48–51 / 52–55 / 56–64 0.87 0.87 0.85 with the cut, against 0.89 0.89 0.89
+for a model exact but for its covariance term, and 0.69 0.71 0.60 without. The error power beyond
+the covariance term, (C^err − w_ℓ² C^LOS)/N_ℓ in ℓ 2–11 / 12–23 / 24–35 / 36–47 / 48–55 / 56–64:
+0.01 −0.02 −0.01 0.02 0.05 0.12 with the cut, 0.01 −0.02 0.05 0.36 1.02 1.77 without. In the eight
+polar-cap pixels at ℓ ≤ 64, model − Abacus is +0.015 (+3.1 × the rms elsewhere) without the cut and
+−0.002 (−0.8 ×) with it. The maps around the poles
+(`figures/maps/kappa_from_abacus_ic_poles_cell93p75_kmax{0,0.0503}.png`, ±25°, Abacus, model,
+model − Abacus): at full resolution the cut removes the pixel-scale speckle of the near shells and
+leaves the lines of the coordinate planes (the meridians of the x = 0 and y = 0 planes and the
+diagonals), which come from the far shells it does not cut; at ℓ ≤ 64 the model − Abacus residual
+becomes a faint cross along those meridians, and the star centred on the pole of the uncut model
+map is gone.
 
 **Closure spectra** (§7.8 set-up, `quick_cl_spectra.py --config configs/inference/archive/validation/closure_chimin700.yaml
 --n_realizations 20 --seed 77 --chi_min C --shell_kmax K`; figures
