@@ -766,7 +766,10 @@ for batch_idx in range(start_batch, num_batches):
         line = f"\n  📊 Overall (median): {median_mse:.2e}, Desired: {desired_energy_var:.2e}, Ratio: {median_ratio:.2f}"
         print(line)
         diag_lines.append(line)
-        if median_ratio > 2.0:
+        n_bad = int((~jnp.isfinite(mse_per_chain)).sum())
+        if n_bad or not bool(jnp.isfinite(median_ratio)):
+            line = f"     ⚠️  FAIL: energy variance not finite in {n_bad} of {len(mse_per_chain)} chains (diverged)"
+        elif median_ratio > 2.0:
             line = f"     ⚠️  WARN: Ratio = {median_ratio:.1f}x - step size too large, reduce desired_energy_var"
         elif median_ratio < 0.1:
             # Var[E] = O(step_size^6), so the step size is short by ratio^(-1/6).

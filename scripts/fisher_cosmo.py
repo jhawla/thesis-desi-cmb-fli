@@ -181,7 +181,8 @@ def main():
     noise_scaling = float(cmb.get("cmb_noise_scaling", 1.0))
     prior = fi.prior_fisher(cfg["latents"], params)
     bgs = fi.BackgroundCache(z_source=float(cmb.get("z_source", 1089.28)))
-    print(f"config {Path(args.config).name}: kmax {kmax:.4f} h/Mpc, kappa {kappa}, N_l x{noise_scaling}")
+    shown = {k: v for k, v in kappa.items() if k != "window"}
+    print(f"config {Path(args.config).name}: kmax {kmax:.4f} h/Mpc, kappa {shown}, N_l x{noise_scaling}")
     print(f"fiducial {fid}; free {params}; priors (config latents) on every parameter")
 
     if args.mismatch:

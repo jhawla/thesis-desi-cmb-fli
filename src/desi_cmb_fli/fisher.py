@@ -128,14 +128,24 @@ def shell_cut_taper(ell, chi, k_cut, lmax):
     return np.where(ell_res >= lmax, 1.0, t)
 
 
+def kappa_window(kappa, ells):
+    """Angular window of the kappa observable at ``ells``: kappa["window"] (per ell from 0, the
+    bilinear window of the projection sphere) if given, 1 otherwise."""
+    if kappa.get("window") is None:
+        return np.ones(np.shape(ells))
+    return np.asarray(kappa["window"])[np.asarray(ells).astype(int)]
+
+
 def kappa_spectra(bg, ells, kappa, n=800):
     """Limber C_l^kk of the model's shells (kappa["chi_min"] to kappa["chi_box"], times the squared
     per-shell taper) and of the line of sight the likelihood puts in its covariance (beyond the box to
-    kappa["chi_high_z_max"], plus the power the cut removes, as independent noise like the model)."""
+    kappa["chi_high_z_max"], plus the power the cut removes, as independent noise like the model),
+    both times the squared window (``kappa_window``), as the model map and the covariance term."""
     lo, hi, k_cut = kappa["chi_min"], kappa["chi_box"], kappa.get("k_cut")
+    w2 = kappa_window(kappa, ells) ** 2
     los = bg.c_kappa(ells, hi, kappa["chi_high_z_max"])
     if not k_cut:
-        return bg.c_kappa(ells, lo, hi), los
+        return bg.c_kappa(ells, lo, hi) * w2, los * w2
     chi = np.linspace(max(lo, 1.0), hi, n)
     base = bg.w_kappa(chi) ** 2 / chi**2
     z = bg.z_of_chi(chi)
@@ -144,7 +154,7 @@ def kappa_spectra(bg, ells, kappa, n=800):
         t = shell_cut_taper(ell, chi, k_cut, kappa["lmax"])
         p = base * bg.plin((ell + 0.5) / chi, z)
         kept[i], removed[i] = np.trapezoid(p * t**2, chi), np.trapezoid(p * (1 - t) ** 2, chi)
-    return kept, los + removed
+    return kept * w2, (los + removed) * w2
 
 
 def nbar_of_chi(bg, chi, survey, density_scale=1.0):
@@ -263,7 +273,7 @@ def kappa_fisher_increment(
                 C[i, j] = ig(W[i], W[j], B**2)
                 for p in PARAMS:
                     dC[p][i, j] = ig(W[i], W[j], 2 * B * dB[p])
-            wkt = wk * shell_cut_taper(ell, chi, kappa.get("k_cut"), kappa["lmax"])
+            wkt = wk * shell_cut_taper(ell, chi, kappa.get("k_cut"), kappa["lmax"]) * kappa_window(kappa, ell)
             C[i, ns] = C[ns, i] = ig(W[i], wkt, B)
             for p in PARAMS:
                 dC[p][i, ns] = dC[p][ns, i] = ig(W[i], wkt, dB[p])
@@ -289,8 +299,11 @@ def kappa_fisher_increment(
 
 def kappa_geometry(cfg):
     """Kappa geometry of a run config: "chi_min" where the shells start (``chi_matter_min``), box
-    edge, high-z end, band, and the per-shell cut "k_cut" (``shell_kmax``, default the init-grid
-    Nyquist pi oversamp / cell when the line-of-sight correction is on)."""
+    edge, high-z end, band, the per-shell cut "k_cut" (``shell_kmax``, default the init-grid
+    Nyquist pi oversamp / cell when the line-of-sight correction is on) and the "window" of the
+    observable, the bilinear window of the projection sphere (nside x proj_oversamp)."""
+    from desi_cmb_fli.cmb_lensing import bilinear_window
+
     cmb = cfg.get("cmb_lensing", {}) or {}
     model = cfg["model"]
     box = np.asarray(model["box_shape"], dtype=float)
@@ -303,6 +316,8 @@ def kappa_geometry(cfg):
         "chi_high_z_max": float(cmb.get("chi_high_z_max", 3942.0)),
         "lmax": 2 * int(cmb.get("nside", 32)),
         "k_cut": float(k_cut or 0.0),
+        "window": bilinear_window(int(cmb.get("nside", 32)) * int(cmb.get("proj_oversamp", 1)),
+                                  2 * int(cmb.get("nside", 32))),
     }
 
 
@@ -499,7 +514,7 @@ def angular_fisher_cosmo(
             kern = _galaxy_bias(bg, theta, k, z) * W  # (n_shells, n_chi)
             pm = bg.plin(k, z) / chi**2
             out[n, :n_shells, :n_shells] = np.trapezoid(kern[:, None] * kern[None] * pm, chi, axis=2)
-            wkt = wk * shell_cut_taper(ell, chi, kappa.get("k_cut"), kappa["lmax"])
+            wkt = wk * shell_cut_taper(ell, chi, kappa.get("k_cut"), kappa["lmax"]) * kappa_window(kappa, ell)
             out[n, :n_shells, n_shells] = out[n, n_shells, :n_shells] = np.trapezoid(
                 kern * wkt * pm, chi, axis=1
             )

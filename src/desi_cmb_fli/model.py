@@ -832,9 +832,9 @@ class FieldLevelModel(Model):
 
             from desi_cmb_fli.cmb_lensing import (
                 _box_ray_intervals,
-                compute_cl_shell_cut,
+                bilinear_window,
+                compute_cl_high_z,
                 compute_sigma_hp,
-                compute_theoretical_cl_kappa,
                 load_healpix_mask,
                 shell_ell_taper,
             )
@@ -1054,8 +1054,14 @@ class FieldLevelModel(Model):
             self.cl_high_z_cached = None
             self.high_z_gradients = None
             self.cmb_shell_cut = None
+            self.cmb_los_window2 = None
 
             if self.full_los_correction:
+                # The matter outside the model reaches the data through the projection sphere's
+                # bilinear window, as the model's own map does (docs/pipeline.md 3.2).
+                self.cmb_los_window2 = jnp.asarray(
+                    bilinear_window(int(self.cmb_proj_nside), int(self.cmb_lmax)) ** 2
+                )
                 chi_source_fid = float(
                     jc.background.radial_comoving_distance(cosmo_fid, 1.0 / (1.0 + self.cmb_z_source))[0]
                 )
@@ -1073,12 +1079,10 @@ class FieldLevelModel(Model):
                     }
 
                 def _cl_los(c_, chi_up_):
-                    cl = compute_theoretical_cl_kappa(
-                        c_, self.ell_1d, self.chi_boundary, chi_up_, self.cmb_z_source
+                    return compute_cl_high_z(
+                        c_, self.ell_1d, self.chi_boundary, chi_up_, self.cmb_z_source,
+                        mode="exact", shell_cut=self.cmb_shell_cut, window2=self.cmb_los_window2,
                     )
-                    if self.cmb_shell_cut is not None:
-                        cl = cl + compute_cl_shell_cut(c_, self.ell_1d, **self.cmb_shell_cut)
-                    return cl
 
                 if self.high_z_mode in ["fixed", "taylor"]:
                     self.cl_high_z_cached = _cl_los(cosmo_fid, chi_high_z_upper)
@@ -1632,6 +1636,7 @@ class FieldLevelModel(Model):
                             gradients=self.high_z_gradients,
                             loc_fid=self.loc_fid,
                             shell_cut=self.cmb_shell_cut,
+                            window2=self.cmb_los_window2,
                         )
 
                     total_cl_1d = jnp.asarray(self.nell_1d)

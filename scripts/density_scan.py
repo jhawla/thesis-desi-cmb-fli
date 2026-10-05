@@ -82,8 +82,9 @@ def noise_table(args, cfg):
     half = chains["b1"].shape[1] // 2
     b1, bn2 = chains["b1"][:, half:].mean(), chains["bn2"][:, half:].mean()
     s_g = fi.sigma(F_g)
+    shown = {k: v for k, v in kappa.items() if k != "window"}
     print(
-        f"kappa geometry {kappa}; galaxy-only {args.noise_table}: sigma(fNL) {s_g:.3f}, "
+        f"kappa geometry {shown}; galaxy-only {args.noise_table}: sigma(fNL) {s_g:.3f}, "
         f"b1 {b1:.4f}, bn2 {bn2:.2f}, density scale {args.density}"
     )
     print(f"{'N_l scaling':>12} {'sigma_kappa':>12} {'Fisher sigma_joint':>19} {'Fisher gain':>12}")
@@ -128,8 +129,9 @@ def main():
     kappa = fi.kappa_geometry(cfg)
     kmax = np.pi / float(cfg["model"]["cell_size"])
     survey = fi.HUGE_LRG
+    shown = {k: v for k, v in kappa.items() if k != "window"}
     print(
-        f"Fisher: {reg['fisher_config']}, kappa {kappa}, kmax {kmax:.4f}, "
+        f"Fisher: {reg['fisher_config']}, kappa {shown}, kmax {kmax:.4f}, "
         f"fiducial b1 {b1_fid}, bn2 {bn2_fid}"
     )
 

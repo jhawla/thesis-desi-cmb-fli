@@ -97,7 +97,7 @@ def test_the_covariance_term_is_the_limber_power_the_cut_removes():
     extra = np.asarray(model.cl_high_z_cached) - np.asarray(ref.cl_high_z_cached)
     cosmo = get_cosmology(**model.loc_fid)
     term = np.asarray(compute_cl_shell_cut(cosmo, model.ell_1d, **model.cmb_shell_cut))
-    np.testing.assert_allclose(extra, term, rtol=1e-8, atol=1e-30)
+    np.testing.assert_allclose(extra, term * np.asarray(model.cmb_los_window2), rtol=1e-8, atol=1e-30)
     assert np.all(term[2:] >= 0) and term[-1] > 0
     # every shell removed whole: the Limber C_l of the matter the shells hold, up to the Riemann
     # sum over the shells' lensing weights
@@ -118,7 +118,7 @@ def test_every_high_z_mode_carries_the_cut_term_alike():
     cl = {mode: np.asarray(compute_cl_high_z(
         cosmo, m.ell_1d, m.chi_boundary, m.chi_high_z_max, m.cmb_z_source, mode=mode,
         cl_cached=m.cl_high_z_cached, gradients=m.high_z_gradients, loc_fid=m.loc_fid,
-        shell_cut=m.cmb_shell_cut))[2:] for mode, m in models.items()}
+        shell_cut=m.cmb_shell_cut, window2=m.cmb_los_window2))[2:] for mode, m in models.items()}
     np.testing.assert_allclose(cl["exact"], cl["fixed"], rtol=1e-8)
     np.testing.assert_allclose(cl["taylor"], cl["fixed"], rtol=1e-8)
     ref = FieldLevelModel(**_cfg(high_z_mode="taylor", cmb_shell_kmax=0.0))

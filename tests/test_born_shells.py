@@ -63,7 +63,8 @@ def test_without_the_cut_the_los_covariance_is_the_matter_beyond_the_box_alone()
         m = FieldLevelModel(**_cfg(cmb_chi_matter_min=start, cmb_shell_kmax=0.0))
         beyond = np.asarray(compute_theoretical_cl_kappa(get_cosmology(**m.loc_fid), m.ell_1d,
                                                          m.chi_boundary, 300.0, m.cmb_z_source))
-        np.testing.assert_allclose(np.asarray(m.cl_high_z_cached), beyond, rtol=1e-10)
+        np.testing.assert_allclose(np.asarray(m.cl_high_z_cached),
+                                   beyond * np.asarray(m.cmb_los_window2), rtol=1e-10)
 
 
 def test_the_kappa_radial_window_is_one_inside_and_ramps_at_the_ends():
@@ -104,7 +105,7 @@ def test_every_high_z_mode_carries_the_los_term_alike():
     def los(m, cosmo, linear=False):
         lin = {"linear_pk": True} if linear else {}
         return np.asarray(compute_theoretical_cl_kappa(cosmo, m.ell_1d, m.chi_boundary, 300.0,
-                                                       m.cmb_z_source, **lin))
+                                                       m.cmb_z_source, **lin)) * np.asarray(m.cmb_los_window2)
 
     models = {mode: FieldLevelModel(**_cfg(cmb_shell_kmax=0.0, high_z_mode=mode))
               for mode in ("fixed", "taylor", "exact", "exact_linear")}
@@ -114,13 +115,29 @@ def test_every_high_z_mode_carries_the_los_term_alike():
         cl = {mode: np.asarray(compute_cl_high_z(
             cosmo, m.ell_1d, m.chi_boundary, m.chi_high_z_max, m.cmb_z_source, mode=mode,
             cl_cached=m.cl_high_z_cached, gradients=m.high_z_gradients, loc_fid=m.loc_fid,
-            shell_cut=m.cmb_shell_cut))[2:] for mode, m in models.items()}
+            shell_cut=m.cmb_shell_cut, window2=m.cmb_los_window2))[2:] for mode, m in models.items()}
         np.testing.assert_allclose(cl["exact"], los(models["exact"], cosmo)[2:], rtol=1e-10)
         np.testing.assert_allclose(cl["exact_linear"],
                                    los(models["exact"], cosmo, linear=True)[2:], rtol=1e-10)
         np.testing.assert_allclose(cl["taylor"], cl["exact"], rtol=2e-3)
         np.testing.assert_allclose(cl["fixed"], los(models["fixed"], get_cosmology(**fid))[2:],
                                    rtol=1e-10)
+
+
+def test_the_los_covariance_carries_the_squared_bilinear_window_of_the_projection_sphere():
+    """The data map's matter outside the model reaches the observable through the projector's
+    bilinear window at proj_nside, as the model map does; finer projection, window closer to 1."""
+    from desi_cmb_fli.cmb_lensing import bilinear_window
+
+    for ov in (1, 2):
+        m = FieldLevelModel(**_cfg(cmb_proj_oversamp=ov))
+        w2 = bilinear_window(int(m.cmb_proj_nside), int(m.cmb_lmax)) ** 2
+        np.testing.assert_allclose(np.asarray(m.cmb_los_window2), w2, rtol=1e-12)
+    coarse = FieldLevelModel(**_cfg(cmb_proj_oversamp=1)).cmb_los_window2
+    fine = FieldLevelModel(**_cfg(cmb_proj_oversamp=2)).cmb_los_window2
+    lmax = coarse.size - 1
+    assert 0 < coarse[lmax] < fine[lmax] < 1
+    assert FieldLevelModel(**_cfg(full_los_correction=False)).cmb_los_window2 is None
 
 
 def test_removed_config_keys_are_rejected_with_kappa_on():

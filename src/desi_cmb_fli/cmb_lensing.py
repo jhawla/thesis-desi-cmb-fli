@@ -880,11 +880,14 @@ def compute_cl_high_z(
     loc_fid=None,
     n_steps=100,
     shell_cut=None,
+    window2=None,
 ):
     """Line-of-sight C_ell^{kappa kappa} correction: the matter beyond the box, ``[chi_min,
     chi_max]``, plus, if ``shell_cut`` (the keyword arguments of ``compute_cl_shell_cut`` but
-    ``cosmo`` and ``ell``), the power the per-shell multipole cut removes. Every mode treats both
-    terms alike (``cl_cached`` and ``gradients`` hold their sum).
+    ``cosmo`` and ``ell``), the power the per-shell multipole cut removes, times ``window2`` if
+    given (the squared angular window with which that matter reaches the observable, the
+    projection sphere's ``bilinear_window``). Every mode treats both terms alike (``cl_cached``
+    and ``gradients`` hold their windowed sum).
 
     Modes:
       'fixed'  : returns cached C_ell at fiducial cosmology.
@@ -916,6 +919,8 @@ def compute_cl_high_z(
         )
         if shell_cut is not None:
             cl = cl + compute_cl_shell_cut(cosmo, ell_1d, **shell_cut, linear_pk=linear_pk)
+        if window2 is not None:
+            cl = cl * window2
         return cl
 
     else:

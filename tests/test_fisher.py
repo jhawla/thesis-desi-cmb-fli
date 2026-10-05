@@ -245,6 +245,17 @@ def test_the_per_shell_cut_moves_kappa_power_from_signal_to_noise():
     assert np.all(fi.shell_cut_taper(10.0, np.array([100.0, 2000.0]), 0.01, 16) == [0.0, 1.0])
 
 
+def test_the_window_multiplies_both_kappa_terms_by_its_square():
+    """The model map and the covariance term carry the projection sphere's window alike."""
+    bg, ells = ToyBackground(), np.arange(2, 17)
+    w = np.linspace(1.0, 0.8, 17)
+    for k_cut in (0.0, 0.01):
+        bare = fi.kappa_spectra(bg, ells, {**KAPPA, "k_cut": k_cut})
+        windowed = fi.kappa_spectra(bg, ells, {**KAPPA, "k_cut": k_cut, "window": w})
+        for b, x in zip(bare, windowed, strict=True):
+            np.testing.assert_allclose(x, b * w[ells] ** 2, rtol=1e-12)
+
+
 def test_galaxies_alone_leave_b1_and_sigma8_degenerate_and_kappa_breaks_it():
     """C_gg ~ (1+b1)^2 sigma8^2 is one combination; C_kg ~ (1+b1) sigma8^2 is another."""
     fid = {**FID, "bn2": 0.0}

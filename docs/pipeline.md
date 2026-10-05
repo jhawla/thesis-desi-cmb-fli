@@ -316,9 +316,9 @@ to its kept part, and the likelihood treats it as independent noise: an approxim
 of each cut shell's ℓ_res. The cut removes the near-shell discreteness and the near-observer
 stiffness, so that where the shells start no longer matters, at the price of a costlier κ gradient
 (§7.12). It leaves the far shells' in-band discreteness at the top of the band, which shrinks with
-the cell and which the paper states (§7.12); part of that residual is the bilinear window w_ℓ² of
-the projection sphere, which the data and model maps carry and the covariance terms do not. On a
-cut sky the filter acts on the zero-filled shell maps.
+the cell and which the paper states (§7.12). The covariance term carries the bilinear window of
+the projection sphere, like the data and model maps (§3.2). On a cut sky the filter acts on the
+zero-filled shell maps.
 
 **Abandoned: an inner cut-off `chi_min`.** Before the per-shell cut, the shells started at a
 `chi_min` beyond where the map's matter starts (350, then 700 Mpc/h), and the Limber C_ℓ of the
@@ -503,7 +503,8 @@ contribution treated as structured Gaussian variance). Two modes (`cmb_lensing.l
 - **`pixel_exact`**: the **exact cut-sky** field-level likelihood via signal-eigenmode (KL)
   compression. The band-limited noise field's pixel covariance depends only on angular separation,
   $$\mathrm{Cov\_pix}[i,j] = \sum_\ell \tfrac{2\ell+1}{4\pi}\,(N_\ell+C_\ell^{high-z})\,P_\ell(\cos\theta_{ij})$$
-  (**bare spectrum, no pixel window** — this makes `diagonal` and `pixel_exact` coincide at
+  (**the spectrum of `diagonal`, no HEALPix pixel window**; `C_ℓ^{high-z}` carries the bilinear
+  window of the projection sphere, below — this makes `diagonal` and `pixel_exact` coincide at
   $f_{sky}=1$). Because the field is band-limited to $\ell_{max}=2\,$nside, a footprint of area
   $f_{sky}$ supports only $\sim f_{sky}(\ell_{max}+1)^2$ modes (Slepian) while HEALPix gives $\sim3\times$
   more pixels, so `Cov_pix` is **rank-deficient**. We diagonalise it **once** (constant: fixed
@@ -523,10 +524,21 @@ variance. With the per-shell multipole cut (§2.6) the power the cut removes fro
 to the same term, so `C_ℓ^{high-z}` in the formulas above is really the covariance of everything the
 data map holds and the model does not, and every mode below treats both parts alike (one cache, one
 pair of `taylor` gradients, one recomputation in the `exact` modes;
-`test_every_high_z_mode_carries_the_cut_term_alike`). The
-term carries no angular window (`model.cl_high_z_cached`), while on Abacus the line-of-sight matter
-reaches the data through the projector's bilinear window (§4): the assumed covariance of that part
-is `1/w_ℓ²` too large, 1.14 × at ℓ = 50 and 1.24 × at ℓ = 64 at `proj_nside` 64 — conservative. Modes:
+`test_every_high_z_mode_carries_the_cut_term_alike`).
+
+**The window of the term.** The term is multiplied by `w_ℓ²`, the squared bilinear window of the
+projection sphere (`bilinear_window` at `proj_nside`, `model.cmb_los_window2`; 0.88 at ℓ = 50 and
+0.81 at ℓ = 64 at `proj_nside` 64), in every mode: the `exact` computation carries it, and the
+`fixed` cache and the `taylor` gradients are built from that computation. The data map reaches the
+observable through that kernel, the line-of-sight matter and the power the cut removes included —
+on Abacus through the loader's `bilinear_resample_healpix` (§4), on a real map by the same
+resampling — while the model map gets it from the Born scatter. The residual data − model is
+therefore `w_ℓ (κ_LOS + Σ_s (1 − w_s(ℓ)) κ_s) + noise`, of variance `w_ℓ² C_ℓ^{high-z} + N_ℓ`; the
+noise is added after the resampling and carries no window. In closure the data are drawn from the
+likelihood itself, so they follow whatever the term holds. Without the window the assumed variance
+of that part would be `1/w_ℓ²` too large, 1.14 × at ℓ = 50 and 1.24 × at ℓ = 64: small while the
+term held only the matter beyond the box (2–6 % of the Abacus power over the band), not once it
+holds what the cut removes (17–25 % of it at ℓ ≥ 48, §7.12). Modes:
 - `fixed` — cached at the fiducial cosmology (required by `pixel_exact`, exact if `Ω_m,σ8` fixed).
 - `taylor` (default) — first-order expansion `C_ℓ(θ) ≈ C_ℓ(θ_fid) + ∇C_ℓ·Δθ`, gradients precomputed.
 - `exact_linear` — recompute the Limber integral each step with the **linear** P(k) (slow).
@@ -1622,25 +1634,30 @@ depend on `chi_min`). The field-level gains at density 0.03, 17 % ± 3 % at 350 
 (§7.4), are within their errors of each other.
 
 **`Omega_m` and `sigma8`** (`python scripts/fisher_cosmo.py --densities 1.0 0.1 0.03`, §6: closure
-config at the Abacus geometry, `archive/scan/closure_d1p00_joint_chimin700.yaml`, its truth biases and
-priors, `f_NL` fixed, κ at `chi_min` 700, ACT DR6 ×1; `$SCRATCH/outputs/fisher_cosmo/fisher_cosmo.json`).
-Marginal σ of `Omega_m` / `sigma8`: galaxies 0.0183 / 0.0503, κ alone 0.0424 / 0.0279, joint
-0.0123 / 0.0166 at density 1, a κ gain of 33 % and 67 %; 35 % and 73 % at 0.1, 38 % and 78 % at 0.03;
-with the line of sight as signal the `sigma8` gain is 70 % at density 1. The two probes' degeneracy
-directions in the (`Omega_m`, `sigma8`) plane cross (`figures/fisher_diagnostic/fisher_cosmo_contours.png`).
+config at the Abacus geometry, `scan/closure_d1p00_joint.yaml`, its truth biases and priors, `f_NL`
+fixed, the current κ model — shells from 292.6, per-shell cut at π/62.5, bilinear window of the
+projection sphere on the κ signal and the covariance term —, ACT DR6 ×1;
+`$SCRATCH/outputs/fisher_cosmo/fisher_cosmo.json`). Marginal σ of `Omega_m` / `sigma8`: galaxies
+0.0183 / 0.0503, κ alone 0.0608 / 0.0461, joint 0.0131 / 0.0188 at density 1, a κ gain of 29 % and
+63 %; 31 % and 68 % at 0.1, 31 % and 72 % at 0.03; with the line of sight as signal, κ alone 0.0444 /
+0.0273 and the gains 30 % and 68 % at density 1. The two probes' degeneracy directions in the
+(`Omega_m`, `sigma8`) plane cross (`figures/fisher_diagnostic/fisher_cosmo_contours.png`). With the
+abandoned `chi_min` 700 and no window (`archive/scan/closure_d1p00_joint_chimin700.yaml`,
+`fisher_cosmo_chimin700.json`): κ alone 0.0424 / 0.0279, joint 0.0123 / 0.0166, gains 33 % and 67 %
+at density 1, 35 % and 73 % at 0.1, 38 % and 78 % at 0.03.
 
 **Resolution** (`fisher_cosmo.py --resolution_scan`, density 1, line of sight as noise; the box
-enters as κ's box edge, box/2, the cell as k_max = π/cell; cost ∝ mesh³;
-`$SCRATCH/outputs/fisher_cosmo/fisher_cosmo_resolution.json`): σ(`Omega_m`) / σ(`sigma8`) joint and
-κ gain on them — 7500 / cell 93.75 / `chi_min` 700 (the inference setting, cost 1): 0.0122 / 0.0165,
-33 % / 67 %; 7500 / 62.5 / 500 (3.4): 0.0070 / 0.0126, 7 % / 41 %; 7500 / 46.875 / 292.6 (8):
-0.0040 / 0.0094, 3 % / 25 %; 5000 / 62.5 / 500 (1): 0.0069 / 0.0144, 8 % / 33 %; 5000 / 41.67 /
-292.6 (3.4): 0.0035 / 0.0090, 2 % / 14 %; 5000 / 31.25 / 292.6 (8): 0.0030 / 0.0060, 1 % / 6 %. A
-finer cell gives the galaxies alone far more (σ(`sigma8`) 0.050 → 0.013 at cell 46.875) and leaves κ
-a smaller share: κ matters where the galaxies stop at large scales. The galaxy Fisher is linear, with
-`b1` and `b∇²` only (no `b2`, `b_{s²}`, `b∇∥`, no non-linearity), so it flatters the galaxies more the
-higher k_max goes; `chi_min` 500 is the lattice rule 2π χ_min/d ≳ 80, not validated (700 at 93.75
-and 292.6 at 46.875 are, §7.6); a 5000 box does not match the published IC grid (the test of §7.6).
+enters as κ's box edge, box/2, the cell as the galaxies' k_max = π/cell and as the per-shell cut at the
+init-grid Nyquist; cost ∝ mesh³; `$SCRATCH/outputs/fisher_cosmo/fisher_cosmo_resolution.json`):
+σ(`Omega_m`) / σ(`sigma8`) joint and κ gain on them — 7500 / cell 93.75 (the inference setting, cost
+1): 0.0131 / 0.0188, 29 % / 63 %; 7500 / 62.5 (3.4): 0.0071 / 0.0132, 6 % / 38 %; 7500 / 46.875 (8):
+0.0040 / 0.0097, 2 % / 23 %; 5000 / 62.5 (1): 0.0070 / 0.0147, 7 % / 31 %; 5000 / 41.67 (3.4):
+0.0035 / 0.0091, 2 % / 13 %; 5000 / 31.25 (8): 0.0030 / 0.0061, 1 % / 6 %. A finer cell gives the
+galaxies alone far more (σ(`sigma8`) 0.050 → 0.013 at cell 46.875) and leaves κ a smaller share: κ
+matters where the galaxies stop at large scales. The galaxy Fisher is linear, with `b1` and `b∇²` only
+(no `b2`, `b_{s²}`, `b∇∥`, no non-linearity), so it flatters the galaxies more the higher k_max goes; a
+5000 box does not match the published IC grid (the test of §7.6). The same scan with `chi_min` (700 at
+cell 93.75, 500 at 62.5, 292.6 below) and no window: `fisher_cosmo_resolution_chimin700.json`.
 
 **Shift from a κ power mismatch** (`python scripts/fisher_cosmo.py --mismatch
 $SCRATCH/outputs/kappa_from_ic/poles_fixed/kappa_from_ic.npz`, closure config at the Abacus geometry,
@@ -1707,8 +1724,10 @@ those terms over the band) and makes `chi_min` 292.6 and 700 identical above ℓ
 below (0.95 against 1.10: no low-z Limber term). The final-grid Nyquist sends resolved structure to the
 covariance (coherence 0.73 at the top, 1.25 at ℓ 48–51). The remaining +8–15 % at ℓ 44–64 is common
 to every cut at cell 93.75 and falls to +2–6 % at cell 46.875: resolution, from the shells beyond
-r_eff = 1272 Mpc/h that the cut leaves; about 3 points of it are the bilinear window w_ℓ² (0.83–0.90
-there) that the data and model maps carry and the covariance terms do not.
+r_eff = 1272 Mpc/h that the cut leaves. The table's covariance term carries no window; with the
+bilinear window w_ℓ² that the code now applies to it (§3.2; the saved spectra of `cell93_kinit` and
+`cell47_kinit` with `bilinear_window(64, 64)²` on their `C^LOS`) the ratio in ℓ 44–47 / 48–51 / 52–55 /
+56–64 at 292.6 becomes 1.08 1.11 1.15 1.08 at cell 93.75 and 1.01 1.02 1.04 1.02 at cell 46.875.
 
 **Closure spectra** (§7.8 set-up, `quick_cl_spectra.py --config configs/inference/archive/validation/closure_chimin700.yaml
 --n_realizations 20 --seed 77 --chi_min C --shell_kmax K`; figures
@@ -1734,7 +1753,8 @@ as a two-column file): κ alone Δ`Omega_m` −0.074 (−1.25σ), Δ`sigma8` −
 (+0.05σ) and −0.020 (−1.06σ). With the ratio set to 1 above ℓ = 47: κ alone −0.08σ and −0.25σ, joint
 +0.05σ and −0.25σ; with it set to 1 below ℓ = 48: κ alone −1.17σ and −1.60σ, joint 0.00σ and −0.81σ.
 The shift comes from the top of the band, the far-shell residual. One realisation, as in §7.10: bias
-plus line-of-sight scatter.
+plus line-of-sight scatter. The ratio used holds the unwindowed covariance term, 2–4 points too high
+at ℓ ≥ 44 (above).
 
 ## 8. Remaining steps before the paper
 
@@ -1759,20 +1779,15 @@ model now starts its shells where the map's matter starts and applies the per-sh
    `Omega_m`–`sigma8` triplet (step 3).
 
 2. **Code before the κ runs.**
-   (a) **The window of the covariance terms.** The data and model maps carry the bilinear window of
-   the projection sphere, the line-of-sight term and the cut term do not (§2.6, §3.2): on Abacus the
-   assumed variance of that part is 1/w_ℓ² too large at the top of the band. On a real map the data
-   carry no bilinear window. Decide whether the terms take w_ℓ² when the data map comes through the
-   projector (Abacus), or state it.
-   (b) **The Fisher of §7.10 at the current κ model** (`fisher_cosmo.py`: shells from
-   `chi_matter_min`, the cut at the init-grid Nyquist): the κ gains the runs of step 3 are compared
-   with.
-   (c) **`cmb_lensing.ell_max`** below 2·nside (a_ℓm above it dropped from the observable), for a
+   (a) **The Fisher of §7.10 at the current κ model** (`fisher_cosmo.py`: shells from
+   `chi_matter_min`, the cut at the init-grid Nyquist, the bilinear window on the κ signal and the
+   covariance term as in the likelihood): the κ gains the runs of step 3 are compared with.
+   (b) **`cmb_lensing.ell_max`** below 2·nside (a_ℓm above it dropped from the observable), for a
    κ-only `Omega_m`–`sigma8` robustness run on Abacus at ℓ ≤ 47: the remaining top-of-band excess
    shifts `sigma8` by −1.6σ in κ alone and −0.8σ joint at first order, the band below by −0.25σ
    (§7.12). First the expected scatter of that shift from the line-of-sight realisation, and the
-   shift again after (a).
-   (d) **Two-point comparison material** (paper §6, `sec:res_twopt`; an independent analysis by
+   shift again with the windowed covariance term (§3.2).
+   (c) **Two-point comparison material** (paper §6, `sec:res_twopt`; an independent analysis by
    C. Payerne, C_ℓ^κκ and an MCMC with a CCL theory, on exactly the map our field level analyses).
    A script to write, `scripts/export_kappa_map.py`, exports from the `truth.npz` of the κ-only
    closure `Omega_m`–`sigma8` run of step 3: the observed map (`unpack_to_map`, nside 32, ℓ ≤ 64, full
@@ -1780,9 +1795,9 @@ model now starts its shells where the map's matter starts and applies the per-sh
    radial window of the shells (`kappa_radial_window`), the per-shell taper (`cmb_shell_taper` with
    the shell radii), the source redshift, the band and a note of the conventions. In closure,
    `kappa_obs` is the packed a_ℓm of the cut Born κ from `chi_matter_min` to the box edge plus a
-   Gaussian draw of variance N_ℓ + C_ℓ^LOS (the matter from the box edge to `chi_high_z_max` and the
+   Gaussian draw of variance N_ℓ + w_ℓ² C_ℓ^LOS (the matter from the box edge to `chi_high_z_max` and the
    power the cut removes). The two-point signal theory is therefore a Limber with the shells' radial
-   window and an ℓ-dependent radial cut, times w_ℓ², and its noise N_ℓ + C_ℓ^LOS as exported. The
+   window and an ℓ-dependent radial cut, times w_ℓ², and its noise N_ℓ + w_ℓ² C_ℓ^LOS as exported. The
    protocol: the line of sight as noise (`high_z_mode: fixed`), ACT DR6 ×1, the same priors on
    `Omega_m` and `sigma8`, the same linear spectrum, not blind on the truth (the fiducial), every
    choice fixed before either analysis is run, the two-point contour produced before ours is shown.
@@ -1791,7 +1806,7 @@ model now starts its shells where the map's matter starts and applies the per-sh
 
 3. **Runs with κ.**
    (a) The closure `Omega_m`–`sigma8` triplet, `scan/closure_d1p00_{kappaonly,joint}_cosmo.yaml`
-   with the galaxy-only member of step 1c: the Fisher κ gain (step 2b) without model error. The
+   with the galaxy-only member of step 1c: the Fisher κ gain (step 2a) without model error. The
    κ-only one is the run of the two-point comparison.
    (b) `Omega_m`–`sigma8` on Abacus: `abacus/abacus_kappaonly_Nl1p0_cosmo.yaml`,
    `abacus/abacus_joint_Nl1p0_cosmo.yaml`, paired with step 1a.
@@ -1801,9 +1816,9 @@ model now starts its shells where the map's matter starts and applies the per-sh
    `abacus/abacus_kappaonly_Nl0p1_fnlfixed.yaml` (§7.4 with the current κ model); the first
    is the convergence proof of the cut in sampling.
    (e) The closure joints `scan/closure_d{1p00,0p10,0p20}_joint.yaml`.
-   (f) The κ-only `Omega_m`–`sigma8` robustness run on Abacus at ℓ ≤ 47 (step 2c).
+   (f) The κ-only `Omega_m`–`sigma8` robustness run on Abacus at ℓ ≤ 47 (step 2b).
 
-4. **Analyses.** Paired gains against the Fisher of step 2b (`Omega_m`, `sigma8`) and the tables of §7
+4. **Analyses.** Paired gains against the Fisher of step 2a (`Omega_m`, `sigma8`) and the tables of §7
    (`f_NL`); the two-point comparison; the share of the κ gain taken from the `f_NL`–`b1`/`b∇²`
    degeneracy at densities 0.1 and 0.2 (§7.3); the density-scan figure (`density_scan.py`, filling
    `scan/density_scan_runs.yaml`); the field and κ reconstructions of the new runs; the stiffness at
