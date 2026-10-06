@@ -1966,8 +1966,15 @@ the two. Not measured: A between 0.9 and 1.05 at 2.5, and `evol_oversamp` 2.0.
 Scripts (not in the repository yet): `~/claude_scratch/bias_evol/ic_regression.py`,
 `lik_profile.py`, `lik_amplitude.py`, `lik_amplitude_variants.py` (compute node, CPU),
 `plot_bias_evolution.py`; figure and data `figures/galaxy_bias_evolution/bias_evolution_true_ic.{png,json}`.
-Running: the Abacus galaxy `Omega_m`–`sigma8` run with α free (prior N(1, 1)) and the evolution grid at
-2.5 (§8 step 1a).
+**Both, on Abacus.** α free (prior N(1, 1)) and the evolution grid at 2.5, otherwise
+`abacus/abacus_gxyonly_cosmo.yaml` (`run_20261006_070354_59428033`, energy-variance target 10⁻⁸, step
+size 123 against 87 at 1.75; 69 batches, the salloc ended there; second half, split R̂ ≤ 1.037):
+`Omega_m` 0.3095 ± 0.0121 (−0.47σ), `sigma8` 0.802 ± 0.053 (−0.19σ), Mahalanobis distance of the truth
+0.49; α 1.044 ± 0.043 (ESS 557), `b1` 1.13 ± 0.12, `b2` 0.66, `b_{s²}` −0.43, `b∇²` 5 ± 31, `bnpar`
+−45 ± 36. The field reconstruction (`analysis_burn0_allchains/initial_conditions.png`): correlation with
+the truth ≈ 0.97 in the shell, rms ratio flat in radius (1.0–1.05, against 0.85 → 1.03 with the
+z-independent bias), transfer √(P_rec/P_true) over the box 1.05–1.08 without tilt (against 1.18 → 0.85
+in the biased run).
 
 ## 8. Remaining steps before the paper
 
@@ -1999,7 +2006,7 @@ model now starts its shells where the map's matter starts and applies the per-sh
    (`~/claude_scratch/bias_evol/abacus_gxyonly_cosmo_b1alphafree_evol2p5.yaml`, the same model as
    `abacus/abacus_gxyonly_cosmo.yaml` now). Every Abacus galaxy and joint run is to redo with them
    (the `f_NL` pair of step 3c included: `b_φ` follows `b1`, and the field absorbed the radial
-   gradient).
+   gradient). Result of that run: unbiased (§7.14, `Omega_m` −0.47σ, `sigma8` −0.19σ).
    (b) `scan/closure_d0p20_gxyonly.yaml`.
    (c) Done: `run_20261005_021418_59363213`, §7.13.
 
@@ -2083,6 +2090,12 @@ model now starts its shells where the map's matter starts and applies the per-sh
    cell 93.75, evolution grid 1.75), the model at the true field over the ensemble 0.945 (this box's
    realisation, 2.6σ of the draws' 2.1 % scatter). Both lower the κ power the posterior has to explain;
    the model error is the larger part.
+   Cell 93.75 with the evolution grid at 2.5, 140 batches (`run_20261006_084941_59432569`, step size
+   373, split R̂ ≤ 1.004, ESS ≈ 3200): `Omega_m` 0.229 ± 0.024, `sigma8` 0.669 ± 0.034 (correlation 0.89),
+   Mahalanobis 4.27 (cell 62.5: 3.86, evolution grid 1.75: 13.37). Pull of the truth along the
+   posterior's axes, tight / degenerate: +8.62 / −10.22 (93.75, 1.75), −2.07 / −3.26 (62.5), −1.07 /
+   −4.13 (93.75, 2.5). With the evolution grid at 2.5 the combination κ constrains is within 1.1σ; what
+   is left lies along the `Omega_m`–`sigma8` degeneracy, which the galaxies fix in the joint.
    (c) The Abacus joint for `f_NL`, `abacus/abacus_joint_Nl1p0.yaml`, paired with the
    galaxy-only reference `run_20261002_021703_59194575` (§7.11).
    (d) The κ-only Abacus validations, `abacus/abacus_kappaonly_Nl1p0_fnlfixed.yaml` and
