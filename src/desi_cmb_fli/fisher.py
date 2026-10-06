@@ -381,7 +381,16 @@ def chain_fisher(chains, burn_in=0.5):
 # ---------------------------------------------------------------------------------------------
 
 COSMO_PARAMS = ("Omega_m", "sigma8", "b1", "bn2")
-FD_STEPS = {"Omega_m": 0.005, "sigma8": 0.005, "b1": 0.01, "bn2": 2.0, "fNL": 1.0}
+FD_STEPS = {"Omega_m": 0.005, "sigma8": 0.005, "b1": 0.01, "bn2": 2.0, "fNL": 1.0, "b1_alpha": 0.05}
+
+
+def bias_reference_z(bg, survey):
+    """Redshift where ``b1`` is defined when the bias evolves: the volume-weighted mean growth over
+    the survey shell, as the loader's ``a_fid`` (growth-weighted mean over the survey cells)."""
+    chi = np.linspace(bg.chi_of_z(survey["zmin"]), bg.chi_of_z(survey["zmax"]), 2000)
+    D = bg.growth(bg.z_of_chi(chi))
+    D_mean = np.sum(chi**2 * D) / np.sum(chi**2)
+    return float(np.interp(D_mean, bg.growth(bg._z)[::-1], bg._z[::-1]))
 
 
 class BackgroundCache:
@@ -410,8 +419,12 @@ def _central_differences(fn, fid, params, steps):
 
 
 def _galaxy_bias(bg, theta, k, z):
-    """Eulerian galaxy bias b(k, z) = 1 + b1 - bn2 k^2 + 2 delta_c b1 fNL / M(k, z)."""
-    b = 1 + theta["b1"] - theta.get("bn2", 0.0) * k**2
+    """Eulerian galaxy bias b(k, z) = (1 + b1) (D(z_b1)/D(z))^b1_alpha - bn2 k^2 + 2 delta_c b1 fNL / M(k, z),
+    the growth at the cosmology of ``theta``, ``z_b1`` fixed (``bias_reference_z``)."""
+    b = 1 + theta["b1"]
+    if theta.get("b1_alpha", 0.0) != 0.0:
+        b = b * (bg.growth(theta["z_b1"]) / bg.growth(z)) ** theta["b1_alpha"]
+    b = b - theta.get("bn2", 0.0) * k**2
     if theta.get("fNL", 0.0) != 0.0:
         b = b + 2 * DELTA_C * theta["b1"] * theta["fNL"] / bg.m_phi(k, z)
     return b

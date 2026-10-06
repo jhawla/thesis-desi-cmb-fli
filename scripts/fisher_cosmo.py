@@ -158,6 +158,10 @@ def main():
     )
     ap.add_argument("--densities", type=float, nargs="+", default=[1.0])
     ap.add_argument("--fnl", action="store_true", help="free fNL too (default: fixed at its truth)")
+    ap.add_argument("--b1_alpha", action="store_true",
+                    help="free the bias evolution (1 + b1)(D(z_b1)/D(z))^b1_alpha (default: fixed at its "
+                         "truth, 0 if absent); prior from the config latents, N(1, 1) if absent; "
+                         "outputs get a _b1alpha suffix")
     ap.add_argument("--resolution_scan", action="store_true",
                     help="only the (box, cell) scan of RESOLUTIONS, density 1")
     ap.add_argument("--mismatch", default=None, metavar="FILE",
@@ -168,18 +172,23 @@ def main():
         default=str(ROOT / "figures/fisher_diagnostic/fisher_cosmo.json"),
     )
     args = ap.parse_args()
+    if args.b1_alpha:
+        args.out = str(Path(args.out).with_name(Path(args.out).stem + "_b1alpha.json"))
+        args.fig = str(Path(args.fig).with_name(Path(args.fig).stem + "_b1alpha.png"))
 
     cfg = yaml.safe_load(open(args.config))
     cmb = cfg["cmb_lensing"]
     truth = {**cfg["truth_params"], **cfg.get("abacus_truth_params", {})}
-    params = fi.COSMO_PARAMS + (("fNL",) if args.fnl else ())
-    fid = {p: float(truth.get(p, 0.0)) for p in ("Omega_m", "sigma8", "b1", "bn2", "fNL")}
+    params = fi.COSMO_PARAMS + (("fNL",) if args.fnl else ()) + (("b1_alpha",) if args.b1_alpha else ())
+    fid = {p: float(truth.get(p, 0.0)) for p in ("Omega_m", "sigma8", "b1", "bn2", "fNL", "b1_alpha")}
+    cfg["latents"].setdefault("b1_alpha", {"loc": 1.0, "scale": 1.0})
     kappa = fi.kappa_geometry(cfg)
     kmax = np.pi / float(cfg["model"]["cell_size"])
     nell_tab = np.loadtxt(cmb.get("cmb_noise_nell") or fi.NELL_FILE)
     noise_scaling = float(cmb.get("cmb_noise_scaling", 1.0))
     prior = fi.prior_fisher(cfg["latents"], params)
     bgs = fi.BackgroundCache(z_source=float(cmb.get("z_source", 1089.28)))
+    fid["z_b1"] = fi.bias_reference_z(bgs(fid), fi.HUGE_LRG)
     shown = {k: v for k, v in kappa.items() if k != "window"}
     print(f"config {Path(args.config).name}: kmax {kmax:.4f} h/Mpc, kappa {shown}, N_l x{noise_scaling}")
     print(f"fiducial {fid}; free {params}; priors (config latents) on every parameter")
