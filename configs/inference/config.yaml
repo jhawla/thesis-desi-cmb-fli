@@ -26,8 +26,8 @@ model:
   lpt_order: 2
   precond: kaiser  # kaiser or kaiser_dyn
   init_oversamp: 1.5   # inferred linear field grid; enlarges the inferred field
-  evol_oversamp: 1.75  # LPT evolution + bias-product mesh; add_png runs here too
-  ptcl_oversamp: 1.75  # particle cloud density
+  evol_oversamp: 2.5  # LPT evolution + bias-product mesh; add_png runs here too
+  ptcl_oversamp: 2.5  # particle cloud density
   paint_oversamp: 1.75  # CIC paint mesh
   gxy_density: 8.43318125e-4 # used only in closure mode; overwritten by load_abacus_galaxy_observation in abacus mode
   # los: null  # Disable RSD (comment out to enable RSD)

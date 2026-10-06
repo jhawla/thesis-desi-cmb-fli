@@ -275,7 +275,7 @@ def get_cosmology(**cosmo) -> Cosmology:
     ref_cosmo = AbacusSummit0
     kwargs = ref_cosmo.keywords.copy()
     valid_keys = set(kwargs) | {"Omega_m"}
-    nuisance_keys = {"b1", "b2", "bs2", "bn2", "bnpar", "fNL", "fNL_bp", "fNL_bpd", "s_e"}
+    nuisance_keys = {"b1", "b1_alpha", "b2", "bs2", "bn2", "bnpar", "fNL", "fNL_bp", "fNL_bpd", "s_e"}
     unknown = set(cosmo) - valid_keys - nuisance_keys
     unknown = {k for k in unknown if not str(k).startswith("ngbar")}  # per-shell ngbars
     if unknown:
@@ -507,7 +507,7 @@ def samp2base_mesh(init: dict, precond=False, transfer=None, inv=False, temp=1.0
 
 def lagrangian_weights(
     cosmo: Cosmology, a, pos, box_shape, b1, b2, bs2, bn2, init_mesh,
-    fNL_bp=0.0, fNL_bpd=0.0, png_type=None, pk_ratio=None,
+    fNL_bp=0.0, fNL_bpd=0.0, png_type=None, pk_ratio=None, b1_alpha=0.0, a_b1=None,
 ):
     """
     Return Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
@@ -517,6 +517,9 @@ def lagrangian_weights(
 
     When ``png_type`` is set, ``init_mesh`` must be the original Gaussian linear field
     (before ``add_png``), so the primordial potential phi is recovered correctly.
+
+    With ``a_b1`` set, the linear Eulerian bias evolves as
+    ``1 + b1(a) = (1 + b1) (D(a_b1) / D(a))**b1_alpha``: ``b1`` is the bias at ``a_b1``.
     """
     delta_k = init_mesh
     delta = jnp.fft.irfftn(delta_k)
@@ -539,6 +542,8 @@ def lagrangian_weights(
 
     # Apply b1, punctual term
     delta_part = cic_read(delta, pos) * growths
+    if a_b1 is not None:
+        b1 = (1 + b1) * (a2g(cosmo, jnp.asarray(a_b1)) / growths) ** b1_alpha - 1
     weights = weights + b1 * delta_part
 
     # Apply primordial non-Gaussianity scale-dependent bias terms

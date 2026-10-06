@@ -206,7 +206,7 @@ def load_and_process_run(run_dir, burn_in=0.0, exclude_chains=None):
             truth_vals = full_cfg.get("truth_params", {})
 
     # Identify available scalar parameters (avoid showing fixed bias params in CMB-only)
-    priority_params = ["Omega_m", "sigma8", "fNL", "fNL_bp", "fNL_bpd", "b1", "b2", "bs2", "bn2", "bnpar", "s_e"]
+    priority_params = ["Omega_m", "sigma8", "fNL", "fNL_bp", "fNL_bpd", "b1", "b1_alpha", "b2", "bs2", "bn2", "bnpar", "s_e"]
     if model.galaxies_enabled:
         available_params = [p for p in priority_params if p in physical_samples]
         extra_params = [p for p in physical_samples.keys() if p not in available_params]

@@ -175,6 +175,20 @@ evol-grid **Gaussian** field:
 - linear `b₁`, quadratic `b₂`, tidal shear `b_{s²}`, higher-derivative `b_{∇²}` (`bn2`).
 - `b₂` uses the montecosmo convention `weights += b₂·(δ²−⟨δ²⟩)/2`.
 
+**Redshift evolution of the linear bias `b1_alpha` (α).** On the light cone the `b₁` term is
+`b₁(a)·D(a)·δ_L` with `1 + b₁(a) = (1 + b₁)(D(a_fid)/D(a))^α`, `a_fid` the growth-weighted mean scale
+factor of the survey cells (the loader's, the redshift where the Kaiser preconditioner is built):
+`b₁` is the linear bias at `a_fid`. α = 0 is a z-independent Eulerian bias `1 + b₁`, α = 1 a constant
+clustering amplitude `b_E·D`. α is a bias latent, prior N(1, 1), `scale_fid` 0.05 (`bricks.lagrangian_weights`
+takes `b1_alpha` and `a_b1`; the Kaiser evolution applies the same factor to its `bE` mesh). Why:
+across a broad shell a fixed `1 + b₁` makes the galaxy amplitude fall as `D(χ)`; the Abacus LRG
+amplitude stays flat, and with α fixed at 0 `Omega_m`, the only parameter that changes `D(χ)` across
+the shell, absorbs the difference (§7.14). DESI analyses avoid the question with narrow redshift bins
+and free biases per bin; one free α is the equivalent for a single broad shell, with the
+z-independent bias as a special case. Only the linear term evolves; `b₂`, `b_{s²}`, `b∇²`, `bnpar`
+and the PNG terms (`b_φ` from `b₁`, i.e. at `a_fid`) do not. In snapshot mode `a_fid = a_obs` and α
+has no effect: keep it in `mcmc.fixed_params` there, like `bnpar`.
+
 **Finger-of-God higher-derivative LOS bias `bnpar` (b_∇∥).** Implemented as a **velocity** term, not a
 painting weight. `bricks.lagrangian_fog_velocity` returns `dvel = bnpar·∇δ_L·D(a)` as a
 full 3-vector at the initial positions. `bricks.rsd` adds it to the peculiar velocity **before** the
@@ -207,6 +221,13 @@ the survey selection multiplies it there, and `band_limit` averages the product 
 Under `evolution: lpt`, `ptcl_oversamp` **must equal** `evol_oversamp` (`__post_init__` raises
 otherwise): jaxpm's `cic_read` reshapes the particle array to the force-grid shape, so LPT needs
 exactly one particle per evol cell.
+
+The configs run the evol/ptcl grid at **2.5** (paint 1.75, init 1.5), above montecosmo's 7/4. At 7/4
+the displaced particle lattice and the bias products leave structure in the predicted band that grows
+with the displacement amplitude: on Abacus the galaxy likelihood at the true field then prefers a
+smaller field (`sigma8` biased low) and the κ model holds too much power at the top of the band; at
+2.5 both go (§7.12, §7.14). The inferred field (init grid) is unchanged; the cost is that of the
+particles, ≈ (2.5/1.75)³ ≈ 2.9 ×.
 
 Flow in `FieldLevelModel.evolve`: init field → chreshape→evol → `add_png` + PNG re-band-limit → LPT
 displacement → paint+crop to final; `lagrangian_weights` comes **after** and is handed `init_mesh_evol_grid`, i.e. the **pre-`add_png`**
@@ -1973,12 +1994,12 @@ model now starts its shells where the map's matter starts and applies the per-sh
    Abacus LRG bias evolves as 1/D across the shell where the model's does not, and `Omega_m` absorbs
    it. With α = 1 fixed (monkeypatch, `run_20261006_043937_59424345`) `Omega_m` is recovered (0.3185 ±
    0.0107) and `sigma8` stays −2.1σ low (0.713 ± 0.047), the deficit coming from the evolution grid at
-   1.75 (§7.14). Decided: α free, prior N(1, 1) (`b1_alpha`, patch on the branch `b1-alpha`, worktree
-   `~/claude_scratch/wt_b1_alpha`, not merged), and the evolution grid at 2.5. Running:
-   `run_20261006_070354_59428033` (`~/claude_scratch/bias_evol/abacus_gxyonly_cosmo_b1alphafree_evol2p5.yaml`,
-   run from the worktree with `PYTHONPATH=$PWD/src`). If it recovers `Omega_m` and `sigma8`: merge the
-   patch, evolution grid 2.5 in every config, every Abacus galaxy and joint run redone (the `f_NL`
-   pair of step 3c included: `b_φ` follows `b1`, and the field absorbed the radial gradient).
+   1.75 (§7.14). Adopted: α free, prior N(1, 1) (`b1_alpha`, §2.4), and the evolution grid at 2.5 in
+   every config (§2.5). Running with them: `run_20261006_070354_59428033`
+   (`~/claude_scratch/bias_evol/abacus_gxyonly_cosmo_b1alphafree_evol2p5.yaml`, the same model as
+   `abacus/abacus_gxyonly_cosmo.yaml` now). Every Abacus galaxy and joint run is to redo with them
+   (the `f_NL` pair of step 3c included: `b_φ` follows `b1`, and the field absorbed the radial
+   gradient).
    (b) `scan/closure_d0p20_gxyonly.yaml`.
    (c) Done: `run_20261005_021418_59363213`, §7.13.
 
@@ -2030,6 +2051,38 @@ model now starts its shells where the map's matter starts and applies the per-sh
    `~/claude_scratch/bias_evol/abacus_kappaonly_Nl1p0_cosmo_cell62p5.yaml`, 40 batches); next: κ only
    at cell 93.75, evolution grid 2.5 (`~/claude_scratch/bias_evol/abacus_kappaonly_Nl1p0_cosmo_evol2p5.yaml`).
    The joint after both probes are unbiased separately.
+   Cell 62.5, 40 batches (`run_20261006_062221_59426958`, step size 725, warmup 76 min, 78 s per
+   batch, i.e. ≈ 2 × the cost at 93.75): `Omega_m` 0.251 ± 0.025, `sigma8` 0.704 ± 0.030 (split R̂ ≤
+   1.010, correlation 0.88); Mahalanobis distance of the truth 3.9 (13.4 at cell 93.75, 1.4 for the
+   κ-only closure `run_20261005_030253_59364089`), −2.1σ along the tight axis, −3.3σ along the
+   degeneracy. Three measurements on it (scripts in `~/claude_scratch/bias_evol/`, compute node, CPU):
+   (i) first-order Fisher shift of the IC-test mismatch at 62.5 (`fisher_cosmo.py --mismatch
+   …cell62p5.npz`): −0.013 and −0.016, 5–7 × below the measured −0.064 and −0.107;
+   (ii) the κ likelihood at the true field (`lik_kappa_profile.py`, field scaled by A): −2Δln L
+   relative to the truth +12 / +51 / +14 at A 0.95 / 0.90 / 1.05, +11 / +71 / +43 at `Omega_m`
+   0.28 / 0.25 / 0.35, +230 at (0.25, A 0.9) — the truth is the best point tested, the likelihood does
+   not pull at the true field;
+   (iii) the data the likelihood sees (packed a_ℓm of map + noise) against the model's ensemble power
+   (Limber signal of the shells + line of sight + `N_ℓ`, `kappa_realisation_shift.py`), weighted ratio in
+   ℓ 2–11 / 12–23 / 24–35 / 36–47 / 48–55 / 56–64: Abacus 1.010 0.918 0.871 0.962 0.893 0.991
+   (cosmic variance of the bins 0.120 0.068 0.053 0.045 0.049 0.043), κ-only closure 1.003 0.915 0.926
+   1.021 1.005 1.147; their first-order shifts: Abacus +0.036 / −0.026 (`Omega_m` / `sigma8`), closure
+   +0.142 / +0.112, against the measured −0.064 / −0.107 (Abacus 62.5) and +0.034 / +0.025 (closure).
+   The first-order power-spectrum shift predicts neither run, in either direction: the field-level κ
+   posterior is not set by the power of the data alone (as its closure widths, narrower than the
+   Fisher, §7.13). With the model's own response instead of Limber (`kappa_ensemble.py`: 30 prior
+   draws of the field per cosmology, `f_NL` 0, same seeds across cosmologies, packed like the likelihood,
+   cell 93.75): the model's κ signal over Limber is 0.98 / 1.03 / 1.06 / 1.13 (ℓ 2–11 / 12–35 / 36–47 /
+   48–64) at the fiducial, 1.02–1.17 at (0.251, 0.704), 1.10–1.23 at (0.162, 0.579): it falls less
+   than Limber along the degeneracy. The isotropic power likelihood of the data with that ensemble
+   power: −2Δln L (0.251, 0.704) − fiducial = −16.4 ± 0.5 (bootstrap over the draws), +9.2 ± 4.3 for
+   the draws themselves taken as data (with a noise realisation): the data sit 6σ from what the model
+   produces at the fiducial. Their total power in ℓ 12–64 is 0.907 × the ensemble mean, which the draws
+   scatter by 1.5 %. Split, in signal power over ℓ 12–64 (`kappa_truefield_power.py`): Abacus data
+   minus the expected noise and line of sight over the model at the true field 0.875 (model error at
+   cell 93.75, evolution grid 1.75), the model at the true field over the ensemble 0.945 (this box's
+   realisation, 2.6σ of the draws' 2.1 % scatter). Both lower the κ power the posterior has to explain;
+   the model error is the larger part.
    (c) The Abacus joint for `f_NL`, `abacus/abacus_joint_Nl1p0.yaml`, paired with the
    galaxy-only reference `run_20261002_021703_59194575` (§7.11).
    (d) The κ-only Abacus validations, `abacus/abacus_kappaonly_Nl1p0_fnlfixed.yaml` and

@@ -22,8 +22,8 @@ model:
   lpt_order: 2
   precond: kaiser
   init_oversamp: 1.5
-  evol_oversamp: 1.75
-  ptcl_oversamp: 1.75
+  evol_oversamp: 2.5
+  ptcl_oversamp: 2.5
   paint_oversamp: 1.75
   gxy_density: 0.000843318125
   png_type: fNL

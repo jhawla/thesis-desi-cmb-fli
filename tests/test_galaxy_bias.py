@@ -229,6 +229,25 @@ def test_lagrangian_weights_b1_only():
     assert jnp.abs(jnp.mean(weights) - 1.0) < 0.3
 
 
+def test_lagrangian_weights_b1_evolution():
+    """b1_alpha = 0 is the z-independent bias; b1_alpha = 1 keeps (1 + b1(a)) D(a) constant."""
+    cosmo = planck18()
+    mesh_shape = np.array([4, 4, 4])
+    box_shape = np.array([100.0, 100.0, 100.0])
+    pos = jnp.indices(mesh_shape, dtype=float).reshape(3, -1).T
+    a = jnp.linspace(0.45, 0.75, pos.shape[0])  # one scale factor per particle, as on the light cone
+    init_mesh = jnp.fft.rfftn(jr.normal(jr.PRNGKey(0), shape=mesh_shape))
+    delta = jnp.fft.irfftn(init_mesh).reshape(-1)  # particles on the grid nodes: cic_read is exact
+    b1, a_b1 = 1.2, 0.56
+
+    def weights(**kw):
+        return lagrangian_weights(cosmo, a, pos, box_shape, b1, 0.0, 0.0, 0.0, init_mesh, **kw)
+
+    assert jnp.allclose(weights(b1_alpha=0.0, a_b1=a_b1), weights(), rtol=1e-6, atol=1e-6)
+    b1_of_a = (weights(b1_alpha=1.0, a_b1=a_b1) - 1) / (delta * a2g(cosmo, a))
+    assert jnp.allclose((1 + b1_of_a) * a2g(cosmo, a), (1 + b1) * a2g(cosmo, a_b1), rtol=1e-4)
+
+
 def test_lagrangian_weights_higher_order():
     """Test lagrangian_weights with higher-order bias terms."""
     cosmo = planck18()

@@ -300,19 +300,20 @@ def test_logpdf_gradient_finite_difference():
 
     truth_params = {
         "Omega_m": 0.31, "sigma8": 0.81,
-        "b1": 1.0, "b2": 0.0, "bs2": 0.0, "bn2": 0.0, "bnpar": 0.0,
+        "b1": 1.0, "b1_alpha": 1.0, "b2": 0.0, "bs2": 0.0, "bn2": 0.0, "bnpar": 0.0,
     }
     truth = model.predict(samples=truth_params, frombase=True, rng=42)
     model.reset()
     model.condition({"obs": truth["obs"]})
 
     # logpdf traces the model without a seed, so every sampling latent must be
-    # supplied. The bias group includes bnpar (Finger-of-God) by default.
+    # supplied. The bias group includes bnpar (Finger-of-God) and b1_alpha by default.
     init_mesh = jr.normal(jr.key(123), (16, 16, 16))
     test_params = {
         "Omega_m_": jnp.array(0.0),
         "sigma8_": jnp.array(0.0),
         "b1_": jnp.array(0.0),
+        "b1_alpha_": jnp.array(0.0),
         "b2_": jnp.array(0.0),
         "bs2_": jnp.array(0.0),
         "bn2_": jnp.array(0.0),

@@ -140,6 +140,14 @@ default_config = {
             "scale_fid": 1e-2,
             "loc_fid": 0.8,
         },
+        "b1_alpha": {  # redshift evolution of the linear bias, (1 + b1)(D(a_fid)/D(a))^b1_alpha
+            "group": "bias",
+            "label": "\\alpha_{b_1}",
+            "loc": 1.0,
+            "scale": 1.0,
+            "scale_fid": 5e-2,
+            "loc_fid": 1.0,
+        },
         "b2": {
             "group": "bias",
             "label": "{b}_2",
@@ -1383,8 +1391,13 @@ class FieldLevelModel(Model):
                 fNL_bp=fNL_bp_lat, fNL_bpd=fNL_bpd_lat,
             )
 
+            bE = 1 + bias["b1"]
+            if self.lightcone:
+                bE = bE * (a2g(cosmology, jnp.asarray(self.a_fid)) / a2g(cosmology, a_evol)) ** bias.get(
+                    "b1_alpha", 0.0
+                )
             gxy_mesh = kaiser_model(
-                cosmology, a_evol, bE=1 + bias["b1"], init_mesh=init_mesh, los=los_evol,
+                cosmology, a_evol, bE=bE, init_mesh=init_mesh, los=los_evol,
                 fNL_bp=fNL_bp, png_type=self.png_type, box_shape=_bshape, pk_ratio=self.pk_ratio,
             )
             gxy_mesh = deterministic("gxy_mesh", gxy_mesh)
@@ -1489,6 +1502,7 @@ class FieldLevelModel(Model):
             lbe_weights = lagrangian_weights(
                 cosmology, a_initial, pos_initial, _bshape, **bias_w, init_mesh=init_mesh_evol_grid,
                 fNL_bp=fNL_bp, fNL_bpd=fNL_bpd, png_type=self.png_type, pk_ratio=self.pk_ratio,
+                a_b1=self.a_fid if self.lightcone else None,
             )
             # Exposed with rsd_pos for the particle-level galaxy map of the diagnostics; like
             # matter_mesh it only materialises under predict().

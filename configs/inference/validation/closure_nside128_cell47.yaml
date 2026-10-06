@@ -26,8 +26,8 @@ model:
   lpt_order: 2
   precond: kaiser  # kaiser or kaiser_dyn
   init_oversamp: 1.5   # inferred linear field grid; enlarges the inferred field
-  evol_oversamp: 1.75  # LPT evolution + bias-product mesh; add_png runs here too
-  ptcl_oversamp: 1.75  # particle cloud density
+  evol_oversamp: 2.5  # LPT evolution + bias-product mesh; add_png runs here too
+  ptcl_oversamp: 2.5  # particle cloud density
   paint_oversamp: 1.75  # CIC paint mesh
   gxy_density: 8.43318125e-4 # used only in closure mode; overwritten by load_abacus_galaxy_observation in abacus mode
   # los: null  # Disable RSD (comment out to enable RSD)
@@ -60,6 +60,7 @@ truth_params:
   # Abacus HUGE posterior means (pipeline.md 7.1), so the closure bias structure
   # matches the run this scan is anchored to instead of a vanishing one.
   b1: 1.19
+  b1_alpha: 0.0  # no redshift evolution of the linear bias in the closure truth
   b2: 0.68
   bs2: -0.48
   bn2: 78.0
