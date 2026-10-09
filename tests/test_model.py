@@ -239,31 +239,29 @@ def test_mclmc_run_can_drop_the_field_from_the_samples():
         assert expected <= set(samples) and not (set(drop) & set(samples))
 
 
-def test_lin_pk_table_reaches_the_prior_and_the_png_transfer():
-    """The config knob resolves the repo-relative table, the prior power changes, and the forward
-    model with PNG and its gradient run."""
-    import jax
-
-    from desi_cmb_fli.bricks import get_cosmology, lin_power_mesh
+def test_omega_m_bounds_outside_the_linear_power_emulator_range_are_an_error():
+    """The emulator is validated for Omega_m in ACE_OMEGA_M_RANGE only (docs/pipeline.md §7.11)."""
     from desi_cmb_fli.model import get_model_from_config
 
-    eh, _ = get_model_from_config(_minimal_config(png_type="fNL"))
-    tab, _ = get_model_from_config(_minimal_config(png_type="fNL",
-                                                lin_pk_table="data/abacus_cosm000_CLASS_power.txt"))
-    assert eh.pk_ratio is None and tab.pk_ratio is not None
-    cosmo = get_cosmology(**tab.loc_fid)
-    p_eh = np.asarray(lin_power_mesh(cosmo, tab.init_shape, tab._sim_shape))
-    p_tab = np.asarray(lin_power_mesh(cosmo, tab.init_shape, tab._sim_shape, pk_ratio=tab.pk_ratio))
-    ok = p_eh > 0
-    assert not np.allclose(p_tab[ok], p_eh[ok], rtol=1e-3)
+    cfg = _minimal_config()
+    cfg["latents"] = {"Omega_m": {"low": 0.1, "high": 0.6}}
+    with pytest.raises(ValueError, match="Omega_m prior bounds"):
+        get_model_from_config(cfg)
 
+
+def test_forward_model_with_png_and_its_gradient_run():
+    import jax
+
+    from desi_cmb_fli.model import get_model_from_config
+
+    model, _ = get_model_from_config(_minimal_config(png_type="fNL"))
     scalars = {"Omega_m": 0.315192, "sigma8": 0.811355, "b1": 1.0, "fNL": 50.0}
-    truth = tab.predict(samples=scalars, hide_base=False, hide_samp=False, hide_det=False,
-                        frombase=True, rng=0)
+    truth = model.predict(samples=scalars, hide_base=False, hide_samp=False, hide_det=False,
+                          frombase=True, rng=0)
     assert np.all(np.isfinite(np.asarray(truth["obs"])))
-    tab.reset()
-    tab.condition({"obs": truth["obs"]})
-    tab.condition({n: truth[n] for n in tab.sampled_scalar_latents()}, frombase=True)
-    tab.block()
-    g = jax.grad(tab.logpdf)({"init_mesh_": jnp.asarray(truth["init_mesh_"])})["init_mesh_"]
+    model.reset()
+    model.condition({"obs": truth["obs"]})
+    model.condition({n: truth[n] for n in model.sampled_scalar_latents()}, frombase=True)
+    model.block()
+    g = jax.grad(model.logpdf)({"init_mesh_": jnp.asarray(truth["init_mesh_"])})["init_mesh_"]
     assert np.all(np.isfinite(np.asarray(g))) and float(jnp.abs(g).max()) > 0

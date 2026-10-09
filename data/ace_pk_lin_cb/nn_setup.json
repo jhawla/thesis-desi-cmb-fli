@@ -1,0 +1,34 @@
+{
+    "emulator_description": {
+        "mapse_preset": "mnuw0wacdm_sym_ratio_pca",
+        "postprocessing_name": "lcdm_transfer_ratio",
+        "preprocessing_name": "drop_primordial_parameters"
+    },
+    "layers": {
+        "layer_1": {
+            "activation_function": "tanh",
+            "n_neurons": 64
+        },
+        "layer_2": {
+            "activation_function": "tanh",
+            "n_neurons": 64
+        },
+        "layer_3": {
+            "activation_function": "tanh",
+            "n_neurons": 64
+        },
+        "layer_4": {
+            "activation_function": "tanh",
+            "n_neurons": 64
+        },
+        "layer_5": {
+            "activation_function": "tanh",
+            "n_neurons": 64
+        }
+    },
+    "n_hidden_layers": 5,
+    "n_input_features": 7,
+    "n_output_features": 17,
+    "postprocessing_name": "lcdm_transfer_ratio",
+    "preprocessing_name": "drop_primordial_parameters"
+}

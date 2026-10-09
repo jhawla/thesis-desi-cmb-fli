@@ -32,15 +32,6 @@ def planck18():
     )
 
 
-def test_lin_power_interp_matches_jax_cosmo():
-    cosmo = planck18()
-    ks = jnp.logspace(-3, 0, 8)
-    interp = lin_power_interp(cosmo, a=0.8, n_interp=128)
-    expected = jc.power.linear_matter_power(cosmo, ks, a=0.8)
-    got = interp(ks)
-    assert jnp.allclose(got, expected, rtol=2e-2)
-
-
 def test_lin_power_mesh_consistent_with_interp():
     cosmo = planck18()
     mesh_shape = np.array([4, 4, 4])
@@ -68,10 +59,11 @@ def test_rg2cgh_cgh2rg_roundtrip_recovers_real_field():
 
 
 # ---------------------------------------------------------------------------
-# model.lin_pk_table: Eisenstein-Hu times the shape ratio of a tabulated spectrum
+# Linear power: the ACE emulator (docs/pipeline.md §2.1)
 # ---------------------------------------------------------------------------
 
-CLASS_TABLE = Path(__file__).resolve().parents[1] / "data/abacus_cosm000_CLASS_power.txt"
+ROOT = Path(__file__).resolve().parents[1]
+CLASS_TABLE = ROOT / "data/abacus_cosm000_CLASS_power.txt"
 
 
 def _true_sigma8_sq(pow_fn):
@@ -81,49 +73,55 @@ def _true_sigma8_sq(pow_fn):
     return float(_tophat8_variance(k, np.asarray(pow_fn(jnp.asarray(k)))))
 
 
-def test_lin_pk_table_gives_the_table_at_its_cosmology():
-    """At the cosmology of the table the spectrum is the table's, at any a, normalised to sigma8."""
-    from desi_cmb_fli.bricks import get_cosmology, lin_pk_ratio
+def test_ace_evaluator_reproduces_jaxmapse():
+    """The pure-JAX evaluation of the network equals jaxmapse's Pk_lin_cb (reference written by
+    jaxmapse 0.1.1 at z = 1 with D = 1, Abacus c000 with Omega_m moved)."""
+    from desi_cmb_fli.bricks import _ace_power, get_cosmology
 
-    cosmo = get_cosmology(Omega_m=0.315192, sigma8=0.811355)
-    ratio = lin_pk_ratio(CLASS_TABLE, cosmo)
+    ref = np.load(ROOT / "tests/data/ace_jaxmapse_reference.npz")
+    for i, om in enumerate(ref["omega_m"]):
+        got = np.asarray(_ace_power(get_cosmology(Omega_m=float(om)), jnp.asarray(ref["k"])))
+        np.testing.assert_allclose(got, ref[f"pk_{i}"], rtol=1e-4)
+
+
+def test_lin_power_matches_the_class_spectrum_of_the_abacus_ics():
+    """At the Abacus cosmology the shape is the CLASS table's (cb, z = 1) over the likelihood band."""
+    from desi_cmb_fli.bricks import get_cosmology
+
     kt, pt = np.loadtxt(CLASS_TABLE, unpack=True)
     table = lambda k: jnp.exp(jnp.interp(jnp.log(k), np.log(kt), np.log(pt)))  # noqa: E731
-    nodes = jnp.asarray(np.logspace(-4, 1, 256)[20:240:11])
-    for a in (1.0, 0.5):
-        got = np.asarray(lin_power_interp(cosmo, a=a, pk_ratio=ratio)(nodes))
-        growth2 = float(jc.background.growth_factor(cosmo, jnp.atleast_1d(a))[0]) ** 2
-        want = np.asarray(table(nodes)) * 0.811355**2 / _true_sigma8_sq(table) * growth2
-        np.testing.assert_allclose(got, want, rtol=1e-4)
+    pow_fn = lin_power_interp(get_cosmology(Omega_m=0.315192, sigma8=0.811355), n_interp=4096)
+    k = jnp.asarray(np.logspace(-3, np.log10(0.058), 50))
+    got = np.asarray(pow_fn(k)) / 0.811355**2
+    want = np.asarray(table(k)) / _true_sigma8_sq(table)
+    np.testing.assert_allclose(got / want, 1.0, rtol=2e-3)
 
 
-def test_lin_pk_table_keeps_sigma8_exact_and_eh_omega_m_shape_elsewhere():
-    from desi_cmb_fli.bricks import get_cosmology, lin_pk_ratio
+def test_lin_power_keeps_sigma8_exact_and_grows_with_the_emulator_growth():
+    from desi_cmb_fli.bricks import get_cosmology
+    from desi_cmb_fli.nbody import a2g
 
-    ratio = lin_pk_ratio(CLASS_TABLE, get_cosmology(Omega_m=0.315192, sigma8=0.811355))
-    k = jnp.asarray(np.logspace(-3, 0, 40))
+    k = jnp.asarray(np.logspace(-3, 0, 20))
     for om, s8 in ((0.25, 0.75), (0.40, 0.90)):
         cosmo = get_cosmology(Omega_m=om, sigma8=s8)
-        new = lin_power_interp(cosmo, pk_ratio=ratio, n_interp=4096)
-        np.testing.assert_allclose(_true_sigma8_sq(new), s8**2, rtol=2e-4)
-        # the shape change with Omega_m is EH's: new / EH is the fixed ratio, up to a constant
-        rel = np.asarray(new(k) / lin_power_interp(cosmo, n_interp=4096)(k))
-        fixed = np.interp(np.log(np.asarray(k)), *ratio)
-        np.testing.assert_allclose(rel / fixed, (rel / fixed).mean(), rtol=2e-3)
+        np.testing.assert_allclose(_true_sigma8_sq(lin_power_interp(cosmo, n_interp=4096)), s8**2, rtol=2e-4)
+        growth2 = float(np.squeeze(a2g(cosmo, jnp.asarray(0.5)))) ** 2
+        np.testing.assert_allclose(np.asarray(lin_power_interp(cosmo, a=0.5)(k)),
+                                   np.asarray(lin_power_interp(cosmo)(k)) * growth2, rtol=1e-4)
 
 
-def test_lin_pk_table_is_differentiable_in_omega_m():
+def test_lin_power_is_differentiable_in_omega_m():
     import jax
 
-    from desi_cmb_fli.bricks import get_cosmology, lin_pk_ratio, trans_phi2delta_interp
+    from desi_cmb_fli.bricks import get_cosmology, trans_phi2delta_interp
 
-    ratio = lin_pk_ratio(CLASS_TABLE, get_cosmology(Omega_m=0.315192, sigma8=0.811355))
     k = jnp.asarray([0.005, 0.02, 0.05])
 
     def f(om):
         cosmo = get_cosmology(Omega_m=om, sigma8=0.81)
-        return jnp.sum(lin_power_interp(cosmo, pk_ratio=ratio)(k)) + jnp.sum(
-            trans_phi2delta_interp(cosmo, pk_ratio=ratio)(k))
+        return jnp.sum(jnp.log(lin_power_interp(cosmo)(k))) + jnp.sum(
+            jnp.log(trans_phi2delta_interp(cosmo)(k)))
 
-    g = jax.grad(f)(0.3)
-    assert np.isfinite(float(g)) and float(g) != 0.0
+    g, eps = float(jax.grad(f)(0.3)), 1e-3
+    assert np.isfinite(g) and g != 0.0
+    np.testing.assert_allclose(g, float(f(0.3 + eps) - f(0.3 - eps)) / (2 * eps), rtol=2e-2)

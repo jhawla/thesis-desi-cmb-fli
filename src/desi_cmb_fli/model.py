@@ -18,6 +18,7 @@ from numpyro.handlers import block, condition, seed, trace
 from numpyro.infer.util import log_density
 
 from desi_cmb_fli.bricks import (
+    ACE_OMEGA_M_RANGE,
     INTERLACE_ORDER,
     add_png,
     band_limit,
@@ -31,7 +32,6 @@ from desi_cmb_fli.bricks import (
     kaiser_posterior,
     lagrangian_fog_velocity,
     lagrangian_weights,
-    lin_pk_ratio,
     lin_power_mesh,
     regular_pos,
     rsd,
@@ -103,9 +103,6 @@ default_config = {
 
     # Primordial non-Gaussianity
     "png_type": None,  # None (Gaussian), 'fNL' (derive b_phi/b_phi_delta from bias), 'fNL_bias'
-    # Linear power: None = Eisenstein-Hu; a (k, P) table computed at the fiducial cosmology (latents'
-    # loc_fid) = EH times the table's shape ratio there, renormalised to sigma8 (docs/pipeline.md §2.1)
-    "lin_pk_table": None,
     # Latents
     "precond": "kaiser_dyn",  # direct, fourier, kaiser, kaiser_dyn
     "latents": {
@@ -116,8 +113,8 @@ default_config = {
             "scale": 0.15,
             "scale_fid": 0.05,
             "loc_fid": 0.26,
-            "low": 0.10,  # Physical minimum (must be > Ω_b ≈ 0.049)
-            "high": 0.60,
+            "low": 0.20,  # the linear power emulator's validated range (bricks.ACE_OMEGA_M_RANGE)
+            "high": 0.55,
         },
         "sigma8": {
             "group": "cosmo",
@@ -225,7 +222,7 @@ default_config = {
 MODEL_CONFIG_KEYS = {
     "box_shape", "cell_size", "evolution", "lpt_order", "gxy_density", "lightcone", "a_obs",
     "precond", "init_oversamp", "evol_oversamp", "ptcl_oversamp", "paint_oversamp", "curved_sky",
-    "los", "galaxies_enabled", "gxy_stoch_noise", "gxy_ngbar_free", "png_type", "lin_pk_table",
+    "los", "galaxies_enabled", "gxy_stoch_noise", "gxy_ngbar_free", "png_type",
 }
 CMB_CONFIG_KEYS = {
     "enabled", "observer_mode", "observer_position", "nside", "n_shells", "chi_matter_min",
@@ -315,10 +312,6 @@ def get_model_from_config(config_or_path):
     if "png_type" in cfg["model"]:
         png_type = cfg["model"]["png_type"]
         model_config["png_type"] = None if png_type in (None, "None", "none") else str(png_type)
-    if cfg["model"].get("lin_pk_table") is not None:
-        table = Path(cfg["model"]["lin_pk_table"])
-        model_config["lin_pk_table"] = str(table if table.is_absolute()
-                                           else Path(__file__).resolve().parents[2] / table)
 
     # CMB lensing config
     cmb_cfg = cfg.get("cmb_lensing", {})
@@ -717,7 +710,6 @@ class FieldLevelModel(Model):
     cmb_kl_rcond: float = field(default=default_config["cmb_kl_rcond"])  # pixel_exact KL eigenmode cutoff
     # Primordial non-Gaussianity
     png_type: str | None = field(default=default_config["png_type"])
-    lin_pk_table: str | None = field(default=default_config["lin_pk_table"])
     # Latents (required, from default_config)
     precond: str = field(default=default_config["precond"])
     latents: dict = field(default_factory=lambda: default_config["latents"])
@@ -728,8 +720,6 @@ class FieldLevelModel(Model):
         self.groups_ = self._groups(base=False)
         self.labels = self._labels()
         self.loc_fid = self._loc_fid()
-        self.pk_ratio = (None if self.lin_pk_table is None
-                         else lin_pk_ratio(self.lin_pk_table, get_cosmology(**self.loc_fid)))
 
         self.mesh_shape = np.asarray(self.mesh_shape)
         # NOTE: if x32, cast mesh_shape into float32 to avoid int32 overflow when computing products
@@ -1398,7 +1388,7 @@ class FieldLevelModel(Model):
                 )
             gxy_mesh = kaiser_model(
                 cosmology, a_evol, bE=bE, init_mesh=init_mesh, los=los_evol,
-                fNL_bp=fNL_bp, png_type=self.png_type, box_shape=_bshape, pk_ratio=self.pk_ratio,
+                fNL_bp=fNL_bp, png_type=self.png_type, box_shape=_bshape,
             )
             gxy_mesh = deterministic("gxy_mesh", gxy_mesh)
 
@@ -1439,7 +1429,7 @@ class FieldLevelModel(Model):
                 fNL, bias["b1"], bias["b2"], p=1.0, png_type=self.png_type,
                 fNL_bp=fNL_bp_lat, fNL_bpd=fNL_bpd_lat,
             )
-            init_mesh_evol = add_png(cosmology, fNL, init_mesh_evol_grid, _bshape, pk_ratio=self.pk_ratio)
+            init_mesh_evol = add_png(cosmology, fNL, init_mesh_evol_grid, _bshape)
             init_mesh_evol = chreshape(
                 chreshape(init_mesh_evol, r2chshape(tuple(self.init_shape))),
                 r2chshape(tuple(self.evol_shape)),
@@ -1501,7 +1491,7 @@ class FieldLevelModel(Model):
             # (anti-aliased products) and read at the initial particle positions.
             lbe_weights = lagrangian_weights(
                 cosmology, a_initial, pos_initial, _bshape, **bias_w, init_mesh=init_mesh_evol_grid,
-                fNL_bp=fNL_bp, fNL_bpd=fNL_bpd, png_type=self.png_type, pk_ratio=self.pk_ratio,
+                fNL_bp=fNL_bp, fNL_bpd=fNL_bpd, png_type=self.png_type,
                 a_b1=self.a_fid if self.lightcone else None,
             )
             # Exposed with rsd_pos for the particle-level galaxy map of the diagnostics; like
@@ -1832,6 +1822,12 @@ class FieldLevelModel(Model):
                     new[name]["loc_fid"] = (low + high) / 2
                 if scale_fid is None:
                     new[name]["scale_fid"] = (high - low) / 12**0.5
+        om = new.get("Omega_m", {})
+        lo, hi = ACE_OMEGA_M_RANGE
+        if om and not (om.get("low") is not None and lo <= om["low"] and om["high"] <= hi):
+            raise ValueError(f"Omega_m prior bounds must lie within [{lo}, {hi}], the validated range "
+                             f"of the linear power emulator (docs/pipeline.md §2.1); got "
+                             f"[{om.get('low')}, {om.get('high')}]")
         return new
 
     def _sample(self, names: str | list):
@@ -1869,7 +1865,7 @@ class FieldLevelModel(Model):
         Otherwise falls back to ``1/n̄``.
         """
         # The inferred linear field lives on the (possibly oversampled) init grid.
-        pmeshk = lin_power_mesh(cosmo, self.init_shape, self._sim_shape, pk_ratio=self.pk_ratio)
+        pmeshk = lin_power_mesh(cosmo, self.init_shape, self._sim_shape)
 
         # Effective galaxy count: 0 if galaxies disabled, actual count otherwise
         gxy_count_eff = self.gxy_count if self.galaxies_enabled else 0.0
@@ -1891,7 +1887,7 @@ class FieldLevelModel(Model):
         elif self.precond == "kaiser":
             cosmo_fid, bE_fid = get_cosmology(**self.loc_fid), 1 + self.loc_fid["b1"]
             boost_fid = kaiser_boost(cosmo_fid, self.a_fid, bE_fid, self.init_shape, self.los)
-            pmeshk_fid = lin_power_mesh(cosmo_fid, self.init_shape, self._sim_shape, pk_ratio=self.pk_ratio)
+            pmeshk_fid = lin_power_mesh(cosmo_fid, self.init_shape, self._sim_shape)
 
             scale = (1 + boost_fid**2 * pmeshk_fid / noise_eff) ** 0.5
             transfer = pmeshk**0.5 / scale
@@ -2046,7 +2042,6 @@ class FieldLevelModel(Model):
 
         means, stds = kaiser_posterior(
             delta_obs, cosmo_fid, bE_fid, self.a_fid, self._sim_shape, gxy_count_eff, self.los,
-            pk_ratio=self.pk_ratio,
         )
         post_mesh = rg2cgh(jr.normal(rng, ch2rshape(means.shape)))
         post_mesh = temp**0.5 * stds * post_mesh + means

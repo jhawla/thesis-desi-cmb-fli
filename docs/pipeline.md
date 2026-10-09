@@ -40,32 +40,32 @@ auto-adjusted (`get_model_from_config`) so all axes have an **even** number of c
 Gaussian repacking `utils._rg2cgh`/`cgh2rg` asserts `all(shape % 2 == 0)`, because the
 hermitian-symmetry bookkeeping (self-conjugate modes at 0 and Nyquist) assumes an exact Nyquist plane.
 
-**Linear power spectrum (`model.lin_pk_table`).** Without a table the spectrum is jax_cosmo's
-Eisenstein–Hu. With a table (two columns, k and P, at any redshift), `bricks.lin_power_interp`
-multiplies Eisenstein–Hu at the sampled cosmology by the fixed shape ratio `R(k) = P_tab / P_EH`
-taken at the fiducial cosmology (`lin_pk_ratio`; the latents' `loc_fid` must be the table's
-cosmology) and renormalises the product to the sampled σ8 with its own top-hat integral over the
-interpolation nodes: jax_cosmo's `sigmasqr` integrates in ln k between the base-10 logarithms of its
-limits, i.e. over k ∈ [e⁻⁴, e³], which leaves its σ8 normalisation slightly off. The Eisenstein–Hu
-spectrum itself (`bricks._eh_power`) is jax_cosmo's `linear_matter_power` without its growth factor
-at a = 1, where it is 1 by definition: the jax_cosmo fork computes the growth through a host callback
-that re-solves the ODE for every new cosmology, and with `Omega_m` sampled those callbacks exhaust
-the compiler's memory and threads (§2.3). Without a table the result is identical to
-`linear_matter_power`.
-At the fiducial the spectrum is the table; away from it, the change of shape with `Omega_m` is
-Eisenstein–Hu's, so the error is only how the Boltzmann/EH ratio itself moves with `Omega_m`. Holding
-the fiducial shape fixed instead, as montecosmo's tabulated mode does, is exact only at fixed
-`Omega_m`: at fixed σ8 the large-scale shape moves strongly with `Omega_m`. The ratio rather than a
-Boltzmann emulator because no differentiable JAX emulator of the linear P(k) is available: the
-`jaxace` emulators return background quantities, σ8(z) and growth only. Everything built on the
-linear spectrum takes the same ratio: the prior and the Kaiser preconditioner (`lin_power_mesh`), the
-φ→δ transfer of `add_png` and of the scale-dependent bias (`trans_phi2delta_interp`), the Kaiser model
-and the Wiener start. The Limber C_ℓ (line-of-sight term, diagnostics) and `desi_cmb_fli.fisher` keep
-Eisenstein–Hu. The Abacus configs carry the CLASS spectrum of the AbacusSummit ICs
-(`data/abacus_cosm000_CLASS_power.txt`); closure configs have no table, and are self-consistent with
-either since data and model share the spectrum. Measured accuracy in §7.11;
-`tests/test_initial_conditions.py` pins the table at its cosmology, the exact σ8 elsewhere and the
-gradient in `Omega_m`.
+**Linear power spectrum (ACE emulator).** `bricks.lin_power_interp` is the linear CDM+baryon
+spectrum of the ACE emulator (CosmologicalEmulators' jaxmapse, network `mnuw0wacdm_class`, trained on
+CLASS; weights from Zenodo record 21328528),
+normalised to the sampled σ8 with its own top-hat integral at a = 1 and grown with the background
+emulator's D(a) (§2.3). The network takes (z, H0, ω_b, ω_cdm, M_ν, w0, wa) and returns, through a
+PCA basis on its own k grid (7·10⁻⁶–148 h/Mpc, wider than the 10⁻⁴–10 of the interpolation), the
+ratio to an analytic transfer function; the primordial A_s (k/0.05)^{n_s−1} is applied analytically,
+so A_s drops out of the σ8 normalisation. The inputs follow AbacusSummit c000: the model has no
+neutrinos and `Omega_m` includes one 0.06 eV species, so ω_cdm = (Ω_m − Ω_b) h² − M_ν/93.14 at the
+fixed h, Ω_b, n_s, w0, wa of `get_cosmology`; the spectrum is P_cb at z = 1, the CLASS spectrum the
+Abacus ICs were drawn from (`data/abacus_cosm000_CLASS_power.txt`, §4), which the ICs scale back
+with a scale-independent growth, as the model does. The network is evaluated in `bricks` itself
+(`_ace_power`: the weights of `data/ace_pk_lin_cb/`, a five-layer tanh MLP, the min-max scalings, the
+PCA and jaxmapse's analytic transfer), without jaxmapse, jaxace or flax: importing jaxmapse turns on
+`jax_enable_x64` globally, which would run the float32 production in float64, and their pins
+conflict with ours; the result is jaxmapse's to 10⁻¹⁴ (`test_ace_evaluator_reproduces_jaxmapse`).
+The primordial factor is taken in logarithms because (k c)⁴ overflows float32. The emulator is
+trained for ω_cdm ∈ [0.08, 0.18], i.e. `Omega_m` 0.227–0.447 here; below `Omega_m` ≈ 0.15 it
+returns a negative ratio. The `Omega_m` prior bounds must lie within `ACE_OMEGA_M_RANGE` = [0.2, 0.55],
+where the emulator is more accurate than Eisenstein–Hu throughout and than the former
+Eisenstein–Hu × fiducial CLASS/EH ratio everywhere but at the fiducial itself (§7.11); a model with
+wider bounds is an error. Everything built on the linear spectrum takes it: the prior and the Kaiser
+preconditioner (`lin_power_mesh`), the φ→δ transfer of `add_png` and of the scale-dependent bias
+(`trans_phi2delta_interp`), the Kaiser model, the Wiener start and `desi_cmb_fli.fisher`. Closures
+use the same spectrum as the Abacus runs. The Limber C_ℓ (line-of-sight term, diagnostics) keep
+jax_cosmo's Eisenstein–Hu halofit. Measured accuracy in §7.11.
 
 ### 2.2 Primordial non-Gaussianity
 
@@ -752,8 +752,7 @@ binning.
 the simulation box at `InitialRedshift` (z=99) — *not* at `CLASS_Redshift`, which is only the redshift
 of the CLASS spectrum the ICs were drawn from. It is grown to a=1 with the header `GrowthTable` and
 Fourier-resampled onto `model.init_shape` by `utils.chreshape` (power-preserving, so no extra
-normalisation is needed; its spectrum matches `P_lin` to the Eisenstein-Hu-vs-CLASS difference,
-3–4 % at k ≤ 0.03 h/Mpc at the same σ8, §7.11). A model box smaller than the simulation box gets the
+normalisation is needed; its spectrum is the CLASS spectrum `P_lin` emulates, §2.1, §7.11). A model box smaller than the simulation box gets the
 central cube of the IC grid, the observer at the centre of both (an integer number of IC cells, 384 of
 576 for 5000 Mpc/h); the model treats that cube as periodic, as an analysis of real data treats its box.
 **Validation reference only**: it populates `truth['init_mesh']`, read by
@@ -837,7 +836,7 @@ measures and the conventions that make its output comparable with the model.
 | `bench_gradient.py` | time and peak memory of one log-density gradient, particle grid or geometry overridden | stdout |
 | `fisher_cosmo.py` | Fisher on (`Omega_m`, `sigma8`, `b1`, `b∇²`[, `b1_alpha`, `f_NL`]) of galaxies, κ and joint at a config's geometry, band, noise and priors; `--resolution_scan` over box and cell; `--mismatch FILE` the first-order shift F⁻¹b from a per-ℓ data/model κ power ratio, `b_a = f_sky Σ (2ℓ+1)/2 tr(C⁻¹∂_aC C⁻¹ΔC)` (§7.10) | `figures/fisher_diagnostic/` |
 | `density_scan.py` | measured paired gain on σ(`f_NL`) against the Fisher, per density of `scan/density_scan_runs.yaml`; `--noise_table` the gain per `N_ℓ` scaling (§7.2, §7.3) | `figures/results/density_scan.{png,json}` |
-| `compare_linear_power.py` | the model's linear P(k) against the CLASS spectrum of the Abacus ICs; `--omega_m_scan` (needs `camb`) each option against CAMB as `Omega_m` moves (§7.11) | `figures/spectra_diagnostic/linear_power_*` |
+| `compare_linear_power.py` | the model's linear P(k) (and Eisenstein–Hu) against the CLASS spectrum of the Abacus ICs; `--omega_m_scan` the emulator, the former EH × fiducial ratio and EH against CLASS as `Omega_m` moves, from the reference written by `linear_power_class_reference.py` (cosmodesi env, cosmoprimo) (§7.11) | `figures/spectra_diagnostic/linear_power_*` |
 | `plot_cmb_noise_comparison.py` | Planck PR4, ACT DR6, SO baseline `N_ℓ` and their ratio to ACT, likelihood band shaded | `figures/spectra_diagnostic/cmb_noise_comparison.png` |
 | `plot_lensing_fraction.py` | Limber κ power along the line of sight at a config's geometry: fraction captured against depth, model shells, map, covariance term, `N_ℓ` (§3.2) | `figures/lensing_fraction/` |
 | `plot_2D_maps.py` | κ and galaxy-projection maps of one forward realisation (the galaxy panel ray-casts the mesh, display only) | `figures/maps/` |
@@ -1095,14 +1094,26 @@ galaxies more the higher `k_max`. **`f_NL`**: the two-point κ increment is 2.84
 
 ### 7.11 Linear power spectrum and background — measured
 
-Eisenstein–Hu against the CLASS spectrum of the Abacus ICs at the same σ8: 3–4 % low over the band
-(`linear_power_eh_vs_class.png`). When `Omega_m` moves (CAMB reference, max error at fixed σ8 over
-k 0.001–0.034 at `Omega_m` 0.28 / 0.35 / 0.25 / 0.40): `lin_pk_table` 1.06 / 0.81 / 2.24 / 1.69 %,
-Eisenstein–Hu alone 3.4–4.8 %, the fiducial shape held fixed 30–100 % (`linear_power_omega_m_accuracy.{png,npz}`).
+Shape at fixed σ8, max |P/P_CLASS − 1| over k 0.001–0.0335 h/Mpc (the band; to the corners 0.058 in
+brackets), reference CLASS P_cb at z = 1 with `Omega_m` moved at fixed h, Ω_b, n_s
+(`compare_linear_power.py`, `linear_power_vs_class.png`, `linear_power_omega_m_accuracy.{png,npz}`):
+
+| `Omega_m` | 0.15 | 0.20 | 0.22 | 0.25 | 0.28 | 0.315 | 0.35 | 0.40 | 0.45 | 0.50 | 0.55 | 0.60 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| ACE emulator (model) | 84 | 2.19 | 0.73 | 0.22 | 0.08 | 0.06 (0.09) | 0.05 | 0.05 | 0.04 | 0.38 | 1.95 | 5.1 |
+| EH × [CLASS/EH] at the fiducial (former `lin_pk_table`) | 9.2 | 4.9 | 3.7 | 2.2 | 1.1 | 0 | 0.8 | 1.7 (2.2) | 2.3 | 2.9 | 3.3 | 3.6 |
+| Eisenstein–Hu | 7.1 | 2.9 | 2.5 | 2.8 | 3.3 | 3.8 | 4.3 | 4.8 | 5.2 | 5.5 | 5.7 | 5.9 |
+
+(in %; at `Omega_m` 0.12 the emulator ratio is negative.) Against the Abacus table itself at the
+fiducial: emulator 0.9998–1.0011 over k 0.001–0.06, Eisenstein–Hu 0.962–0.997. The table is CLASS
+P_cb at z = 1: CLASS on c000 matches it to 0.07 % in shape there, 0.32 % at z = 0, 0.86–1.08 % in
+total matter. Time on CPU (jit, float32, `lin_power_interp` and `trans_phi2delta_interp` with their
+`Omega_m` gradient): 3–6 ms per call for both; compiling the gradient 0.5 s against 32 s for the
+Eisenstein–Hu path (jax_cosmo's σ8 integral).
 The background emulator (§2.3) against jax_cosmo midway between `Omega_m` nodes, z ≤ 2.1: D, f, D₂, f₂
 within 6·10⁻⁵, χ within 0.2 Mpc/h — two orders of magnitude below the spectrum's error, and
-independent of it (the spectrum is taken at a = 1). On the galaxy-only `f_NL` run, `lin_pk_table`
-against Eisenstein–Hu: `f_NL` 8.92 ± 5.84 against 8.88 ± 5.79, `b1` −2σ, `b∇²` −1.5σ.
+independent of it (the spectrum is taken at a = 1). On the galaxy-only `f_NL` run, the former
+`lin_pk_table` against Eisenstein–Hu: `f_NL` 8.92 ± 5.84 against 8.88 ± 5.79, `b1` −2σ, `b∇²` −1.5σ.
 
 ### 7.12 Per-shell multipole cut — measured
 
@@ -1381,7 +1392,14 @@ noise (§3.2).
    window and the ℓ-dependent radial cut, times w_ℓ². Protocol fixed before either analysis runs: line
    of sight as noise, same priors and linear spectrum, the two-point contour produced first.
 5. **Code.** `fisher.kappa_spectra` still splits the far shell and the cut and has no tent ramps.
-6. **Moriond abstract**: run numbers only (§7.13–7.15 and step 1).
+6. **Linear spectrum changed** (ACE emulator, §2.1; `Omega_m` bounds [0.2, 0.55]). No run before it
+   resumes (its `config.yaml` carries `lin_pk_table` or the old bounds). At fixed cosmology the Abacus
+   spectrum moves by ≤ 0.11 % against the former table, so the fixed-cosmology Abacus records stand;
+   the `Omega_m`-free runs moved by up to 1–2 % in shape within the posterior, and every closure moved
+   from Eisenstein–Hu (3–5 %). To rerun with the emulator: the galaxy-only box-5000 run of step 1
+   (`abacus/abacus_gxyonly_cosmo_box5000.yaml`); the κ-only and joint box-5000 runs of step 1 and
+   every config of step 3 get it by construction.
+7. **Moriond abstract**: run numbers only (§7.13–7.15 and step 1).
 
 Open, without a run planned: the size of the template's damping (§7.15); the lensing prefactor uses
 `Omega_m` where AbacusLensing uses `Ω_cb` (§4); the ≈ 1 `P_shot` excess of the Abacus `P_gg` (§7.8,
@@ -1449,5 +1467,6 @@ are in §2–§5, measurements in §7.
   analysis box (§4).
 - **Cosmology**: jax_cosmo ODE callbacks exhausted the compiler's memory with `Omega_m` sampled,
   replaced by the background emulator (`dbc760e`) and no callback in the sampled graph (`28d74cc`);
-  the CLASS shape of the Abacus ICs through `lin_pk_table` (`2cc4bb5`); 200³ particles against the
+  the CLASS shape of the Abacus ICs through `lin_pk_table` (`2cc4bb5`), Eisenstein–Hu times a
+  fiducial CLASS/EH ratio, replaced by the ACE emulator everywhere (§2.1, §7.11); 200³ particles against the
   galaxy `sigma8` deficit (`b40ee86`, §7.14).

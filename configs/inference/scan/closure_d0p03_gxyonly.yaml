@@ -89,8 +89,8 @@ latents:
     scale: 0.15
     scale_fid: 0.05
     loc_fid: 0.315192
-    low: 0.10
-    high: 0.60
+    low: 0.2
+    high: 0.55
   sigma8:
     loc: 0.811355
     scale: 0.15

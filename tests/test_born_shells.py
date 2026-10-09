@@ -271,16 +271,12 @@ def test_forward_and_gradient_run_with_proj_oversamp(oversamp):
     assert np.all(np.isfinite(np.asarray(g))) and float(jnp.abs(g).max()) > 0
 
 
-@pytest.mark.parametrize("table", [None, "data/abacus_cosm000_CLASS_power.txt"])
-def test_sampling_omega_m_puts_no_jax_cosmo_callback_in_the_graph(table):
+def test_sampling_omega_m_puts_no_jax_cosmo_callback_in_the_graph():
     """The jax_cosmo fork computes growth and distances through host callbacks that re-solve for
     every new cosmology; with Omega_m sampled they exhaust the compiler's memory on a GPU run. Every
     background quantity of the model must come from the emulator or be evaluated at a = 1."""
-    from pathlib import Path
-
-    table = None if table is None else str(Path(__file__).resolve().parents[1] / table)
     model = FieldLevelModel(**_cfg(galaxies_enabled=True, png_type="fNL", a_obs=None, cmb_chi_matter_min=60.0,
-                                   cmb_shell_weights="linear", lin_pk_table=table))
+                                   cmb_shell_weights="linear"))
     truth = model.predict(samples={"Omega_m": 0.315192, "sigma8": 0.811355, "b1": 1.0, "fNL": 10.0},
                           hide_base=False, hide_samp=False, hide_det=False, frombase=True, rng=0)
     model.reset()

@@ -983,7 +983,7 @@ def plot_warmup_diagnostics(model, state, init_params, truth, output_dir, show=F
             from desi_cmb_fli.bricks import lin_power_interp
             kptcs_warm_0 = jax.tree.map(lambda x: x[0], kptcs_warm)
             kpow_fid = (kptcs_warm_0[0],
-                        lin_power_interp(cosmo_fid, pk_ratio=getattr(model, "pk_ratio", None))(kptcs_warm_0[0]))
+                        lin_power_interp(cosmo_fid)(kptcs_warm_0[0]))
 
             # Create diagnostic figure
             fig = plt.figure(figsize=(12, 4))
@@ -1051,7 +1051,7 @@ def plot_warmup_diagnostics(model, state, init_params, truth, output_dir, show=F
             cosmo_fid = get_cosmology(**model.loc_fid)
             k0, _ = model.spectrum(warm_meshes_real[0])
             k0 = np.asarray(k0)
-            plin = np.asarray(lin_power_interp(cosmo_fid, pk_ratio=getattr(model, "pk_ratio", None))(k0))
+            plin = np.asarray(lin_power_interp(cosmo_fid)(k0))
 
             fig = plt.figure(figsize=(12, 4))
             fig.suptitle('Warmup Diagnostics: Initial Conditions (Abacus mode)', fontsize=12)

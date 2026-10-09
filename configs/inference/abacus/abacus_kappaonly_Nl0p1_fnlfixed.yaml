@@ -27,7 +27,6 @@ model:
   paint_oversamp: 1.75
   gxy_density: 0.000843318125
   png_type: fNL
-  lin_pk_table: data/abacus_cosm000_CLASS_power.txt  # CLASS spectrum of the Abacus ICs: EH x its shape ratio at the fiducial (pipeline 2.1); remove for closure
 cmb_lensing:
   enabled: true
   z_source: 1089.28
@@ -73,8 +72,8 @@ latents:
     scale: 0.15
     scale_fid: 0.05
     loc_fid: 0.315192
-    low: 0.1
-    high: 0.6
+    low: 0.2
+    high: 0.55
   sigma8:
     loc: 0.811355
     scale: 0.15
