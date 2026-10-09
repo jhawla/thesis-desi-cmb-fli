@@ -253,7 +253,7 @@ def main():
     ap.add_argument(
         "--maps",
         action="store_true",
-        help="also save the model maps and plot model vs Abacus around the poles (§8 item 11)",
+        help="also save the model maps and plot model vs Abacus around the poles (§7.9)",
     )
     ap.add_argument(
         "--fig",

@@ -1,0 +1,15 @@
+{
+ "grid": "data/cache/template/geometry_box6000_cell75_ptcl200.npz",
+ "box": 6000.0,
+ "particle_spacing": 30.0,
+ "fiducial_point": [
+  0.315192,
+  0.811355
+ ],
+ "S/N": {
+  "l<=64": 2.717147022890986,
+  "l<=47": 1.2709138179734887
+ },
+ "template/undisplaced": 0.5600828729130788,
+ "projection": {}
+}

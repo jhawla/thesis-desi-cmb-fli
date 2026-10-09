@@ -54,17 +54,21 @@ def test_shells_tile_the_matter_start_to_chi_boundary():
     assert late.low_z_matter_start == 60.0 and ref.low_z_matter_start == 1.0
 
 
-def test_without_the_cut_the_los_covariance_is_the_matter_beyond_the_box_alone():
-    """No low-z term any more: the matter below the shells is the matter the map does not hold."""
+def test_without_the_cut_the_los_covariance_is_the_matter_beyond_the_box_and_the_shell_steps():
+    """No low-z term: the matter below the shells is the matter the map does not hold. Without the
+    cut, nearest bins leave out the matter beyond the box and the steps of the shells only."""
     from desi_cmb_fli.bricks import get_cosmology
     from desi_cmb_fli.cmb_lensing import compute_theoretical_cl_kappa
 
     for start in (0.0, 60.0):
         m = FieldLevelModel(**_cfg(cmb_chi_matter_min=start, cmb_shell_kmax=0.0))
-        beyond = np.asarray(compute_theoretical_cl_kappa(get_cosmology(**m.loc_fid), m.ell_1d,
-                                                         m.chi_boundary, 300.0, m.cmb_z_source))
-        np.testing.assert_allclose(np.asarray(m.cl_high_z_cached),
-                                   beyond * np.asarray(m.cmb_los_window2), rtol=1e-10)
+        cosmo = get_cosmology(**m.loc_fid)
+        beyond = np.asarray(compute_theoretical_cl_kappa(cosmo, m.ell_1d, m.chi_boundary, 300.0,
+                                                         m.cmb_z_source))
+        shells = np.asarray(compute_theoretical_cl_kappa(cosmo, m.ell_1d, max(start, 1.0),
+                                                         m.chi_boundary, m.cmb_z_source))
+        term = np.asarray(m.cl_high_z_cached) / np.asarray(m.cmb_los_window2)
+        assert np.all(np.abs(term - beyond)[2:] < 0.05 * shells[2:])
 
 
 def test_the_kappa_radial_window_is_one_inside_and_ramps_at_the_ends():
@@ -100,12 +104,11 @@ def test_every_high_z_mode_carries_the_los_term_alike():
     """fixed, taylor and exact agree at the fiducial; away from it taylor follows exact to first
     order and fixed does not move."""
     from desi_cmb_fli.bricks import get_cosmology
-    from desi_cmb_fli.cmb_lensing import compute_cl_high_z, compute_theoretical_cl_kappa
+    from desi_cmb_fli.cmb_lensing import compute_cl_high_z, compute_cl_outside_model
 
     def los(m, cosmo, linear=False):
-        lin = {"linear_pk": True} if linear else {}
-        return np.asarray(compute_theoretical_cl_kappa(cosmo, m.ell_1d, m.chi_boundary, 300.0,
-                                                       m.cmb_z_source, **lin)) * np.asarray(m.cmb_los_window2)
+        return np.asarray(compute_cl_outside_model(cosmo, m.ell_1d, **m.cmb_shells, chi_max=300.0,
+                                                   linear_pk=linear)) * np.asarray(m.cmb_los_window2)
 
     models = {mode: FieldLevelModel(**_cfg(cmb_shell_kmax=0.0, high_z_mode=mode))
               for mode in ("fixed", "taylor", "exact", "exact_linear")}
@@ -115,7 +118,7 @@ def test_every_high_z_mode_carries_the_los_term_alike():
         cl = {mode: np.asarray(compute_cl_high_z(
             cosmo, m.ell_1d, m.chi_boundary, m.chi_high_z_max, m.cmb_z_source, mode=mode,
             cl_cached=m.cl_high_z_cached, gradients=m.high_z_gradients, loc_fid=m.loc_fid,
-            shell_cut=m.cmb_shell_cut, window2=m.cmb_los_window2))[2:] for mode, m in models.items()}
+            shells=m.cmb_shells, window2=m.cmb_los_window2))[2:] for mode, m in models.items()}
         np.testing.assert_allclose(cl["exact"], los(models["exact"], cosmo)[2:], rtol=1e-10)
         np.testing.assert_allclose(cl["exact_linear"],
                                    los(models["exact"], cosmo, linear=True)[2:], rtol=1e-10)

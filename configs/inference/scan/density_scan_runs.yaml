@@ -8,6 +8,6 @@ pairs:
   - {density: 1.00, gxy: run_20260922_071921_58748954, joint: null}
   - {density: 0.20, gxy: null, joint: null}
   - {density: 0.10, gxy: run_20260924_071600_58822464, joint: null}
-  # joint run with the abandoned chi_min 700 (archive/scan/closure_d0p03_joint_chimin700.yaml, code
-  # at the git tag pre-shell-cut): rerun it with the current kappa model for identical code
+  # joint run with the abandoned chi_min 700 (archive/scan/closure_d0p03_joint_chimin700.yaml, in the
+  # git history; code at the git tag pre-shell-cut): rerun it with the current kappa model for identical code
   - {density: 0.03, gxy: run_20260923_054507_58787249, joint: run_20260925_020200_58859522}

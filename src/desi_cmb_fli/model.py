@@ -1061,7 +1061,7 @@ class FieldLevelModel(Model):
             # Cache/Precompute High-Z Correction (1-D ell)
             self.cl_high_z_cached = None
             self.high_z_gradients = None
-            self.cmb_shell_cut = None
+            self.cmb_shells = None
             self.cmb_los_window2 = None
 
             if self.full_los_correction:
@@ -1079,17 +1079,17 @@ class FieldLevelModel(Model):
                         f"  [high-z] chi_high_z_max={self.chi_high_z_max:.0f} Mpc/h "
                         f"(chi_CMB={chi_source_fid:.0f})"
                     )
-                if self.cmb_shell_taper is not None:
-                    self.cmb_shell_cut = {
-                        "r_shells": self.cmb_r_shells, "a_shells": self.cmb_a_shells,
-                        "d_r": self.cmb_d_r, "shell_weights": self.cmb_shell_weights,
-                        "taper": self.cmb_shell_taper, "z_source": self.cmb_z_source,
-                    }
+                # The covariance term is everything the shells leave out of the map's matter (3.2).
+                self.cmb_shells = {
+                    "r_shells": self.cmb_r_shells, "a_shells": self.cmb_a_shells,
+                    "d_r": self.cmb_d_r, "shell_weights": self.cmb_shell_weights,
+                    "taper": self.cmb_shell_taper, "z_source": self.cmb_z_source,
+                }
 
                 def _cl_los(c_, chi_up_):
                     return compute_cl_high_z(
                         c_, self.ell_1d, self.chi_boundary, chi_up_, self.cmb_z_source,
-                        mode="exact", shell_cut=self.cmb_shell_cut, window2=self.cmb_los_window2,
+                        mode="exact", shells=self.cmb_shells, window2=self.cmb_los_window2,
                     )
 
                 if self.high_z_mode in ["fixed", "taylor"]:
@@ -1649,7 +1649,7 @@ class FieldLevelModel(Model):
                             cl_cached=self.cl_high_z_cached,
                             gradients=self.high_z_gradients,
                             loc_fid=self.loc_fid,
-                            shell_cut=self.cmb_shell_cut,
+                            shells=self.cmb_shells,
                             window2=self.cmb_los_window2,
                         )
 

@@ -522,3 +522,31 @@ def test_the_abacus_observation_lives_on_the_projection_sphere(tmp_path):
     assert np.all(np.isfinite(spectra["cl_kk_obs"])) and np.all(np.isfinite(spectra["cl_kk_pred"]))
     plot_field_slices(out, output_dir=tmp_path, box_shape=model.box_shape, observation_mode="abacus",
                       cmb_mask=model.cmb_mask, cmb_nside=model.cmb_nside, model=model)
+
+
+def test_abacus_ic_loader_crops_the_central_cube(tmp_path):
+    """A model box smaller than the IC box gets the central cube of the IC grid (observer at the
+    centre of both); a box that is not such a crop is refused."""
+    from types import SimpleNamespace
+
+    import asdf
+
+    from desi_cmb_fli.cmb_lensing import load_abacus_ic_truth
+
+    dens = np.random.default_rng(3).normal(size=(16, 16, 16)).astype(np.float32)
+    header = {"BoxSize": 160.0, "InitialRedshift": 99.0, "GrowthTable": {0: 2.0, 99: 1.0}}
+    path = tmp_path / "ic.asdf"
+    asdf.AsdfFile({"header": header, "data": {"density": dens}}).write_to(path)
+
+    def model(box, observer=None):
+        return SimpleNamespace(box_shape=(box,) * 3, init_shape=(int(box / 10),) * 3,
+                               observer_position=np.full(3, box / 2 if observer is None else observer))
+
+    out = load_abacus_ic_truth({"file": str(path)}, model(80.0))["init_mesh"]
+    np.testing.assert_allclose(np.fft.irfftn(np.asarray(out), s=(8, 8, 8)), 2.0 * dens[4:12, 4:12, 4:12],
+                               atol=1e-5)
+    full = load_abacus_ic_truth({"file": str(path)}, model(160.0))["init_mesh"]
+    np.testing.assert_allclose(np.fft.irfftn(np.asarray(full), s=(16, 16, 16)), 2.0 * dens, atol=1e-5)
+    for bad in (model(85.0), model(70.0), model(80.0, observer=30.0)):
+        with pytest.raises(ValueError, match="central crop"):
+            load_abacus_ic_truth({"file": str(path)}, bad)

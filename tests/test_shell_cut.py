@@ -14,7 +14,7 @@ from test_born_shells import _cfg
 from desi_cmb_fli.bricks import get_cosmology
 from desi_cmb_fli.cmb_lensing import (
     compute_cl_high_z,
-    compute_cl_shell_cut,
+    compute_cl_outside_model,
     compute_theoretical_cl_kappa,
     convergence_Born_spherical,
     cut_shells,
@@ -90,25 +90,49 @@ def test_a_cut_that_touches_no_shell_leaves_the_model_bit_identical():
                                   np.asarray(_truth(ref)["kappa_pred"]))
 
 
-def test_the_covariance_term_is_the_limber_power_the_cut_removes():
+def test_the_covariance_term_is_the_matter_the_shells_leave_out():
     model = FieldLevelModel(**_cfg(cmb_shell_kmax=0.05))
-    ref = FieldLevelModel(**_cfg(cmb_shell_kmax=0.0))
     assert 0 < (model.cmb_shell_taper < 1).any(axis=1).sum() < model.cmb_n_shells
-    extra = np.asarray(model.cl_high_z_cached) - np.asarray(ref.cl_high_z_cached)
     cosmo = get_cosmology(**model.loc_fid)
-    term = np.asarray(compute_cl_shell_cut(cosmo, model.ell_1d, **model.cmb_shell_cut))
-    np.testing.assert_allclose(extra, term * np.asarray(model.cmb_los_window2), rtol=1e-8, atol=1e-30)
-    assert np.all(term[2:] >= 0) and term[-1] > 0
-    # every shell removed whole: the Limber C_l of the matter the shells hold, up to the Riemann
-    # sum over the shells' lensing weights
-    cut = dict(model.cmb_shell_cut, shell_weights="nearest", taper=np.zeros_like(model.cmb_shell_taper))
-    r, h = model.cmb_r_shells, model.cmb_d_r
-    whole = np.asarray(compute_cl_shell_cut(cosmo, model.ell_1d, **cut, n_per_shell=200))
-    limber = np.asarray(compute_theoretical_cl_kappa(cosmo, model.ell_1d, max(1.0, r[0] - h / 2),
-                                                     r[-1] + h / 2, model.cmb_z_source, n_steps=800))
-    np.testing.assert_allclose(whole[2:], limber[2:], rtol=0.1)
-    nothing = dict(model.cmb_shell_cut, taper=np.ones_like(model.cmb_shell_taper))
-    assert np.all(np.asarray(compute_cl_shell_cut(cosmo, model.ell_1d, **nothing)) == 0.0)
+    term = np.asarray(compute_cl_outside_model(cosmo, model.ell_1d, **model.cmb_shells,
+                                               chi_max=model.chi_high_z_max))
+    np.testing.assert_allclose(np.asarray(model.cl_high_z_cached),
+                               term * np.asarray(model.cmb_los_window2), rtol=1e-8, atol=1e-30)
+    assert np.all(term[2:] > 0)
+    r, h, end = model.cmb_r_shells, model.cmb_d_r, model.chi_boundary
+
+    def outside(chi_max, **kw):
+        return np.asarray(compute_cl_outside_model(cosmo, model.ell_1d, **(model.cmb_shells | kw),
+                                                   chi_max=chi_max, n_per_shell=200))
+
+    def limber(lo, hi):
+        return np.asarray(compute_theoretical_cl_kappa(cosmo, model.ell_1d, max(1.0, lo), hi,
+                                                       model.cmb_z_source, n_steps=800))
+
+    full = limber(r[0] - h / 2, end)
+    # nearest bins, no cut, the map stopping at the box: only the Riemann steps of the shells
+    held = outside(end, taper=None)
+    assert np.all(held[2:] < 0.05 * full[2:])
+    # the map deeper than the box: the matter beyond it, as its own Limber power
+    np.testing.assert_allclose((outside(model.chi_high_z_max, taper=None) - held)[2:],
+                               limber(end, model.chi_high_z_max)[2:], rtol=1e-2)
+    # every shell removed whole: all the matter the shells hold
+    np.testing.assert_allclose(outside(end, taper=np.zeros_like(model.cmb_shell_taper))[2:],
+                               full[2:], rtol=0.1)
+    # the cut adds what it removes at the top of the band
+    assert outside(end)[-1] > held[-1]
+
+
+def test_linear_tents_leave_their_end_ramps_to_the_covariance():
+    model = FieldLevelModel(**_cfg(cmb_shell_weights="linear", cmb_shell_kmax=0.0))
+    cosmo = get_cosmology(**model.loc_fid)
+    nearest = FieldLevelModel(**_cfg(cmb_shell_kmax=0.0))
+    end = model.chi_boundary
+    ramps = np.asarray(compute_cl_outside_model(cosmo, model.ell_1d, **model.cmb_shells, chi_max=end,
+                                                n_per_shell=200))
+    steps = np.asarray(compute_cl_outside_model(cosmo, nearest.ell_1d, **nearest.cmb_shells,
+                                                chi_max=end, n_per_shell=200))
+    assert np.all(ramps[2:] > steps[2:])
 
 
 def test_every_high_z_mode_carries_the_cut_term_alike():
@@ -118,7 +142,7 @@ def test_every_high_z_mode_carries_the_cut_term_alike():
     cl = {mode: np.asarray(compute_cl_high_z(
         cosmo, m.ell_1d, m.chi_boundary, m.chi_high_z_max, m.cmb_z_source, mode=mode,
         cl_cached=m.cl_high_z_cached, gradients=m.high_z_gradients, loc_fid=m.loc_fid,
-        shell_cut=m.cmb_shell_cut, window2=m.cmb_los_window2))[2:] for mode, m in models.items()}
+        shells=m.cmb_shells, window2=m.cmb_los_window2))[2:] for mode, m in models.items()}
     np.testing.assert_allclose(cl["exact"], cl["fixed"], rtol=1e-8)
     np.testing.assert_allclose(cl["taylor"], cl["fixed"], rtol=1e-8)
     ref = FieldLevelModel(**_cfg(high_z_mode="taylor", cmb_shell_kmax=0.0))

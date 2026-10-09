@@ -1,0 +1,15 @@
+{
+ "grid": "data/cache/template/box7500_ptcl200_grid.npz",
+ "box": 7500.0,
+ "particle_spacing": 37.5,
+ "fiducial_point": [
+  0.3152,
+  0.8114
+ ],
+ "S/N": {
+  "l<=64": 5.464719680173654,
+  "l<=47": 2.533438247325252
+ },
+ "template/undisplaced": 0.6881264428346306,
+ "projection": {}
+}

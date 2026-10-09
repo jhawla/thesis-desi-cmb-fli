@@ -1,132 +1,109 @@
 #!/usr/bin/env python
 """
-Plot comparison of CMB lensing noise spectra: ACT DR6 vs Planck PR4.
+Plot the CMB lensing reconstruction noise of Planck PR4, ACT DR6 and the Simons Observatory baseline.
 
-This script loads both noise power spectra and creates a comparison plot
-showing the improvement provided by ACT DR6 over Planck PR4.
+Top: N_ell^kappa_kappa of the three; bottom: each over ACT DR6. The shaded band is the multipole range
+of the likelihood (ell <= 2 nside = 64). The SO curve is the file the paper's runs use (pipeline 3.2).
 
 Usage:
-    python scripts/plot_cmb_noise_comparison.py [--output OUTPUT_DIR]
+    python scripts/plot_cmb_noise_comparison.py [--output OUTPUT_DIR] [--lmax_band 64]
 """
+
 import argparse
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 
+PLANCK = "/global/cfs/cdirs/cmb/data/planck2020/PR4_lensing/PR4_nlkk_p.dat"
+ACT = "data/N_L_kk_act_dr6_lensing_v1_baseline.txt"
+SO = "data/N_L_kk_so_v3_1_1_baseline_mv.txt"
 
-def load_planck_nlkk(filepath="/global/cfs/cdirs/cmb/data/planck2020/PR4_lensing/PR4_nlkk_p.dat"):
-    """Load Planck PR4 N_ell^kappa_kappa."""
+
+def load_planck_nlkk(filepath=PLANCK):
+    """Planck PR4 N_ell^kappa_kappa (one column, indexed by ell)."""
     data = np.loadtxt(filepath)
-    ell = np.arange(len(data))
-    nlkk = data
-    return ell, nlkk
+    return np.arange(len(data)), data
 
 
-def load_act_nlkk(filepath="data/N_L_kk_act_dr6_lensing_v1_baseline.txt"):
-    """Load ACT DR6 N_ell^kappa_kappa."""
+def load_two_columns(filepath):
+    """N_ell^kappa_kappa from a file of columns ell, N_ell (ACT DR6, SO)."""
     data = np.loadtxt(filepath)
-    ell = data[:, 0].astype(int)
-    nlkk = data[:, 1]
-    return ell, nlkk
+    return data[:, 0].astype(int), data[:, 1]
 
 
-def plot_comparison(output_dir="figures"):
-    """Create comparison plot of ACT vs Planck noise spectra."""
+def plot_comparison(output_dir="figures", lmax_band=64):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    curves = {
+        "Planck PR4": load_planck_nlkk(),
+        "ACT DR6 baseline": load_two_columns(ACT),
+        "Simons Observatory baseline": load_two_columns(SO),
+    }
+    colors = {"Planck PR4": "C0", "ACT DR6 baseline": "C1", "Simons Observatory baseline": "C2"}
+    act_ell, act_nl = curves["ACT DR6 baseline"]
 
-    print("Loading noise spectra...")
-    planck_ell, planck_nlkk = load_planck_nlkk()
-    act_ell, act_nlkk = load_act_nlkk()
-
-    # Create figure with two subplots
     fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
-
-    # ====== Subplot 1: N_ell comparison ======
+    for ax in axes:
+        ax.axvspan(2, lmax_band, color="0.85", alpha=0.6, lw=0)
     ax = axes[0]
+    for label, (ell, nl) in curves.items():
+        m = (ell >= 2) & (ell <= 3000) & (nl > 0)
+        ax.loglog(ell[m], nl[m], label=label, lw=2.5, alpha=0.85, color=colors[label])
+    ax.set_ylabel(r"$N_\ell^{\kappa\kappa}$", fontsize=13)
+    ax.legend(loc="upper left", frameon=True, framealpha=0.95, fontsize=11)
+    ax.grid(True, which="both", alpha=0.3, ls="-", lw=0.5)
+    ax.set_title(
+        f"CMB lensing reconstruction noise (shaded: likelihood band $\\ell \\leq {lmax_band}$)",
+        fontsize=14,
+        pad=10,
+    )
 
-    # Plot Planck
-    mask_planck = (planck_ell >= 2) & (planck_ell <= 3000) & (planck_nlkk > 0)
-    ax.loglog(planck_ell[mask_planck], planck_nlkk[mask_planck],
-              label='Planck PR4', lw=2.5, alpha=0.8, color='C0')
-
-    # Plot ACT
-    mask_act = (act_ell >= 2) & (act_ell <= 3000) & (act_nlkk > 0)
-    ax.loglog(act_ell[mask_act], act_nlkk[mask_act],
-              label='ACT DR6 baseline', lw=2.5, alpha=0.8, color='C1')
-
-    ax.set_ylabel(r'$N_\ell^{\kappa\kappa}$', fontsize=13)
-    ax.legend(loc='upper left', frameon=True, framealpha=0.95, fontsize=11)
-    ax.grid(True, which='both', alpha=0.3, ls='-', lw=0.5)
-    ax.set_title('CMB Lensing Reconstruction Noise Comparison',
-                 fontsize=14, fontweight='bold', pad=10)
-
-    # ====== Subplot 2: Ratio ACT/Planck ======
     ax = axes[1]
-
-    # Compute ratio on common ell range
-    ell_common = np.arange(2, min(2049, len(planck_nlkk), len(act_nlkk)))
-    planck_vals = planck_nlkk[ell_common]
-    act_vals = act_nlkk[ell_common]
-    mask_valid = (planck_vals > 0) & (act_vals > 0)
-
-    ell_plot = ell_common[mask_valid]
-    ratio = act_vals[mask_valid] / planck_vals[mask_valid]
-
-    ax.semilogx(ell_plot, ratio, lw=2.5, color='C2', label=f'ACT/Planck (mean={ratio.mean():.2f})')
-    ax.axhline(1, color='black', ls='--', lw=1.5, alpha=0.5, label='Equal noise')
-    ax.axhline(ratio.mean(), color='C2', ls=':', lw=2, alpha=0.7)
-
-    ax.set_xlabel(r'Multipole $\ell$', fontsize=13)
-    ax.set_ylabel(r'$N_\ell^{\rm ACT} / N_\ell^{\rm Planck}$', fontsize=13)
-    ax.legend(loc='upper right', frameon=True, framealpha=0.95, fontsize=10)
-    ax.grid(True, which='both', alpha=0.3, ls='-', lw=0.5)
-    ax.set_ylim([0, 1.2])
-
-    # Add shaded region showing ACT is better
-    ax.fill_between(ell_plot, 0, ratio, alpha=0.2, color='C2',
-                     label='ACT improvement region')
+    print(f"Mean ratio to ACT DR6 over ell 2-{lmax_band} and 65-2000:")
+    for label in ("Planck PR4", "Simons Observatory baseline"):
+        ell, nl = curves[label]
+        common = np.arange(2, min(2001, act_ell.max() + 1, ell.max() + 1))
+        ratio = np.interp(common, ell, nl) / np.interp(common, act_ell, act_nl)
+        band = common <= lmax_band
+        ax.semilogx(
+            common,
+            ratio,
+            lw=2.5,
+            color=colors[label],
+            label=f"{label} / ACT DR6 (mean {ratio[band].mean():.2f} at $\\ell \\leq {lmax_band}$)",
+        )
+        print(f"  {label}: {ratio[band].mean():.3f}, {ratio[~band].mean():.3f}")
+    ax.axhline(1, color="black", ls="--", lw=1.5, alpha=0.5)
+    ax.set_yscale("log")
+    ax.set_xlabel(r"Multipole $\ell$", fontsize=13)
+    ax.set_ylabel(r"$N_\ell / N_\ell^{\rm ACT\,DR6}$", fontsize=13)
+    ax.legend(loc="upper left", frameon=True, framealpha=0.95, fontsize=10)
+    ax.grid(True, which="both", alpha=0.3, ls="-", lw=0.5)
 
     plt.tight_layout()
-
-    # Save figure
     outfile = output_dir / "cmb_noise_comparison.png"
-    plt.savefig(outfile, dpi=150, bbox_inches='tight')
-    print(f"✓ Saved: {outfile}")
-
-    # Print summary statistics
-    print("\n" + "="*60)
-    print("SUMMARY STATISTICS")
-    print("="*60)
-    print(f"Ell range: {ell_plot.min()} - {ell_plot.max()}")
-    print(f"Mean ratio (ACT/Planck): {ratio.mean():.3f}")
-    print(f"ACT has {1/ratio.mean():.2f}× lower noise than Planck")
-
-    print("\nAt specific multipoles:")
-    for ell_test in [100, 500, 1000, 2000]:
-        if ell_test < len(planck_nlkk) and ell_test < len(act_nlkk):
-            if planck_nlkk[ell_test] > 0 and act_nlkk[ell_test] > 0:
-                r = act_nlkk[ell_test] / planck_nlkk[ell_test]
-                print(f"  ℓ={ell_test:4d}: ACT/Planck = {r:.3f}")
-    print("="*60)
-
+    plt.savefig(outfile, dpi=150, bbox_inches="tight")
     plt.close()
+    print(f"Saved: {outfile}")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Plot ACT DR6 vs Planck PR4 CMB lensing noise comparison"
+    parser = argparse.ArgumentParser(description=__doc__.strip().split("\n")[0])
+    parser.add_argument(
+        "--output",
+        "-o",
+        default="figures/spectra_diagnostic",
+        help="output directory (default: figures/spectra_diagnostic/)",
     )
     parser.add_argument(
-        "--output", "-o",
-        type=str,
-        default="figures",
-        help="Output directory for figure (default: figures/)"
+        "--lmax_band",
+        type=int,
+        default=64,
+        help="top of the likelihood band, 2 nside (default: 64)",
     )
     args = parser.parse_args()
-
-    plot_comparison(output_dir=args.output)
+    plot_comparison(output_dir=args.output, lmax_band=args.lmax_band)
 
 
 if __name__ == "__main__":

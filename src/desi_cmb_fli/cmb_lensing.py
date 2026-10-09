@@ -753,44 +753,47 @@ def cut_shells(shells, taper, nside):
     )
 
 
-def compute_cl_shell_cut(
-    cosmo, ell, r_shells, a_shells, d_r, shell_weights, taper, z_source, n_per_shell=40,
-    linear_pk=False,
+def compute_cl_outside_model(
+    cosmo, ell, r_shells, a_shells, d_r, shell_weights, z_source, chi_max, taper=None,
+    n_per_shell=40, n_beyond=200, linear_pk=False,
 ):
-    """Limber C_ell of what the per-shell multipole cut removes from the Born convergence.
+    """Limber C_ell of the matter the data map holds and the model map does not.
 
-    Shell ``s`` holds the matter with the radial kernel ``q_s = d_r W(r_s) p_s(chi) chi^2 / V_s``
-    (its lensing weight at the centre, as in ``convergence_Born_spherical``, times its profile
-    normalised by its volume); the cut removes ``sum_s (1 - w_s(ell)) q_s``, whose Limber power is
-    returned, so neighbouring tents enter with their cross terms. ``ell`` are integers indexing the
-    columns of ``taper``.
+    The map holds the matter with the lensing kernel ``W(chi)`` from where the shells start to
+    ``chi_max`` (where the map's matter stops). Shell ``s`` holds it with ``q_s = d_r W(r_s)
+    p_s(chi) chi^2 / V_s`` (its lensing weight at the centre, as in ``convergence_Born_spherical``,
+    times its profile normalised by its volume), times its multipole taper ``w_s(ell)`` (1 without
+    the per-shell cut). The kernel left out, ``W - sum_s w_s(ell) q_s``, holds the matter beyond the
+    box, the end ramps of the tents and what the cut removes; it is one kernel, so their cross
+    terms enter. ``ell`` are integers indexing the columns of ``taper``.
     """
-    taper = np.asarray(taper, dtype=float)
     ell_idx = np.asarray(ell).astype(int)
-    cut = np.flatnonzero((taper[:, ell_idx] < 1.0).any(axis=1))
-    if cut.size == 0:
-        return jnp.zeros(ell_idx.shape)
-    r = np.asarray(r_shells, dtype=float)[cut]
-    h = np.broadcast_to(np.asarray(d_r, dtype=float), np.shape(r_shells))[cut]
-    chi, p = shell_profiles(r, h, shell_weights, n_per_shell)
-    keep = chi > 1.0
-    chi, p = chi[keep], p[:, keep]
-    vol = np.trapezoid(p * chi**2, chi, axis=1)
+    r = np.asarray(r_shells, dtype=float)
+    h = np.broadcast_to(np.asarray(d_r, dtype=float), r.shape)
+    chi_in, p = shell_profiles(r, h, shell_weights, n_per_shell)
+    keep = chi_in > 1.0
+    chi_in, p = chi_in[keep], p[:, keep]
+    vol = np.trapezoid(p * chi_in**2, chi_in, axis=1)
+    # beyond the shells up to chi_max (zero width if the map stops there); chi_max may be traced
+    t = np.linspace(0.0, 1.0, n_beyond)[1:]
+    chi_j = jnp.concatenate([jnp.asarray(chi_in), chi_in[-1] + jnp.maximum(chi_max - chi_in[-1], 0.0) * t])
+    p = np.concatenate([p, np.zeros((r.size, t.size))], axis=1)
     chi_s = jc.background.radial_comoving_distance(cosmo, 1.0 / (1.0 + z_source))[0]
-    w = lensing_kernel(cosmo, jnp.asarray(r), jnp.asarray(a_shells)[cut], chi_s)
-    q = (jnp.asarray(h) * w)[:, None] * jnp.asarray(p * chi**2 / vol[:, None])
-    chi_j = jnp.asarray(chi)
+    w = lensing_kernel(cosmo, jnp.asarray(r), jnp.asarray(a_shells), chi_s)
+    q = (jnp.asarray(h) * w)[:, None] * jnp.asarray(p) * chi_j**2 / jnp.asarray(vol)[:, None]
     a = jc.background.a_of_chi(cosmo, chi_j)
+    w_map = lensing_kernel(cosmo, chi_j, a, chi_s)
     power = jc.power.linear_matter_power if linear_pk else jc.power.nonlinear_matter_power
 
-    def per_ell(ell_val, removed):
-        kern = (removed[:, None] * q).sum(0)
+    def per_ell(ell_val, held):
+        kern = w_map - (held[:, None] * q).sum(0)
         k = (ell_val + 0.5) / chi_j
         pk = jax.vmap(lambda ki, ai: jnp.squeeze(power(cosmo, ki, ai)))(k, a)
         return jax.scipy.integrate.trapezoid(kern**2 / chi_j**2 * pk, x=chi_j)
 
-    removed = jnp.asarray(1.0 - taper[cut][:, ell_idx].T)  # (n_ell, n_cut)
-    return jax.vmap(per_ell)(jnp.asarray(ell_idx, dtype=float), removed)
+    held = (np.ones((r.size, ell_idx.size)) if taper is None
+            else np.asarray(taper, dtype=float)[:, ell_idx])
+    return jax.vmap(per_ell)(jnp.asarray(ell_idx, dtype=float), jnp.asarray(held.T))
 
 
 def _galaxy_kernel(chi, chi_min, chi_max, nz):
@@ -876,15 +879,16 @@ def compute_cl_high_z(
     gradients=None,
     loc_fid=None,
     n_steps=100,
-    shell_cut=None,
+    shells=None,
     window2=None,
 ):
-    """Line-of-sight C_ell^{kappa kappa} correction: the matter beyond the box, ``[chi_min,
-    chi_max]``, plus, if ``shell_cut`` (the keyword arguments of ``compute_cl_shell_cut`` but
-    ``cosmo`` and ``ell``), the power the per-shell multipole cut removes, times ``window2`` if
-    given (the squared angular window with which that matter reaches the observable, the
-    projection sphere's ``bilinear_window``). Every mode treats both terms alike (``cl_cached``
-    and ``gradients`` hold their windowed sum).
+    """Line-of-sight C_ell^{kappa kappa} correction: the matter the data map holds and the model
+    does not, up to ``chi_max`` (where the map's matter stops; the CMB if None). With ``shells``
+    (the keyword arguments of ``compute_cl_outside_model`` but ``cosmo``, ``ell`` and ``chi_max``)
+    it is everything the Born shells leave out: beyond the box, the end ramps of the tents and the
+    per-shell cut; without, the Limber power of ``[chi_min, chi_max]``. Times ``window2`` if given
+    (the squared angular window with which that matter reaches the observable, the projection
+    sphere's ``bilinear_window``). ``cl_cached`` and ``gradients`` hold the windowed term.
 
     Modes:
       'fixed'  : returns cached C_ell at fiducial cosmology.
@@ -911,11 +915,13 @@ def compute_cl_high_z(
         linear_pk = mode == "exact_linear"
         chi_source = jc.background.radial_comoving_distance(cosmo, 1.0 / (1.0 + z_source))[0]
         chi_max_eff = chi_source if chi_max is None else chi_max
-        cl = compute_theoretical_cl_kappa(
-            cosmo, ell_1d, chi_min, chi_max_eff, z_source, n_steps=n_steps, linear_pk=linear_pk
-        )
-        if shell_cut is not None:
-            cl = cl + compute_cl_shell_cut(cosmo, ell_1d, **shell_cut, linear_pk=linear_pk)
+        if shells is not None:
+            cl = compute_cl_outside_model(cosmo, ell_1d, **shells, chi_max=chi_max_eff,
+                                          linear_pk=linear_pk)
+        else:
+            cl = compute_theoretical_cl_kappa(
+                cosmo, ell_1d, chi_min, chi_max_eff, z_source, n_steps=n_steps, linear_pk=linear_pk
+            )
         if window2 is not None:
             cl = cl * window2
         return cl
@@ -1575,7 +1581,9 @@ def load_abacus_ic_truth(abacus_ic_cfg: dict, model) -> dict:
     is grown to a=1 with the header ``GrowthTable`` (normalised to D=1 at
     ``InitialRedshift``) and Fourier-resampled onto ``model.init_shape``, so
     that ``model.spectrum(irfftn(init_mesh))`` matches
-    ``lin_power_interp(cosmo)``.
+    ``lin_power_interp(cosmo)``. A model box smaller than the simulation box
+    gets its central cube (observer at the centre of both), which the model
+    then treats as periodic.
     """
     import asdf as _asdf
 
@@ -1588,13 +1596,22 @@ def load_abacus_ic_truth(abacus_ic_cfg: dict, model) -> dict:
         growth = dict(header["GrowthTable"])
         dens = np.asarray(f.tree["data"]["density"], dtype=np.float32)
 
-    if not np.allclose(np.asarray(model.box_shape, dtype=float), box_ic):
-        raise ValueError(
-            f"[Abacus-IC] Box mismatch: IC box is {box_ic} Mpc/h but "
-            f"model.box_shape={tuple(model.box_shape)}. The published IC covers the "
-            f"whole simulation box; set model.box_shape to {box_ic} to use it, or "
-            f"drop abacus_ic.file to run without the IC reference."
-        )
+    box = np.asarray(model.box_shape, dtype=float)
+    if not np.allclose(box, box_ic):
+        # A smaller box is the central cube of the simulation box, observer at the centre of both.
+        n_crop = box / (box_ic / dens.shape[0])
+        centred = np.allclose(np.asarray(model.observer_position, dtype=float), box / 2)
+        if (not centred or np.any(box > box_ic) or not np.allclose(n_crop, np.round(n_crop), atol=1e-6)
+                or np.any((dens.shape[0] - np.round(n_crop)) % 2)):
+            raise ValueError(
+                f"[Abacus-IC] model.box_shape={tuple(model.box_shape)} is not a central crop of the "
+                f"{box_ic} Mpc/h IC box: it must hold an integer number of IC cells "
+                f"({box_ic / dens.shape[0]:.4f} Mpc/h), an even number fewer than {dens.shape[0]}, "
+                f"with the observer at its centre. Drop abacus_ic.file to run without the IC reference."
+            )
+        s = (dens.shape[0] - int(round(n_crop[0]))) // 2
+        dens = dens[s:dens.shape[0] - s, s:dens.shape[1] - s, s:dens.shape[2] - s]
+        print(f"[Abacus-IC] central crop {dens.shape} of the {box_ic:g} Mpc/h IC box")
 
     dens = dens * (float(growth[0.0]) / float(growth[z_ic]))
 

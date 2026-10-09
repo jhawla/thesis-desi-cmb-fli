@@ -16,7 +16,7 @@ import yaml
 PARAMS = ("fNL", "b1", "bn2")
 DELTA_C = 1.686
 C_KMS_OVER_H100 = 2997.92458  # c / (100 km/s/Mpc), Mpc/h
-NELL_FILE = Path(__file__).resolve().parents[2] / "data/N_L_kk_act_dr6_lensing_v1_baseline.txt"
+NELL_FILE = Path(__file__).resolve().parents[2] / "data/N_L_kk_so_v3_1_1_baseline_mv.txt"
 
 # AbacusSummit HUGE c000_ph201 LRG light cone: redshift range, full sky, and the catalogue n(z)
 # (15 bins of width 0.046 from z = 0.405). The kappa geometry is set from the run config.
