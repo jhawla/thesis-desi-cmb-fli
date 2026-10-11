@@ -833,6 +833,7 @@ class FieldLevelModel(Model):
                 bilinear_window,
                 compute_cl_high_z,
                 compute_sigma_hp,
+                limber_ratio_outside_model,
                 load_healpix_mask,
                 shell_ell_taper,
             )
@@ -1053,6 +1054,7 @@ class FieldLevelModel(Model):
             self.high_z_gradients = None
             self.cmb_shells = None
             self.cmb_los_window2 = None
+            self.cmb_los_limber = None
 
             if self.full_los_correction:
                 # The matter outside the model reaches the data through the projection sphere's
@@ -1076,10 +1078,16 @@ class FieldLevelModel(Model):
                     "taper": self.cmb_shell_taper, "z_source": self.cmb_z_source,
                 }
 
+                # Limber misses the radial modes of the term's thin kernels at low ell: exact over
+                # Limber in linear theory at the fiducial, applied in every mode (3.2).
+                self.cmb_los_limber = jnp.asarray(limber_ratio_outside_model(
+                    cosmo_fid, self.ell_1d, **self.cmb_shells, chi_max=chi_high_z_upper))
+
                 def _cl_los(c_, chi_up_):
                     return compute_cl_high_z(
                         c_, self.ell_1d, self.chi_boundary, chi_up_, self.cmb_z_source,
-                        mode="exact", shells=self.cmb_shells, window2=self.cmb_los_window2,
+                        mode="exact", shells=self.cmb_shells,
+                        window2=self.cmb_los_window2 * self.cmb_los_limber,
                     )
 
                 if self.high_z_mode in ["fixed", "taylor"]:
@@ -1640,7 +1648,7 @@ class FieldLevelModel(Model):
                             gradients=self.high_z_gradients,
                             loc_fid=self.loc_fid,
                             shells=self.cmb_shells,
-                            window2=self.cmb_los_window2,
+                            window2=self.cmb_los_window2 * self.cmb_los_limber,
                         )
 
                     total_cl_1d = jnp.asarray(self.nell_1d)

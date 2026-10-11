@@ -38,9 +38,6 @@ class ToyBackground:
     def w_kappa(self, chi):
         return 1e-4 * np.ones_like(chi)
 
-    def c_kappa(self, ells, lo, hi):
-        return 1e-8 * (hi - lo) / 1000.0 * np.ones(np.size(ells))
-
 
 def survey(n_total):
     return {
@@ -59,26 +56,41 @@ def shell_volume(s):
 
 
 KMIN, KMAX = 2e-3, 3e-2
+CUBE_K3 = 6 / np.pi  # (2 kmax)^3 / (4 pi kmax^3 / 3): the grid's Fourier cube against its sphere
+
+
+def test_the_cube_mode_fraction_is_the_share_of_directions_inside_the_cube():
+    rng = np.random.default_rng(0)
+    n = rng.normal(size=(400000, 3))
+    n /= np.linalg.norm(n, axis=1, keepdims=True)
+    x = np.array([0.5, 1.0, 1.2, 1.4, 1.5, 1.65, 1.75])
+    mc = [(xi * np.abs(n).max(axis=1) <= 1).mean() for xi in x]
+    np.testing.assert_allclose(fi.cube_mode_fraction(x), mc, atol=3e-3)
+    assert fi.cube_mode_fraction(np.sqrt(3.0) + 1e-6) == 0.0
 
 
 def test_b1_information_is_the_mode_count():
-    """No shot noise, no RSD: P = b^2 P0, so F_b1b1 = N_modes (2/b)^2 = V dk^3 / (3 pi^2 b^2)."""
+    """No shot noise, no RSD: P = b^2 P0, so F_b1b1 = N_modes (2/b)^2, the modes of the grid's
+    Fourier cube outside k_min: V ((6/pi) kmax^3 - kmin^3) / (3 pi^2 b^2)."""
     s, b1 = survey(1e14), 1.2
     F = fi.galaxy_fisher_3d(
         ToyBackground(), s, b1, 0.0, KMAX, kmin=KMIN, rsd=False, n_chi=400, n_k=2000
     )
-    expected = shell_volume(s) * (KMAX**3 - KMIN**3) / (3 * np.pi**2 * (1 + b1) ** 2)
+    expected = shell_volume(s) * (CUBE_K3 * KMAX**3 - KMIN**3) / (3 * np.pi**2 * (1 + b1) ** 2)
     np.testing.assert_allclose(F[1, 1], expected, rtol=2e-3)
 
 
 def test_fnl_information_follows_the_inverse_square_response():
-    """dP/dfNL = 2 b P0 b_phi / (C_M k^2): F_fNLfNL = V b_phi^2 / (pi^2 b^2 C_M^2) (1/kmin - 1/kmax)."""
+    """dP/dfNL = 2 b P0 b_phi / (C_M k^2): F_fNLfNL = V b_phi^2 / (pi^2 b^2 C_M^2) int c dk / k^2,
+    (1/kmin - 1/kmax) inside the sphere plus the corners of the cube."""
     s, b1 = survey(1e14), 1.2
     F = fi.galaxy_fisher_3d(
         ToyBackground(), s, b1, 0.0, KMAX, kmin=KMIN, rsd=False, n_chi=400, n_k=4000
     )
     bphi, b = 2 * fi.DELTA_C * b1, 1 + b1
-    expected = shell_volume(s) * bphi**2 / (np.pi**2 * b**2 * C_M**2) * (1 / KMIN - 1 / KMAX)
+    x = np.linspace(1.0, np.sqrt(3.0), 4001)
+    corners = np.trapezoid(fi.cube_mode_fraction(x) / x**2, x) / KMAX
+    expected = shell_volume(s) * bphi**2 / (np.pi**2 * b**2 * C_M**2) * (1 / KMIN - 1 / KMAX + corners)
     np.testing.assert_allclose(F[0, 0], expected, rtol=2e-3)
 
 
@@ -111,6 +123,8 @@ def test_kappa_adds_nothing_when_its_noise_is_infinite():
         "chi_box": 3750.0,
         "chi_high_z_max": 3942.0,
         "lmax": 16,
+        "n_shells": 8,
+        "shell_weights": "linear",
     }
     nell = np.column_stack([np.arange(2.0, 200.0), np.full(198, 1e-8)])
     kw = {"b1": 1.2, "bn2": 78.0, "n_shells": 4, "nell": nell}
@@ -175,16 +189,13 @@ class ToySigma8Background(ToyBackground):
     def plin(self, k, z):
         return self.s2 * super().plin(k, z)
 
-    def c_kappa(self, ells, lo, hi):
-        return self.s2 * super().c_kappa(ells, lo, hi)
-
 
 def toy_cache():
     return fi.BackgroundCache(factory=lambda om, s8: ToySigma8Background(s8))
 
 
 KAPPA = {"chi_min": 292.6, "chi_box": 3750.0, "chi_high_z_max": 3942.0,
-         "lmax": 16}
+         "lmax": 16, "n_shells": 8, "shell_weights": "linear"}
 NELL = np.column_stack([np.arange(2.0, 200.0), np.full(198, 1e-8)])
 FID = {"Omega_m": 0.3, "sigma8": 0.8, "b1": 1.2, "bn2": 78.0, "fNL": 0.0}
 
@@ -208,8 +219,7 @@ def test_sigma8_information_of_kappa_alone():
     F = fi.angular_fisher_cosmo(toy_cache(), FID, survey(2e7), KAPPA, "k", params=("sigma8",),
                                 nell=NELL)
     bg, ells = ToyBackground(), np.arange(2, 17)
-    S = bg.c_kappa(ells, 292.6, 3750.0)
-    L = bg.c_kappa(ells, 3750.0, 3942.0)
+    S, L = fi.kappa_spectra(bg, ells, KAPPA)
     expected = np.sum((2 * ells + 1) / 2 * (2 * S / (0.8 * (S + 1e-8 + L))) ** 2)
     np.testing.assert_allclose(F[0, 0], expected, rtol=1e-6)
 
@@ -218,7 +228,7 @@ def test_a_power_mismatch_along_a_derivative_shifts_that_parameter_by_its_size()
     """kappa alone: data with C(sigma8 + eps) - C(sigma8) beyond the model shift sigma8 by eps to
     first order; no mismatch, no shift (kappa alone and joint)."""
     bg, ells, eps = ToyBackground(), np.arange(0, 17), 0.01
-    dC = 2 * eps / 0.8 * bg.c_kappa(np.maximum(ells, 1), 292.6, 3750.0)
+    dC = 2 * eps / 0.8 * fi.kappa_spectra(bg, np.maximum(ells, 1), KAPPA)[0]
     kw = {"nell": NELL, "n_shells": 4}
     F, b = fi.angular_fisher_cosmo(toy_cache(), FID, survey(2e7), KAPPA, "k", params=("sigma8",),
                                    mismatch=dC, **kw)
@@ -229,20 +239,46 @@ def test_a_power_mismatch_along_a_derivative_shifts_that_parameter_by_its_size()
         assert np.all(b0 == 0)
 
 
-def test_the_per_shell_cut_moves_kappa_power_from_signal_to_noise():
-    """With the cut, the model's shells keep the taper squared of their power and the removed part
-    joins the line of sight; everything removed when no distance resolves l >= 2."""
-    bg, ells = ToyBackground(), np.arange(2, 17)
-    chi = np.linspace(292.6, 3750.0, 800)
-    full = np.array([np.trapezoid(bg.w_kappa(chi) ** 2 / chi**2 * bg.plin((ell + 0.5) / chi, 0), chi)
+def toy_limber(bg, ells, lo, hi):
+    chi = np.linspace(lo, hi, 4000)
+    return np.array([np.trapezoid(bg.w_kappa(chi) ** 2 / chi**2 * bg.plin((ell + 0.5) / chi, 0), chi)
                      for ell in ells])
-    beyond = bg.c_kappa(ells, 3750.0, 3942.0)
+
+
+def test_the_per_shell_cut_moves_kappa_power_from_signal_to_noise():
+    """With the cut, the shells keep less and the removed part joins the line of sight; every shell
+    removed when no distance resolves any multipole: the covariance holds all the map's matter."""
+    bg, ells = ToyBackground(), np.arange(2, 17)
+    full = toy_limber(bg, ells, 292.6, 3942.0)
     kept, los = fi.kappa_spectra(bg, ells, {**KAPPA, "k_cut": 1e-4})
     np.testing.assert_allclose(kept, 0.0, atol=1e-30)
-    np.testing.assert_allclose(los, beyond + full, rtol=1e-10)
+    np.testing.assert_allclose(los, full, rtol=1e-3)
+    kept0, los0 = fi.kappa_spectra(bg, ells, KAPPA)
     kept, los = fi.kappa_spectra(bg, ells, {**KAPPA, "k_cut": 0.01})
-    assert np.all((kept > 0) & (kept < full)) and np.all(los > beyond)
-    assert np.all(fi.shell_cut_taper(10.0, np.array([100.0, 2000.0]), 0.01, 16) == [0.0, 1.0])
+    assert np.all((kept > 0) & (kept <= kept0)) and np.all(los >= los0)
+    assert np.any(kept < 0.5 * kept0) and np.any(los > 1.5 * los0)  # the multipoles a shell cuts
+
+
+def test_the_tents_leave_their_end_ramps_to_the_covariance():
+    """Without the cut the line-of-sight term is the matter beyond the box plus the tents' end
+    ramps (one d_r at each end held partly), and the shells hold the rest."""
+    bg, ells = ToyBackground(), np.arange(2, 17)
+    kept, los = fi.kappa_spectra(bg, ells, KAPPA)
+    beyond = toy_limber(bg, ells, 3750.0, 3942.0)
+    assert np.all(los > 1.01 * beyond)
+    assert np.all(kept < toy_limber(bg, ells, 292.6, 3750.0))
+    fine = {**KAPPA, "n_shells": 40}  # held is 1 between the end apexes up to the shells' Riemann steps
+    held = fi.held_fraction(bg, fine, np.array([292.6, 1000.0, 2000.0, 3000.0, 3750.0, 3800.0]), [2])[0]
+    np.testing.assert_allclose(held, [0.0, 1.0, 1.0, 1.0, 0.0, 0.0], atol=0.02)
+
+
+def test_the_los_ratio_multiplies_only_the_covariance_term():
+    bg, ells = ToyBackground(), np.arange(2, 17)
+    r = np.linspace(2.0, 1.0, 17)
+    kept0, los0 = fi.kappa_spectra(bg, ells, KAPPA)
+    kept, los = fi.kappa_spectra(bg, ells, {**KAPPA, "los_ratio": r})
+    np.testing.assert_allclose(kept, kept0, rtol=1e-12)
+    np.testing.assert_allclose(los, los0 * r[ells], rtol=1e-12)
 
 
 def test_the_window_multiplies_both_kappa_terms_by_its_square():
@@ -268,9 +304,22 @@ def test_galaxies_alone_leave_b1_and_sigma8_degenerate_and_kappa_breaks_it():
 
 
 def test_sigma8_information_of_the_galaxies_is_the_mode_count():
-    """No shot noise, no RSD: P = b^2 sigma8^2 P0, so F = V dk^3 / (3 pi^2 sigma8^2)."""
+    """No shot noise, no RSD: P = b^2 sigma8^2 P0, so F = V ((6/pi) kmax^3 - kmin^3) / (3 pi^2 sigma8^2)
+    over the grid's Fourier cube."""
     s = survey(1e14)
     F = fi.galaxy_fisher_3d_cosmo(toy_cache(), FID, s, KMAX, params=("sigma8",), kmin=KMIN,
                                   rsd=False, n_chi=400, n_k=2000)
-    expected = shell_volume(s) * (KMAX**3 - KMIN**3) / (3 * np.pi**2 * 0.8**2)
+    expected = shell_volume(s) * (CUBE_K3 * KMAX**3 - KMIN**3) / (3 * np.pi**2 * 0.8**2)
     np.testing.assert_allclose(F[0, 0], expected, rtol=2e-3)
+
+
+def test_the_finger_of_god_term_is_bnpar_k2_mu2():
+    """No growth rate, no shot noise: dP/dbnpar = 2 b P k^2 mu^2 / b^2 at bnpar 0, so
+    F = V (4 / b^2) (2/5) int k^6 c dk / (8 pi^2), int_0^sqrt3 x^6 c dx = 38 / (15 pi) for the cube."""
+    s, fid = survey(1e14), {**FID, "bn2": 0.0, "bnpar": 0.0}
+    F = fi.galaxy_fisher_3d_cosmo(toy_cache(), fid, s, KMAX, params=("bnpar",), kmin=KMIN,
+                                  n_chi=400, n_k=3000)
+    b = 1 + fid["b1"]
+    k6 = 38 / (15 * np.pi) * KMAX**7 - KMIN**7 / 7
+    expected = shell_volume(s) * 4 / b**2 * 2 / 5 * k6 / (8 * np.pi**2)
+    np.testing.assert_allclose(F[0, 0], expected, rtol=3e-3)

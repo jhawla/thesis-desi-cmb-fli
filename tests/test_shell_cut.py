@@ -18,6 +18,8 @@ from desi_cmb_fli.cmb_lensing import (
     compute_theoretical_cl_kappa,
     convergence_Born_spherical,
     cut_shells,
+    lensing_kernel,
+    limber_ratio_outside_model,
     shell_ell_taper,
 )
 from desi_cmb_fli.model import FieldLevelModel
@@ -97,7 +99,8 @@ def test_the_covariance_term_is_the_matter_the_shells_leave_out():
     term = np.asarray(compute_cl_outside_model(cosmo, model.ell_1d, **model.cmb_shells,
                                                chi_max=model.chi_high_z_max))
     np.testing.assert_allclose(np.asarray(model.cl_high_z_cached),
-                               term * np.asarray(model.cmb_los_window2), rtol=1e-8, atol=1e-30)
+                               term * np.asarray(model.cmb_los_window2 * model.cmb_los_limber),
+                               rtol=1e-8, atol=1e-30)
     assert np.all(term[2:] > 0)
     r, h, end = model.cmb_r_shells, model.cmb_d_r, model.chi_boundary
 
@@ -142,7 +145,8 @@ def test_every_high_z_mode_carries_the_cut_term_alike():
     cl = {mode: np.asarray(compute_cl_high_z(
         cosmo, m.ell_1d, m.chi_boundary, m.chi_high_z_max, m.cmb_z_source, mode=mode,
         cl_cached=m.cl_high_z_cached, gradients=m.high_z_gradients, loc_fid=m.loc_fid,
-        shells=m.cmb_shells, window2=m.cmb_los_window2))[2:] for mode, m in models.items()}
+        shells=m.cmb_shells, window2=m.cmb_los_window2 * m.cmb_los_limber))[2:]
+        for mode, m in models.items()}
     np.testing.assert_allclose(cl["exact"], cl["fixed"], rtol=1e-8)
     np.testing.assert_allclose(cl["taylor"], cl["fixed"], rtol=1e-8)
     ref = FieldLevelModel(**_cfg(high_z_mode="taylor", cmb_shell_kmax=0.0))
@@ -181,3 +185,32 @@ def test_forward_and_gradient_run_with_the_cut(oversamp):
     model.block()
     g = jax.grad(model.logpdf)({"init_mesh_": jnp.asarray(truth["init_mesh_"])})["init_mesh_"]
     assert np.all(np.isfinite(np.asarray(g))) and float(jnp.abs(g).max()) > 0
+
+
+def test_the_covariance_term_is_the_exact_projection_where_limber_fails():
+    """A slab the shells leave out (one shell removed whole, the map 1000-2000 Mpc/h): exact over
+    Limber equals a direct evaluation on other grids, is well above 1 at the lowest multipoles
+    (Limber misses the radial modes) and goes to 1 at high ell."""
+    import jax_cosmo as jc
+    from scipy.special import spherical_jn
+
+    cosmo = get_cosmology(Omega_m=0.315192, sigma8=0.811355)
+    r = np.array([1025.0])
+    a_r = np.asarray(jc.background.a_of_chi(cosmo, jnp.asarray(r)))
+    ell = np.array([2, 5, 10, 60])
+    ratio = limber_ratio_outside_model(cosmo, ell, r, a_r, 50.0, "nearest", 1100.0, 2000.0,
+                                       taper=np.zeros((1, 61)))
+    chi = np.linspace(1000.0, 2000.0, 801)
+    a = jc.background.a_of_chi(cosmo, jnp.asarray(chi))
+    chi_s = jc.background.radial_comoving_distance(cosmo, 1.0 / 1101.0)[0]
+    kern = np.asarray(lensing_kernel(cosmo, jnp.asarray(chi), a, chi_s) *
+                      jc.background.growth_factor(cosmo, a))
+    k = np.geomspace(1e-5, 1.0, 20000)
+    pk = np.asarray(jc.power.linear_matter_power(cosmo, jnp.asarray(k)))
+    for i, ell_val in enumerate(ell):
+        proj = np.trapezoid(kern[None] * spherical_jn(ell_val, np.outer(k, chi)), chi, axis=1)
+        exact = 2.0 / np.pi * np.trapezoid(k**2 * pk * proj**2, k)
+        limber = np.trapezoid(kern**2 / chi**2 * np.interp((ell_val + 0.5) / chi, k, pk), chi)
+        np.testing.assert_allclose(ratio[i], exact / limber, rtol=0.02)
+    assert ratio[0] > 1.5 and ratio[1] > 1.1
+    assert abs(ratio[-1] - 1.0) < 0.02

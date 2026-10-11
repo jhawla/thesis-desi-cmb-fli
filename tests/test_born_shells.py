@@ -67,7 +67,7 @@ def test_without_the_cut_the_los_covariance_is_the_matter_beyond_the_box_and_the
                                                          m.cmb_z_source))
         shells = np.asarray(compute_theoretical_cl_kappa(cosmo, m.ell_1d, max(start, 1.0),
                                                          m.chi_boundary, m.cmb_z_source))
-        term = np.asarray(m.cl_high_z_cached) / np.asarray(m.cmb_los_window2)
+        term = np.asarray(m.cl_high_z_cached) / np.asarray(m.cmb_los_window2 * m.cmb_los_limber)
         assert np.all(np.abs(term - beyond)[2:] < 0.05 * shells[2:])
 
 
@@ -108,7 +108,8 @@ def test_every_high_z_mode_carries_the_los_term_alike():
 
     def los(m, cosmo, linear=False):
         return np.asarray(compute_cl_outside_model(cosmo, m.ell_1d, **m.cmb_shells, chi_max=300.0,
-                                                   linear_pk=linear)) * np.asarray(m.cmb_los_window2)
+                                                   linear_pk=linear)) * np.asarray(
+            m.cmb_los_window2 * m.cmb_los_limber)
 
     models = {mode: FieldLevelModel(**_cfg(cmb_shell_kmax=0.0, high_z_mode=mode))
               for mode in ("fixed", "taylor", "exact", "exact_linear")}
@@ -118,7 +119,8 @@ def test_every_high_z_mode_carries_the_los_term_alike():
         cl = {mode: np.asarray(compute_cl_high_z(
             cosmo, m.ell_1d, m.chi_boundary, m.chi_high_z_max, m.cmb_z_source, mode=mode,
             cl_cached=m.cl_high_z_cached, gradients=m.high_z_gradients, loc_fid=m.loc_fid,
-            shells=m.cmb_shells, window2=m.cmb_los_window2))[2:] for mode, m in models.items()}
+            shells=m.cmb_shells, window2=m.cmb_los_window2 * m.cmb_los_limber))[2:]
+            for mode, m in models.items()}
         np.testing.assert_allclose(cl["exact"], los(models["exact"], cosmo)[2:], rtol=1e-10)
         np.testing.assert_allclose(cl["exact_linear"],
                                    los(models["exact"], cosmo, linear=True)[2:], rtol=1e-10)

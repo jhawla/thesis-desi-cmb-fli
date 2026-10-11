@@ -104,28 +104,42 @@ class Background:
             / self.chi_s
         )
 
-    def c_kappa(self, ells, chi_lo, chi_hi, n=800):
-        """Limber C_l^kk of the matter between chi_lo and chi_hi."""
-        chi = np.linspace(max(chi_lo, 1.0), chi_hi, n)
-        z = self.z_of_chi(chi)
-        k = (np.atleast_1d(ells)[:, None] + 0.5) / chi[None, :]
-        P = np.interp(k, self._k, self._P0) * (self.growth(z) ** 2)[None, :]
-        return np.trapezoid(self.w_kappa(chi)[None, :] ** 2 / chi[None, :] ** 2 * P, chi, axis=1)
+
+def kappa_shells(kappa):
+    """Radii, width and multipole taper of the model's Born shells over [kappa["chi_min"],
+    kappa["chi_box"]], built as ``FieldLevelModel`` builds them: ``linear`` tents apex to apex,
+    ``nearest`` bins tiling the range; taper rows on l = 0 ... kappa["lmax"] (None without a cut)."""
+    from desi_cmb_fli.cmb_lensing import shell_ell_taper
+
+    lo, hi, n = float(kappa["chi_min"]), float(kappa["chi_box"]), int(kappa["n_shells"])
+    linear = kappa["shell_weights"] == "linear"
+    dr = (hi - lo) / (n + (1 if linear else 0))
+    half = dr if linear else dr / 2.0
+    r = np.linspace(lo + half, hi - half, n)
+    taper = None
+    if kappa.get("k_cut"):
+        taper = shell_ell_taper(r, dr, kappa["shell_weights"], kappa["k_cut"], ell_max=int(kappa["lmax"]),
+                                lmax=int(kappa["lmax"]))
+    return r, dr, taper
 
 
-def shell_cut_taper(ell, chi, k_cut, lmax):
-    """The per-shell multipole cut of the Born projector (``cmb_lensing.shell_kmax``) as a weight
-    on the matter at distance chi for multipole ell: the cosine taper of ``shell_ell_taper`` with
-    ell_res = k_cut chi, 1 where ell_res >= lmax or without a cut (``k_cut`` 0 or None)."""
+def held_fraction(bg, kappa, chi, ells):
+    """Fraction of the map's lensing kernel the model's shells hold at ``chi`` for each of ``ells``,
+    shape (n_ell, n_chi): sum_s w_s(l) q_s(chi) / W(chi) with q_s = d_r W(r_s) p_s(chi) chi^2 / V_s,
+    the kernels of ``cmb_lensing.compute_cl_outside_model``; 1 - it is what the covariance holds."""
+    from desi_cmb_fli.cmb_lensing import shell_profiles
+
+    r, dr, taper = kappa_shells(kappa)
+    chi_f, p_f = shell_profiles(r, dr, kappa["shell_weights"], n_per_shell=200)
+    vol = np.trapezoid(p_f * chi_f**2, chi_f, axis=1)
     chi = np.asarray(chi, dtype=float)
-    if not k_cut:
-        return np.ones_like(chi)
-    ell_res = k_cut * chi
-    l_cut = np.floor(ell_res)
-    l_width = np.maximum(l_cut // 4, 1)
-    x = (ell - (l_cut - l_width)) / l_width
-    t = np.where(ell <= l_cut - l_width, 1.0, np.where(ell >= l_cut, 0.0, 0.5 * (1 + np.cos(np.pi * x))))
-    return np.where(ell_res >= lmax, 1.0, t)
+    if kappa["shell_weights"] == "linear":
+        p = np.clip(1.0 - np.abs(chi[None] - r[:, None]) / dr, 0.0, None)
+    else:
+        p = ((chi[None] >= (r - dr / 2)[:, None]) & (chi[None] < (r + dr / 2)[:, None])).astype(float)
+    q = dr * bg.w_kappa(r)[:, None] * p * chi[None] ** 2 / vol[:, None]
+    w = np.ones((r.size, np.size(ells))) if taper is None else taper[:, np.asarray(ells).astype(int)]
+    return (w.T @ q) / np.maximum(bg.w_kappa(chi), 1e-300)[None]
 
 
 def kappa_window(kappa, ells):
@@ -136,25 +150,26 @@ def kappa_window(kappa, ells):
     return np.asarray(kappa["window"])[np.asarray(ells).astype(int)]
 
 
-def kappa_spectra(bg, ells, kappa, n=800):
-    """Limber C_l^kk of the model's shells (kappa["chi_min"] to kappa["chi_box"], times the squared
-    per-shell taper) and of the line of sight the likelihood puts in its covariance (beyond the box to
-    kappa["chi_high_z_max"], plus the power the cut removes, as independent noise like the model),
-    both times the squared window (``kappa_window``), as the model map and the covariance term."""
-    lo, hi, k_cut = kappa["chi_min"], kappa["chi_box"], kappa.get("k_cut")
-    w2 = kappa_window(kappa, ells) ** 2
-    los = bg.c_kappa(ells, hi, kappa["chi_high_z_max"])
-    if not k_cut:
-        return bg.c_kappa(ells, lo, hi) * w2, los * w2
-    chi = np.linspace(max(lo, 1.0), hi, n)
+def kappa_spectra(bg, ells, kappa, n=1600):
+    """Limber C_l^kk of what the model's shells hold (``held_fraction`` of the lensing kernel) and of
+    the line-of-sight term the likelihood puts in its covariance (the rest of the kernel from
+    kappa["chi_min"] to kappa["chi_high_z_max"]: the tents' end ramps, what the cut removes, the
+    matter beyond the box), the latter times the exact-over-Limber ratio kappa["los_ratio"] (per ell
+    from 0; 1 if absent), both times the squared window (``kappa_window``), as the model does."""
+    ells = np.atleast_1d(ells)
+    hi = max(float(kappa["chi_box"]), float(kappa["chi_high_z_max"]))
+    chi = np.linspace(max(float(kappa["chi_min"]), 1.0), hi, n)
     base = bg.w_kappa(chi) ** 2 / chi**2
     z = bg.z_of_chi(chi)
-    kept, removed = np.zeros(np.size(ells)), np.zeros(np.size(ells))
-    for i, ell in enumerate(np.atleast_1d(ells)):
-        t = shell_cut_taper(ell, chi, k_cut, kappa["lmax"])
-        p = base * bg.plin((ell + 0.5) / chi, z)
-        kept[i], removed[i] = np.trapezoid(p * t**2, chi), np.trapezoid(p * (1 - t) ** 2, chi)
-    return kept * w2, (los + removed) * w2
+    held = held_fraction(bg, kappa, chi, ells)
+    kept, los = np.zeros(ells.size), np.zeros(ells.size)
+    for i, ell in enumerate(ells):
+        pk = base * bg.plin((ell + 0.5) / chi, z)
+        kept[i], los[i] = np.trapezoid(pk * held[i] ** 2, chi), np.trapezoid(pk * (1 - held[i]) ** 2, chi)
+    ratio = np.ones(ells.size) if kappa.get("los_ratio") is None else (
+        np.asarray(kappa["los_ratio"])[ells.astype(int)])
+    w2 = kappa_window(kappa, ells) ** 2
+    return kept * w2, los * ratio * w2
 
 
 def nbar_of_chi(bg, chi, survey, density_scale=1.0):
@@ -170,15 +185,33 @@ def nbar_of_chi(bg, chi, survey, density_scale=1.0):
     return density_scale * dNdchi / (4 * np.pi * survey["fsky"] * chi**2)
 
 
+def cube_mode_fraction(x, n_u=2001):
+    """Fraction of the directions at |k| = x k_N inside the Fourier cube |k_i| <= k_N of a grid:
+    1 up to x = 1, 0 from x = sqrt(3). The cell likelihood holds every mode of that cube, so the
+    3-D Fisher counts the modes up to sqrt(3) k_N with this weight (docs/pipeline.md §6). Exact: with
+    u = |n_z| uniform, the azimuth keeps |n_x|, |n_y| <= t = 1/x, a fraction 1 - (4/pi) arccos(t/s)
+    of it for t < s <= sqrt(2) t (s = sqrt(1 - u^2)), all of it for s <= t and none beyond."""
+    t = 1.0 / np.maximum(np.atleast_1d(np.asarray(x, dtype=float)), 1e-12)
+    u = np.linspace(0.0, 1.0, n_u)[None, :]
+    s = np.sqrt(1.0 - u**2)
+    tt = t[:, None]
+    ratio = np.clip(tt / np.maximum(s, 1e-300), 0.0, 1.0)
+    g = np.where(s <= tt, 1.0, np.where(s <= np.sqrt(2.0) * tt, 1.0 - 4.0 / np.pi * np.arccos(ratio), 0.0))
+    frac = np.trapezoid(np.where(u <= tt, g, 0.0), u, axis=1)
+    return frac.reshape(np.shape(x))
+
+
 def galaxy_fisher_3d(
     bg, survey, b1, bn2, kmax, kmin=None, density_scale=1.0, rsd=True, n_chi=160, n_k=240, n_mu=48
 ):
     """Fisher matrix on PARAMS from the galaxy power spectrum of a light-cone shell.
 
-    F_ab = sum over the shell volume of  1 / (2 (2 pi)^2) int k^2 dk int_{-1}^{1} dmu
+    F_ab = sum over the shell volume of  1 / (2 (2 pi)^2) int k^2 dk c(k / kmax) int_{-1}^{1} dmu
            dP/da dP/db / (P + 1/nbar)^2,
     P(k, mu, z) = (b(k, z) + f mu^2)^2 P_lin(k, z),  b = 1 + b1 - bn2 k^2 + b_phi fNL / M(k, z),
-    b_phi = 2 delta_c b1, at the fiducial fNL = 0. ``kmin`` defaults to 2 pi / V^(1/3).
+    b_phi = 2 delta_c b1, at the fiducial fNL = 0. ``kmax`` is the Nyquist frequency pi / cell of the
+    grid: the modes are those of its Fourier cube, ``c = cube_mode_fraction`` up to sqrt(3) kmax.
+    ``kmin`` defaults to 2 pi / V^(1/3).
     """
     chi_lo, chi_hi = float(bg.chi_of_z(survey["zmin"])), float(bg.chi_of_z(survey["zmax"]))
     V = 4 * np.pi / 3 * survey["fsky"] * (chi_hi**3 - chi_lo**3)
@@ -187,7 +220,7 @@ def galaxy_fisher_3d(
     dV = 4 * np.pi * survey["fsky"] * chi**2 * np.gradient(chi)
     z = bg.z_of_chi(chi)
     nbar = nbar_of_chi(bg, chi, survey, density_scale)
-    lnk = np.linspace(np.log(kmin), np.log(kmax), n_k)
+    lnk = np.linspace(np.log(kmin), np.log(np.sqrt(3.0) * kmax), n_k)
     k = np.exp(lnk)
     mu, wmu = np.polynomial.legendre.leggauss(n_mu)  # on [-1, 1]
 
@@ -205,7 +238,8 @@ def galaxy_fisher_3d(
     n = nbar[:, None, None]
     inv_var = (n / (n * P + 1.0)) ** 2  # 1 / (P + 1/nbar)^2, finite where nbar = 0
     weight = (
-        dV[:, None, None] * (k**3)[None, :, None] * wmu[None, None, :] / (2 * (2 * np.pi) ** 2)
+        dV[:, None, None] * (k**3 * cube_mode_fraction(k / kmax))[None, :, None] * wmu[None, None, :]
+        / (2 * (2 * np.pi) ** 2)
     )  # k^2 dk = k^3 dlnk
     F = np.zeros((len(PARAMS), len(PARAMS)))
     for i, a in enumerate(PARAMS):
@@ -246,6 +280,7 @@ def kappa_fisher_increment(
     edges = np.interp(np.linspace(0, 1, n_shells + 1), cdf, chi)
     ng_sr = density_scale * survey["N_gal"] / (4 * np.pi * survey["fsky"])
     wk = bg.w_kappa(chi)
+    held = held_fraction(bg, kappa, chi, ells)
 
     W, frac = [], []
     for i in range(n_shells):
@@ -273,7 +308,7 @@ def kappa_fisher_increment(
                 C[i, j] = ig(W[i], W[j], B**2)
                 for p in PARAMS:
                     dC[p][i, j] = ig(W[i], W[j], 2 * B * dB[p])
-            wkt = wk * shell_cut_taper(ell, chi, kappa.get("k_cut"), kappa["lmax"]) * kappa_window(kappa, ell)
+            wkt = wk * held[idx] * kappa_window(kappa, ell)
             C[i, ns] = C[ns, i] = ig(W[i], wkt, B)
             for p in PARAMS:
                 dC[p][i, ns] = dC[p][ns, i] = ig(W[i], wkt, dB[p])
@@ -299,9 +334,10 @@ def kappa_fisher_increment(
 
 def kappa_geometry(cfg):
     """Kappa geometry of a run config: "chi_min" where the shells start (``chi_matter_min``), box
-    edge, high-z end, band, the per-shell cut "k_cut" (``shell_kmax``, default the init-grid
-    Nyquist pi oversamp / cell when the line-of-sight correction is on) and the "window" of the
-    observable, the bilinear window of the projection sphere (nside x proj_oversamp)."""
+    edge, high-z end, band, the shells ("n_shells", "shell_weights"), the per-shell cut "k_cut"
+    (``shell_kmax``, default the init-grid Nyquist pi oversamp / cell when the line-of-sight
+    correction is on), the "window" of the observable, the bilinear window of the projection sphere
+    (nside x proj_oversamp), and "los_ratio" (``with_los_ratio``) at the config's truth cosmology."""
     from desi_cmb_fli.cmb_lensing import bilinear_window
 
     cmb = cfg.get("cmb_lensing", {}) or {}
@@ -310,15 +346,40 @@ def kappa_geometry(cfg):
     k_cut = cmb.get("shell_kmax")
     if k_cut is None and cmb.get("full_los_correction", False):
         k_cut = np.pi * float(model.get("init_oversamp", 1.0)) / float(model["cell_size"])
-    return {
+    geometry = {
         "chi_min": float(cmb.get("chi_matter_min", 0.0)),
         "chi_box": float(box.min() / 2 if cmb.get("observer_mode", "face") == "center" else box[2]),
         "chi_high_z_max": float(cmb.get("chi_high_z_max", 3942.0)),
         "lmax": 2 * int(cmb.get("nside", 32)),
+        "n_shells": int(cmb.get("n_shells", 189)),
+        "shell_weights": str(cmb.get("shell_weights", "nearest")),
         "k_cut": float(k_cut or 0.0),
         "window": bilinear_window(int(cmb.get("nside", 32)) * int(cmb.get("proj_oversamp", 1)),
                                   2 * int(cmb.get("nside", 32))),
     }
+    truth = {**(cfg.get("truth_params") or {}), **(cfg.get("abacus_truth_params") or {})}
+    return with_los_ratio(geometry, float(truth.get("Omega_m", 0.315192)),
+                          float(truth.get("sigma8", 0.811355)), float(cmb.get("z_source", 1089.28)))
+
+
+def with_los_ratio(kappa, Omega_m, sigma8, z_source=1089.28):
+    """``kappa`` with "los_ratio": the exact-over-Limber ratio of the line-of-sight kernel of its
+    geometry (``cmb_lensing.limber_ratio_outside_model``), as the model computes it at its fiducial."""
+    import jax
+    import jax_cosmo as jc
+    from jax import numpy as jnp
+
+    from desi_cmb_fli.bricks import get_cosmology
+    from desi_cmb_fli.cmb_lensing import limber_ratio_outside_model
+
+    cosmo = get_cosmology(Omega_m=Omega_m, sigma8=sigma8)
+    r, dr, taper = kappa_shells(kappa)
+    a = np.asarray(jax.jit(lambda c: jc.background.a_of_chi(c, jnp.asarray(r)))(cosmo))
+    ratio = limber_ratio_outside_model(cosmo, np.arange(int(kappa["lmax"]) + 1), r, a, dr,
+                                       kappa["shell_weights"], z_source,
+                                       max(float(kappa["chi_box"]), float(kappa["chi_high_z_max"])),
+                                       taper=taper)
+    return {**kappa, "los_ratio": ratio}
 
 
 def sigma(F, param="fNL"):
@@ -380,8 +441,9 @@ def chain_fisher(chains, burn_in=0.5):
 # Cosmology: (Omega_m, sigma8) with the biases, fNL optional
 # ---------------------------------------------------------------------------------------------
 
-COSMO_PARAMS = ("Omega_m", "sigma8", "b1", "bn2")
-FD_STEPS = {"Omega_m": 0.005, "sigma8": 0.005, "b1": 0.01, "bn2": 2.0, "fNL": 1.0, "b1_alpha": 0.05}
+COSMO_PARAMS = ("Omega_m", "sigma8", "b1", "bn2", "bnpar")
+FD_STEPS = {"Omega_m": 0.005, "sigma8": 0.005, "b1": 0.01, "bn2": 2.0, "fNL": 1.0, "b1_alpha": 0.05,
+            "bnpar": 5.0}
 
 
 def bias_reference_z(bg, survey):
@@ -434,12 +496,15 @@ def galaxy_fisher_3d_cosmo(
     bgs, fid, survey, kmax, params=COSMO_PARAMS, kmin=None, density_scale=1.0, rsd=True,
     steps=None, n_chi=160, n_k=240, n_mu=48,
 ):
-    """3-D redshift-space galaxy Fisher on ``params`` by central differences, cosmology included.
+    """3-D redshift-space galaxy Fisher on ``params`` by central differences, cosmology included,
+    with the Finger-of-God term of the model: P = (b + f mu^2 + bnpar k^2 mu^2)^2 P_lin (the velocity
+    ``bnpar D grad delta_L`` projected on the line of sight adds bnpar k_par^2 delta).
 
     As at the field level, the galaxies sit at their fiducial comoving distances (the data are
     painted once): volume, n(chi) and the k grid are those of the fiducial background, and a
     cosmology moves only the redshift z(chi) of each distance, hence the growth, the growth rate and
-    the linear power there. No Alcock-Paczynski information. Same integral as ``galaxy_fisher_3d``.
+    the linear power there. No Alcock-Paczynski information. Same integral as ``galaxy_fisher_3d``,
+    over the Fourier cube of the grid whose Nyquist frequency is ``kmax``.
     """
     steps = {**FD_STEPS, **(steps or {})}
     bg0 = bgs(fid)
@@ -449,7 +514,7 @@ def galaxy_fisher_3d_cosmo(
     chi = np.linspace(chi_lo, chi_hi, n_chi)
     dV = 4 * np.pi * survey["fsky"] * chi**2 * np.gradient(chi)
     nbar = nbar_of_chi(bg0, chi, survey, density_scale)
-    lnk = np.linspace(np.log(kmin), np.log(kmax), n_k)
+    lnk = np.linspace(np.log(kmin), np.log(np.sqrt(3.0) * kmax), n_k)
     k = np.exp(lnk)
     mu, wmu = np.polynomial.legendre.leggauss(n_mu)
     K, MU = k[None, :, None], mu[None, None, :]
@@ -457,14 +522,15 @@ def galaxy_fisher_3d_cosmo(
     def power(theta):
         bg = bgs(theta)
         Z = bg.z_of_chi(chi)[:, None, None]
-        f = bg.growth_rate(Z) if rsd else 0.0
-        return (_galaxy_bias(bg, theta, K, Z) + f * MU**2) ** 2 * bg.plin(K, Z)
+        rsd_mu2 = (bg.growth_rate(Z) + theta.get("bnpar", 0.0) * K**2) * MU**2 if rsd else 0.0
+        return (_galaxy_bias(bg, theta, K, Z) + rsd_mu2) ** 2 * bg.plin(K, Z)
 
     P = power(fid)
     dP = _central_differences(power, fid, params, steps)
     n = nbar[:, None, None]
     inv_var = (n / (n * P + 1.0)) ** 2
-    weight = dV[:, None, None] * (k**3)[None, :, None] * wmu[None, None, :] / (2 * (2 * np.pi) ** 2)
+    weight = (dV[:, None, None] * (k**3 * cube_mode_fraction(k / kmax))[None, :, None]
+              * wmu[None, None, :] / (2 * (2 * np.pi) ** 2))
     F = np.zeros((len(params), len(params)))
     for i, a in enumerate(params):
         for j, c in enumerate(params[: i + 1]):
@@ -518,6 +584,7 @@ def angular_fisher_cosmo(
         bg = bgs(theta)
         z = bg.z_of_chi(chi)
         wk = bg.w_kappa(chi)
+        held = held_fraction(bg, kappa, chi, ells)
         ck = kappa_spectra(bg, ells, kappa)[0]
         if los == "signal":
             ck = ck + c_los(bg)
@@ -527,7 +594,7 @@ def angular_fisher_cosmo(
             kern = _galaxy_bias(bg, theta, k, z) * W  # (n_shells, n_chi)
             pm = bg.plin(k, z) / chi**2
             out[n, :n_shells, :n_shells] = np.trapezoid(kern[:, None] * kern[None] * pm, chi, axis=2)
-            wkt = wk * shell_cut_taper(ell, chi, kappa.get("k_cut"), kappa["lmax"]) * kappa_window(kappa, ell)
+            wkt = wk * held[n] * kappa_window(kappa, ell)
             out[n, :n_shells, n_shells] = out[n, n_shells, :n_shells] = np.trapezoid(
                 kern * wkt * pm, chi, axis=1
             )

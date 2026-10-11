@@ -4,7 +4,8 @@ The geometry, band, noise, truth biases and priors come from a run config (defau
 the Abacus HUGE geometry, whose truth biases are the galaxy-only Abacus posterior means). Formulas
 and approximations in docs/pipeline.md §6 ("Fisher forecasts"):
 
-- galaxies: 3-D redshift-space Fisher (``galaxy_fisher_3d_cosmo``), k in [2 pi / V^(1/3), pi / cell];
+- galaxies: 3-D redshift-space Fisher (``galaxy_fisher_3d_cosmo``) over the Fourier cube of the grid
+  (|k_i| <= pi / cell, as the cell likelihood), k >= 2 pi / V^(1/3), with the Finger-of-God bnpar;
 - kappa alone: Limber Fisher of kappa over l = 2 ... 2 nside (``angular_fisher_cosmo``, probes 'k');
 - joint: galaxies + the kappa increment F[shells + kappa] - F[shells] (tomographic Limber);
 - the line of sight outside the model as noise at the fiducial (high_z_mode fixed) or as signal;
@@ -75,9 +76,11 @@ def resolution_scan(cfg, bgs, fid, params, prior, nell, noise_scaling, out_path)
     """
     base = fi.kappa_geometry(cfg)
     oversamp = float(cfg["model"].get("init_oversamp", 1.0))
+    z_source = float(cfg["cmb_lensing"].get("z_source", 1089.28))
     rows, out = [], {}
     for label, box, cell, mesh in RESOLUTIONS:
-        kappa = {**base, "chi_box": box / 2, "k_cut": np.pi * oversamp / cell}
+        kappa = fi.with_los_ratio({**base, "chi_box": box / 2, "k_cut": np.pi * oversamp / cell},
+                                  fid["Omega_m"], fid["sigma8"], z_source)
         Fg = fi.galaxy_fisher_3d_cosmo(bgs, fid, fi.HUGE_LRG, np.pi / cell, params=params) + prior
         kw = {"params": params, "noise_scaling": noise_scaling, "nell": nell, "los": "noise"}
         dF = fi.angular_fisher_cosmo(bgs, fid, fi.HUGE_LRG, kappa, "gk", **kw) - (
@@ -180,7 +183,7 @@ def main():
     cmb = cfg["cmb_lensing"]
     truth = {**cfg["truth_params"], **cfg.get("abacus_truth_params", {})}
     params = fi.COSMO_PARAMS + (("fNL",) if args.fnl else ()) + (("b1_alpha",) if args.b1_alpha else ())
-    fid = {p: float(truth.get(p, 0.0)) for p in ("Omega_m", "sigma8", "b1", "bn2", "fNL", "b1_alpha")}
+    fid = {p: float(truth.get(p, 0.0)) for p in ("Omega_m", "sigma8", "b1", "bn2", "bnpar", "fNL", "b1_alpha")}
     cfg["latents"].setdefault("b1_alpha", {"loc": 1.0, "scale": 1.0})
     kappa = fi.kappa_geometry(cfg)
     kmax = np.pi / float(cfg["model"]["cell_size"])
@@ -189,7 +192,7 @@ def main():
     prior = fi.prior_fisher(cfg["latents"], params)
     bgs = fi.BackgroundCache(z_source=float(cmb.get("z_source", 1089.28)))
     fid["z_b1"] = fi.bias_reference_z(bgs(fid), fi.HUGE_LRG)
-    shown = {k: v for k, v in kappa.items() if k != "window"}
+    shown = {k: v for k, v in kappa.items() if k not in ("window", "los_ratio")}
     print(f"config {Path(args.config).name}: kmax {kmax:.4f} h/Mpc, kappa {shown}, N_l x{noise_scaling}")
     print(f"fiducial {fid}; free {params}; priors (config latents) on every parameter")
 

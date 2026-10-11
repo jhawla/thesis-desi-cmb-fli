@@ -768,6 +768,25 @@ def compute_cl_outside_model(
     terms enter. ``ell`` are integers indexing the columns of ``taper``.
     """
     ell_idx = np.asarray(ell).astype(int)
+    chi_j, a, w_map, q = _outside_kernel(cosmo, r_shells, a_shells, d_r, shell_weights, z_source,
+                                         chi_max, n_per_shell, n_beyond)
+    power = jc.power.linear_matter_power if linear_pk else jc.power.nonlinear_matter_power
+
+    def per_ell(ell_val, held):
+        kern = w_map - (held[:, None] * q).sum(0)
+        k = (ell_val + 0.5) / chi_j
+        pk = jax.vmap(lambda ki, ai: jnp.squeeze(power(cosmo, ki, ai)))(k, a)
+        return jax.scipy.integrate.trapezoid(kern**2 / chi_j**2 * pk, x=chi_j)
+
+    held = (np.ones((q.shape[0], ell_idx.size)) if taper is None
+            else np.asarray(taper, dtype=float)[:, ell_idx])
+    return jax.vmap(per_ell)(jnp.asarray(ell_idx, dtype=float), jnp.asarray(held.T))
+
+
+def _outside_kernel(cosmo, r_shells, a_shells, d_r, shell_weights, z_source, chi_max, n_per_shell,
+                    n_beyond):
+    """Distances ``chi``, scale factors, map kernel ``W(chi)`` and shell kernels ``q_s(chi)`` of
+    ``compute_cl_outside_model``."""
     r = np.asarray(r_shells, dtype=float)
     h = np.broadcast_to(np.asarray(d_r, dtype=float), r.shape)
     chi_in, p = shell_profiles(r, h, shell_weights, n_per_shell)
@@ -782,18 +801,45 @@ def compute_cl_outside_model(
     w = lensing_kernel(cosmo, jnp.asarray(r), jnp.asarray(a_shells), chi_s)
     q = (jnp.asarray(h) * w)[:, None] * jnp.asarray(p) * chi_j**2 / jnp.asarray(vol)[:, None]
     a = jc.background.a_of_chi(cosmo, chi_j)
-    w_map = lensing_kernel(cosmo, chi_j, a, chi_s)
-    power = jc.power.linear_matter_power if linear_pk else jc.power.nonlinear_matter_power
+    return chi_j, a, lensing_kernel(cosmo, chi_j, a, chi_s), q
 
-    def per_ell(ell_val, held):
-        kern = w_map - (held[:, None] * q).sum(0)
-        k = (ell_val + 0.5) / chi_j
-        pk = jax.vmap(lambda ki, ai: jnp.squeeze(power(cosmo, ki, ai)))(k, a)
-        return jax.scipy.integrate.trapezoid(kern**2 / chi_j**2 * pk, x=chi_j)
 
-    held = (np.ones((r.size, ell_idx.size)) if taper is None
+def limber_ratio_outside_model(
+    cosmo, ell, r_shells, a_shells, d_r, shell_weights, z_source, chi_max, taper=None,
+    n_per_shell=40, n_beyond=200, k_max=0.5,
+):
+    """Exact over Limber C_ell of the kernel ``compute_cl_outside_model`` leaves out, in linear
+    theory at a concrete cosmology (docs/pipeline.md 3.2). Exact: ``(2/pi) int dk k^2 P(k)
+    [int dchi K(chi) D(chi) j_ell(k chi)]^2``; Limber: ``int dchi K^2 D^2 P((ell+1/2)/chi) / chi^2``.
+    The k grid resolves the radial extent of the kernel; 1 at ell < 2."""
+    from scipy.special import spherical_jn
+
+    from desi_cmb_fli.nbody import a2g
+
+    ell_idx = np.asarray(ell).astype(int)
+    k_tab = np.geomspace(1e-6, 10.0, 4000)
+
+    def tables(c):  # jitted, as the rest of the code calls jax_cosmo (its host cache keys on it)
+        chi, a, w_map, q = _outside_kernel(c, r_shells, a_shells, d_r, shell_weights, z_source,
+                                           chi_max, n_per_shell, n_beyond)
+        return chi, a, w_map, q, a2g(c, a), jc.power.linear_matter_power(c, jnp.asarray(k_tab))
+
+    chi, a, w_map, q, growth, p_tab = (np.asarray(x, dtype=float) for x in jax.jit(tables)(cosmo))
+    k = np.linspace(0.0, k_max, int(np.ceil(4.0 * k_max * chi[-1] / np.pi)) + 1)[1:]
+    p_k = np.exp(np.interp(np.log(k), np.log(k_tab), np.log(p_tab)))
+    held = (np.ones((q.shape[0], ell_idx.size)) if taper is None
             else np.asarray(taper, dtype=float)[:, ell_idx])
-    return jax.vmap(per_ell)(jnp.asarray(ell_idx, dtype=float), jnp.asarray(held.T))
+    ratio = np.ones(ell_idx.size)
+    for i, ell_val in enumerate(ell_idx):
+        if ell_val < 2:
+            continue
+        kern = w_map - held[:, i] @ q
+        k_l = (ell_val + 0.5) / chi
+        p_l = np.exp(np.interp(np.log(k_l), np.log(k_tab), np.log(p_tab)))
+        limber = np.trapezoid(kern**2 * growth**2 * p_l / chi**2, chi)
+        proj = np.trapezoid((kern * growth)[None] * spherical_jn(ell_val, np.outer(k, chi)), chi, axis=1)
+        ratio[i] = 2.0 / np.pi * np.trapezoid(k**2 * p_k * proj**2, k) / limber
+    return ratio
 
 
 def _galaxy_kernel(chi, chi_min, chi_max, nz):
@@ -887,8 +933,9 @@ def compute_cl_high_z(
     (the keyword arguments of ``compute_cl_outside_model`` but ``cosmo``, ``ell`` and ``chi_max``)
     it is everything the Born shells leave out: beyond the box, the end ramps of the tents and the
     per-shell cut; without, the Limber power of ``[chi_min, chi_max]``. Times ``window2`` if given
-    (the squared angular window with which that matter reaches the observable, the projection
-    sphere's ``bilinear_window``). ``cl_cached`` and ``gradients`` hold the windowed term.
+    (per multipole: the squared angular window with which that matter reaches the observable, the
+    projection sphere's ``bilinear_window``, times ``limber_ratio_outside_model``). ``cl_cached``
+    and ``gradients`` hold the windowed term.
 
     Modes:
       'fixed'  : returns cached C_ell at fiducial cosmology.

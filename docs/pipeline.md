@@ -582,6 +582,13 @@ kernel `B_ℓ(χ) = W(χ) − Σ_s w_s(ℓ) q_s(χ)` (`cmb_lensing.compute_cl_ou
 the box, the end ramps of the linear tents (the tents sum to one only between the first and last
 apex, so one `d_r` at each end is held partly) and what the cut removes, with their cross terms.
 Taking the pieces apart and leaving out the ramps misstates it on both sides of the band (§7.12).
+Limber misses the radial modes of a kernel whose radial extent is not large against χ/ℓ, so the term
+is the Limber C_ℓ times the exact-over-Limber ratio of the same kernel in linear theory at the
+fiducial cosmology (`cmb_lensing.limber_ratio_outside_model`, `model.cmb_los_limber`), exact being
+`(2/π) ∫ dk k² P(k) [∫ dχ B_ℓ(χ) D(χ) j_ℓ(kχ)]²` on a k grid that resolves the kernel's radial
+extent. It enters every mode as the window does; in `taylor` and `exact` the Limber part follows the
+cosmology and the ratio stays at the fiducial. It matters when the box is smaller than the map's
+depth: at box 5000 the 2500–3750 slab is twice its Limber power at ℓ = 2 (§7.15).
 
 **Depth of the data map.** The model shells hold the matter from `chi_matter_min` to `chi_boundary`.
 On a real map the map's matter runs from the observer to `χ_s` (9388 Mpc/h at the fiducial
@@ -889,16 +896,26 @@ The field is read from `sampler_state.pkl` (the batches hold scalars only); `--n
   without them, from the final states only.
 
 **Fisher forecasts** (`desi_cmb_fli.fisher`, tested against closed forms in `tests/test_fisher.py`).
-- *Galaxies, 3-D* (`galaxy_fisher_3d`, `galaxy_fisher_3d_cosmo`): `F_ab = ∫dV ∫k²dk/(2(2π)²) ∫dμ
-  ∂_aP ∂_bP/(P + 1/n̄)²`, `P = (b(k, z) + fμ²)² P_lin(k, z)`, `b = 1 + b1 − b∇²k² + b_φ f_NL/M(k, z)`,
-  `b_φ = 2δ_c b1` (universality, §2.2); volume the full-sky LRG shell, `n̄(χ)` the catalogue n(z);
-  `k_max = π/cell`, `k_min = 2π/V^{1/3}` (halving or doubling `k_min` changes σ(`f_NL`) by ×0.7 and
-  ×1.6). With `b1_alpha`, `(1 + b1)(D(z_b1)/D(z))^α`. Left out: `b2`, `b_{s²}` (not in the linear
-  spectrum; |ρ| with `f_NL` ≤ 0.09, §7.3), `b∇∥`, the mask.
+- *Galaxies, 3-D* (`galaxy_fisher_3d`, `galaxy_fisher_3d_cosmo`): `F_ab = ∫dV ∫k²dk c(k/k_N)/(2(2π)²)
+  ∫dμ ∂_aP ∂_bP/(P + 1/n̄)²`, `P = (b(k, z) + fμ² + b∇∥k²μ²)² P_lin(k, z)`, `b = 1 + b1 − b∇²k² +
+  b_φ f_NL/M(k, z)`, `b_φ = 2δ_c b1` (universality, §2.2); volume the full-sky LRG shell, `n̄(χ)` the
+  catalogue n(z); `k_min = 2π/V^{1/3}` (halving or doubling it changes σ(`f_NL`) by ×0.7 and ×1.6).
+  The modes are those of the grid's Fourier cube, |k_i| ≤ k_N = π/cell, as the cell likelihood
+  holds them: `c = cube_mode_fraction`, the share of the directions at |k| inside the cube (1 to k_N,
+  0 from √3 k_N), the cube holding 6/π ≈ 1.9 times the modes of the sphere k ≤ k_N, at the highest k
+  where the spectrum's shape carries `Omega_m`. The Finger-of-God term `b∇∥` (`bnpar`, the velocity
+  `bnpar D ∇δ_L` projected on the line of sight adds `bnpar k∥² δ`) is free in the cosmology Fisher,
+  with the config's prior; it takes the RSD information on `sigma8` at high k. With `b1_alpha`,
+  `(1 + b1)(D(z_b1)/D(z))^α`. Left out: `b2`, `b_{s²}` (not in the linear spectrum; |ρ| with `f_NL` ≤
+  0.09, §7.3), `b∇∥` in the `f_NL` Fisher, the mask, any shot noise beyond Poisson (§7.8).
 - *κ* (`angular_fisher_cosmo`, `kappa_fisher_increment`): tomographic Limber over ℓ 2 … 2·nside,
-  `F = Σ_ℓ (2ℓ+1)/2 tr(C⁻¹∂_aC C⁻¹∂_bC)`, ten equal-number galaxy shells without Kaiser term, κ from
-  the shells under the per-shell taper (the removed power as noise), noise `N_ℓ` plus the line of
-  sight (as noise at the fiducial, or as signal). Joint = 3-D galaxies + `F[shells + κ] − F[shells]`,
+  `F = Σ_ℓ (2ℓ+1)/2 tr(C⁻¹∂_aC C⁻¹∂_bC)`, ten equal-number galaxy shells without Kaiser term. κ is
+  split as the model splits it (`held_fraction`, `kappa_spectra`): the model's shells, built as
+  `FieldLevelModel` builds them (tents and their end ramps, per-shell taper), hold the fraction
+  `Σ_s w_s(ℓ) q_s(χ)/W(χ)` of the lensing kernel — the signal and the κg cross kernel — and the rest
+  of the kernel up to `chi_high_z_max` is the line-of-sight term, times the model's exact-over-Limber
+  ratio (`with_los_ratio`, §3.2); both times `w_ℓ²`. Noise `N_ℓ` plus that term (as noise at the
+  fiducial, or as signal). Joint = 3-D galaxies + `F[shells + κ] − F[shells]`,
   the increment over *angular* galaxy information (an approximation). For `f_NL`, `σ_κ = √(ΔF⁻¹)` is
   κ's incremental information through the galaxies, not a κ-only constraint: κ alone sees `f_NL` only
   through the weak matter φ² channel (§2.2). Cosmology moves z(χ), growth and
@@ -914,9 +931,9 @@ The field is read from `sampler_state.pkl` (the batches hold scalars only); `--n
 | question | answer | where |
 |---|---|---|
 | galaxies alone, `Omega_m`–`sigma8`, Abacus | unbiased with `b1_alpha` free and 200³ particles: box 7500 −0.47σ / −0.19σ; box 5000 (non-periodic) −0.25σ / +1.16σ | §7.14 |
-| κ model at the true ICs | error inside the covariance at ℓ ≤ 64 (box 7500); at box 5000 from ℓ = 12, excess at ℓ 2–11 | §7.12, §7.15 |
+| κ model at the true ICs | error inside the covariance at ℓ ≤ 64 (box 7500); at box 5000 from ℓ = 12; at ℓ 2–11 +0.08 `N_ℓ` with the exact term (was +0.14 with Limber), the `ph201` slab +2.2σ | §7.12, §7.15 |
 | κ alone, `Omega_m`–`sigma8`, Abacus | box 7500: biased along the degeneracy by the lattice template; box 5000: Mahalanobis distance of the truth 2.2 | §7.15 |
-| closure `Omega_m`–`sigma8` triplet | unbiased; κ gain on σ(`sigma8`) 62 % (Fisher 63 %), on σ(`Omega_m`) 13 % (Fisher 29 %) | §7.13 |
+| closure `Omega_m`–`sigma8` triplet | unbiased; κ gain on σ(`sigma8`) 62 % (Fisher 69 %), on σ(`Omega_m`) 13 % (Fisher 9 %); galaxy and joint widths within 11 % of the Fisher | §7.13 |
 | joint `Omega_m`–`sigma8`, Abacus | box 7500 (40 batches): −0.4σ of the galaxies on `Omega_m`, σ(`sigma8`) −65 %; box 5000 to run | §7.15, §8 |
 | galaxy likelihood against the grids | depends on the ratio of the particle and paint grids; cause not established | §7.16 |
 | κ gain on σ(`f_NL`) | Abacus none (0.992 ± 0.014); closure 9 % ± 3 % (density 1) to 17 % ± 3 % (0.03) | §7.1–7.3, to redo |
@@ -1057,40 +1074,51 @@ before/after record; the current model: `…_poles_cell{93p75,92p5926}_kmax0.050
 
 ### 7.10 Fisher forecasts — computed
 
+The Fisher of §6 (Fourier cube of the grid, `bnpar` free, κ split as the model splits it with the
+exact-over-Limber line-of-sight ratio), recomputed 2026-10-11 with the emulator spectrum (§2.1).
+Before, the galaxy Fisher counted the modes of the sphere k ≤ π/cell (52 % of the cube's) and had no
+`bnpar`: σ(`Omega_m`) twice too large, σ(`sigma8`) right by compensation (the cube alone gives 0.029,
+`bnpar` brings it back to 0.052), so every measured galaxy `Omega_m` width looked 1.6–2.4 × too
+narrow (§7.13); scripts of that diagnosis `~/claude_scratch/sigma_om/`.
+
 **`Omega_m`, `sigma8`, box 5000, `b1_alpha` free** (`fisher_cosmo.py --b1_alpha` on
 `abacus/abacus_joint_so_cosmo_box5000.yaml` and the same with the ACT file; line of sight as noise,
 as in the likelihood; `figures/fisher_diagnostic/fisher_cosmo_box5000_{act,so}_b1alpha.{png,json}`):
 
 | σ(`Omega_m`) / σ(`sigma8`) | ACT DR6 | SO baseline |
 |---|---|---|
-| galaxies | 0.0288 / 0.0662 | 0.0288 / 0.0662 |
-| κ alone | 0.0646 / 0.0345 | 0.0488 / 0.0256 |
-| joint | 0.0153 / 0.0210 | 0.0139 / 0.0169 |
-| κ gain on the joint | 47 % / 68 % | 52 % / 75 % |
+| galaxies | 0.0109 / 0.0523 | 0.0109 / 0.0523 |
+| κ alone | 0.0631 / 0.0310 | 0.0477 / 0.0230 |
+| joint | 0.0097 / 0.0194 | 0.0095 / 0.0158 |
+| κ gain on the joint | 11 % / 63 % | 13 % / 70 % |
 
-SO lowers κ alone by 24–26 % and the joint by 9 % (`Omega_m`) and 20 % (`sigma8`), less than its ×3
+SO lowers κ alone by 24–26 % and the joint by 2 % (`Omega_m`) and 19 % (`sigma8`), less than its ×3
 lower noise: at ℓ ≤ 64 κ is already signal-dominated with ACT (§3.2), and the line of sight stays in
-the noise. With the line of sight as signal: κ alone 0.0434 / 0.0251 (ACT), 0.0321 / 0.0183 (SO).
+the noise. With the line of sight as signal: κ alone 0.0420 / 0.0224 (ACT), 0.0312 / 0.0163 (SO). The
+galaxies fix `Omega_m` through the spectrum's shape up to the cube's corners; κ adds to `sigma8`.
+Measured on Abacus at box 5000 (§7.14): galaxies 0.0119 / 0.053.
 
-**Box 7500, closure configuration, no bias evolution** (the reference of §7.13;
-`fisher_cosmo.json`, `…_contours.png`): galaxies 0.0183 / 0.0503, κ alone 0.0608 / 0.0461, joint
-0.0131 / 0.0188 (gains 29 % / 63 %); with `b1_alpha` free (`fisher_cosmo_b1alpha.json`) galaxies 0.0288
-/ 0.0667, joint 0.0155 / 0.0201.
+**Box 7500, closure configuration, ACT** (the noise of the §7.13 runs, `figures/fisher_diagnostic/`
+`fisher_cosmo.json`, `…_contours.png`, config `scan/closure_d1p00_joint.yaml` with the ACT file):
+galaxies 0.0092 / 0.0517, κ alone 0.0575 / 0.0391, joint 0.0084 / 0.0162 (gains 9 % / 69 %; on
+`sigma8` 74 % and 77 % at densities 0.1 and 0.03, 72 % with the line of sight as signal); with
+`b1_alpha` free (`fisher_cosmo_b1alpha.json`) galaxies 0.0107 / 0.0523, joint 0.0096 / 0.0164.
 
-**Resolution** (`--resolution_scan`, ACT, density 1, `fisher_cosmo_resolution.json`), joint σ and κ gain:
+**Resolution** (`--resolution_scan`, ACT, density 1, `fisher_cosmo_resolution.json`), σ and κ gain:
 
-| box / cell (cost) | σ(`Omega_m`) / σ(`sigma8`) | κ gain |
-|---|---|---|
-| 7500 / 93.75 (1) | 0.0131 / 0.0188 | 29 % / 63 % |
-| 7500 / 62.5 (3.4) | 0.0071 / 0.0132 | 6 % / 38 % |
-| 7500 / 46.875 (8) | 0.0040 / 0.0097 | 2 % / 23 % |
-| 5000 / 92.6 (0.3) | 0.0127 / 0.0201 | — |
-| 5000 / 62.5 (1) | 0.0070 / 0.0147 | 7 % / 31 % |
-| 5000 / 41.67 (3.4) | 0.0035 / 0.0091 | 2 % / 13 % |
+| box / cell (cost) | galaxies | joint | κ gain |
+|---|---|---|---|
+| 7500 / 93.75 (1) | 0.0092 / 0.0517 | 0.0084 / 0.0162 | 9 % / 69 % |
+| 7500 / 62.5 (3.4) | 0.0040 / 0.0281 | 0.0039 / 0.0129 | 3 % / 54 % |
+| 7500 / 46.875 (8) | 0.0033 / 0.0182 | 0.0032 / 0.0112 | 3 % / 39 % |
+| 5000 / 62.5 (1) | 0.0040 / 0.0281 | 0.0039 / 0.0158 | 3 % / 44 % |
+| 5000 / 41.67 (3.4) | 0.0027 / 0.0149 | 0.0027 / 0.0116 | 2 % / 23 % |
+| 5000 / 31.25 (8) | 0.0016 / 0.0098 | 0.0016 / 0.0086 | 1 % / 12 % |
 
 A finer cell gives the galaxies far more and κ a smaller share; the linear galaxy Fisher flatters the
-galaxies more the higher `k_max`. **`f_NL`**: the two-point κ increment is 2.84 % at density 1 and
-4.15 % at 0.03.
+galaxies more the higher `k_max`. **`f_NL`**: the two-point κ increment (2.84 % at density 1, 4.15 %
+at 0.03) and the 3-D σ(`f_NL`) of §7.3 predate the cube (sphere, no `bnpar`); to recompute with the
+density scan (§8 step 3).
 
 ### 7.11 Linear power spectrum and background — measured
 
@@ -1161,7 +1189,8 @@ in units of the term the earlier runs used, ℓ 2–11 / 12–23 / 24–35 / 36�
 (3.56 / 1.73 / …): the map holds no matter beyond the half box, where its light cone stops being
 full-sky; 3942 was its last source plane. No deficit in the caps around the box axes, no corner
 excess. Limber of that kernel (`compute_cl_outside_model`) is within 2.1 % of the Bessel power in
-every band. Scripts in `~/claude_scratch/bias_evol/` (`los_exact_kernel_v2.py`, `powpost_*.py`).
+every band at box 7500, where the kernel is the ramps and the cut; not at box 5000, where it holds the
+2500–3750 slab (§7.15). Scripts in `~/claude_scratch/bias_evol/` (`los_exact_kernel_v2.py`, `powpost_*.py`).
 
 ### 7.13 Closure `Omega_m`–`sigma8` triplet — measured
 
@@ -1172,16 +1201,17 @@ halves; figure `figures/results/closure_d1p00_cosmo_gxyVSkappaVSjoint_run_…png
 
 | | `Omega_m` (truth 0.3152) | `sigma8` (truth 0.8114) | corr | Fisher σ (§7.10) |
 |---|---|---|---|---|
-| galaxies | 0.3083 ± 0.0093 (−0.74σ) | 0.825 ± 0.048 (+0.28σ) | 0.53 | 0.0183 / 0.0503 |
-| κ only | 0.3488 ± 0.0255 (+1.31σ) | 0.836 ± 0.031 (+0.80σ) | 0.82 | 0.0608 / 0.0461 |
-| joint | 0.3084 ± 0.0081 (−0.84σ) | 0.804 ± 0.018 (−0.40σ) | 0.59 | 0.0131 / 0.0188 |
+| galaxies | 0.3083 ± 0.0093 (−0.74σ) | 0.825 ± 0.048 (+0.28σ) | 0.53 | 0.0092 / 0.0517 |
+| κ only | 0.3488 ± 0.0255 (+1.31σ) | 0.836 ± 0.031 (+0.80σ) | 0.82 | 0.0575 / 0.0391 |
+| joint | 0.3084 ± 0.0081 (−0.84σ) | 0.804 ± 0.018 (−0.40σ) | 0.59 | 0.0084 / 0.0162 |
 
-Biases within 1.1σ. Paired ratios joint/galaxies: `sigma8` 0.379 ± 0.014 (gain 62 %, Fisher 63 %),
-`Omega_m` 0.871 ± 0.022 (13 %, Fisher 29 %). Split R̂ ≤ 1.018, ESS ≥ 268; widths stable across halves
-(4 %) and chains (8 %). `Omega_m` is 1.6–2.4 × narrower than the Fisher in all three runs, `sigma8`
-only for κ alone. **κ alone: the lattice template** (§7.15), whose amplitude depends on `Omega_m` and
-`sigma8`, carries information the Limber Fisher does not have; in closure it is in the data. **Galaxies:
-open** — §7.14 gives a candidate channel (the growth ratio read without sample variance), untested (§8).
+Biases within 1.1σ. Paired ratios joint/galaxies: `sigma8` 0.379 ± 0.014 (gain 62 %, Fisher 69 %),
+`Omega_m` 0.871 ± 0.022 (13 %, Fisher 9 %). Split R̂ ≤ 1.018, ESS ≥ 268; widths stable across halves
+(4 %) and chains (8 %). Galaxies and joint within 11 % of the Fisher of §7.10 (ACT, the runs' noise);
+against the former sphere-without-`bnpar` Fisher `Omega_m` looked 1.6–2.4 × too narrow (§7.10).
+**κ alone is narrower than the Fisher: the lattice template** (§7.15), whose amplitude depends on
+`Omega_m` and `sigma8`, carries information the Limber Fisher does not have; in closure it is in the
+data.
 
 ### 7.14 Redshift evolution of the galaxy bias — measured
 
@@ -1208,9 +1238,7 @@ k < 0.034 the field fixes the amplitude in the band, and `sigma8` is reached thr
 sets. The code's bias gave `Omega_m` 0.246 ± 0.006, `sigma8` 0.603 ± 0.036 on Abacus
 (`run_20261005_050249_59363213`, after a first attempt that diverged at the same point); a closure whose
 truth has α = 1, inferred at α = 0, reproduces that warmup and divergence (`run_20261006_051115_59425114`):
-the bias evolution alone causes it. The field level reads the growth ratio across the shell without
-sample variance when the evolution is known, which is why the closure `Omega_m` beats the Fisher
-(§7.13); freeing α in the Fisher costs 58 % on σ(`Omega_m`) (§7.10).
+the bias evolution alone causes it. Freeing α in the Fisher costs 16 % on σ(`Omega_m`) (§7.10).
 
 **The remaining `sigma8` deficit was the particle grid.** With α = 1 fixed, `Omega_m` 0.3185 ± 0.0107
 but `sigma8` 0.713 ± 0.047 (−2.1σ, `run_20261006_043937_59424345`). The galaxy likelihood at the true
@@ -1302,23 +1330,58 @@ run's priors (`~/claude_scratch/bias_evol/fisher_template/ftemplate_combo.py`), 
 
 | | Limber κ | Limber κ + template | measured κ only |
 |---|---|---|---|
-| box 7500 | 0.0599 / 0.0453 | 0.0373 / 0.0312 | closure 0.0255 / 0.031, Abacus `ph201` 0.024 / 0.033 |
-| box 5000 | 0.0646 / 0.0345 | 0.0591 / 0.0331 | Abacus 0.066 / 0.040 (ACT, below) |
+| box 7500 | 0.0575 / 0.0391 | 0.0365 / 0.0282 | closure 0.0255 / 0.031, Abacus `ph201` 0.024 / 0.033 |
+| box 5000 | 0.0631 / 0.0310 | 0.0578 / 0.0302 | Abacus 0.066 / 0.040 (ACT, below) |
 
 At box 7500 the template accounts for the κ-only `sigma8` width and for most of the `Omega_m` one (the
 rest within the linearisation of a template ∝ `Omega_m`^1.3 over the grid step; the Gaussian likelihood
 with T(θ) above gives 0.025): the κ-only widths narrower than the Fisher of §7.13 are the lattice's
 information, real in closure (the template is in the data) and spurious on a real sky. At box 5000 the
-template adds little and the measured width is the Fisher's.
+template adds little. The κ-only posterior is not Gaussian, so the run is set against the exact
+Gaussian likelihood of the same model rather than the Fisher (`~/claude_scratch/kappa_width/grid_like.py`:
+full sky, diagonal, the Fisher's shell signal ∝ `sigma8`², `N_ℓ` + `w_ℓ²C^LOS` at the fiducial, the run's
+truncated priors, a 0.01 × 0.001 grid). For the ACT run (old linear spectrum, as the run): Fisher at the
+truth 0.0646 / 0.0345; exact likelihood on Asimov data 0.350 ± 0.074 / 0.820 ± 0.035, on the `ph201` data
+0.380 ± 0.081 / 0.777 ± 0.035; MCMC 0.351 ± 0.066 / 0.769 ± 0.040. The information on `Omega_m` falls
+along the degeneracy (Fisher σ(`Omega_m`) 0.065, 0.080, 0.100 at `Omega_m` 0.315, 0.351, 0.40), and the
+posterior mean sits at 0.35 even on Asimov data: the run's `Omega_m` offset is the posterior's shape.
+MCMC against the exact likelihood on the same sky: −19 % (`Omega_m`), +14 % (`sigma8`), within what the
+comparison leaves out (lattice template, Limber signal at low ℓ, finite ESS), not separated. Comparing
+the run with the emulator Fisher (§7.10) mixes two linear spectra. Expected at box 5000 with the
+emulator (Asimov, exact likelihood): ACT 0.346 ± 0.069 / 0.817 ± 0.031, SO 0.337 ± 0.055 / 0.816 ± 0.024
+(`abacus/abacus_kappaonly_{Nl1p0,so}_cosmo_box5000.yaml`).
 
 **Box 5000.** Prediction from the template grid at box 5000: `ph201` 0.315 ± 0.035, 0.764 ± 0.030
 (with or without T alike), `ph202` 0.275 ± 0.038, 0.794 ± 0.028. κ only on `ph201`, ACT
 (`abacus/abacus_kappaonly_Nl1p0_cosmo_box5000.yaml`, `run_20261008_050011_59542668`, 140 batches,
 R̂ ≤ 1.004): `Omega_m` 0.351 ± 0.066, `sigma8` 0.769 ± 0.040, Mahalanobis 2.2; its κ reconstruction
 follows the expectations of a correct model. IC test at box 5000 (`kappa_from_abacus_ic_box5000_cell92p59.{png,npz}`),
-(error − covariance)/`N_ℓ` in the six bins +0.143 −0.019 +0.024 −0.005 −0.035 −0.032: inside the
-covariance from ℓ = 12; at ℓ 2–11 an excess (0.08 at box 5495, 0 at 7500), cause not established
-(§8).
+(error − covariance)/`N_ℓ` in the six bins +0.143 −0.019 +0.024 −0.005 −0.035 −0.032 with the Limber
+term: inside the covariance from ℓ = 12; at ℓ 2–11 an excess (0.08 at box 5495, 0 at 7500).
+
+**The ℓ 2–11 excess at box 5000** (ACT `N_ℓ`, `ph201`, units of `N_ℓ` summed over ℓ 2–11; scripts
+`~/claude_scratch/bias_evol/crop/{crop_test,slab_ensemble,check_fix}.py`, jobs 59681744, 59681893,
+59682642). Not the crop: the box-5000 projector on the central 200³ particles of a 7500 LPT (300³,
+same spacing) differs from the box-5000 model on the cropped ICs by 0.0002. It is the 2500–3750 slab
+that the box-5000 model leaves to the covariance: its power on `ph201` (7500 model at the true ICs,
+shells ≥ 2500) is 0.337, the Limber term 0.226; the 7500 model's error against the map is 0.005. Over
+40 Gaussian realisations of the same 7500 model the slab has 0.275 ± 0.005 (scatter 0.029), so (1) Limber
+under-predicts it — per ℓ the ensemble over the Limber term is 2.06 ± 0.21, 1.78 ± 0.13, 1.30 ± 0.11,
+1.21 ± 0.07, 1.29 ± 0.07 at ℓ = 2–6, the exact-over-Limber ratio of a 2500–3750 slab 2.30, 1.83, 1.58,
+1.43, 1.33 — and (2) `ph201` is the highest of the 40 (+2.2σ; +3.0σ at ℓ = 3, +2.6σ at ℓ = 6). With the
+exact-over-Limber ratio in the term (§3.2): the box-5000 ratio is 2.03, 1.65, 1.45, 1.34, 1.26 at
+ℓ = 2–6, 1.10 at 11, 1.02 at 21, ≤ 1.01 from ℓ = 25 (grids doubled: 8·10⁻⁴); the term at ℓ 2–11 is
+0.284 against the ensemble's slab plus cut part 0.275 + 0.009; per ℓ 2–11 the ensemble over the new
+term is 0.89–1.08 (χ² 12 for 10 against 1); the bands above ℓ = 12 move by ≤ 4 %. The `ph201` excess drops
+to +0.084, the sky's own fluctuation. At box 7500 the ratio is 1.28 at ℓ = 2, 1.11 at 3, 1.03 at 4,
+0.96–1.01 at 5–20 and 0.98 above (the ramps and the cut are thin kernels), on a term of 0.009 at ℓ 2–11.
+
+**Glass Lagrangian start** (κ template, box 7500, 200³, fiducial cosmology, 8 antithetic pairs;
+`~/claude_scratch/bias_evol/glass/`, glass `glass200.npy` from a jittered lattice relaxed by 60
+repulsive PM steps, job 59682712; comparison `compare_glass.py`, SO `N_ℓ`). The fixed glass leaves its
+own deterministic template: S/N 5.62 (ℓ ≤ 64) and 2.82 (ℓ ≤ 47) against 6.47 and 2.94 for the
+lattice, uncorrelated with it (0.008), 0.97 of the undisplaced glass's map (lattice 0.69). It does
+not replace the box reduction.
 
 **The joint at box 7500** (`abacus/abacus_joint_Nl1p0_cosmo.yaml`, `run_20261007_235050_59532519`, 40
 batches): `Omega_m` 0.3052 ± 0.0095, `sigma8` 0.784 ± 0.018, −0.4σ of the galaxies on `Omega_m`,
@@ -1348,14 +1411,26 @@ grids (`galaxy_likelihood_profile.py --box --mesh --particles`; paint grid 1.75 
 | 54 | 94 | 188 | 5000 | −1105 | +670 |
 | 64 | 112 | 224 | 5990 | −1029 | +632 |
 | 80 | 140 | 280 | 7500 | −1029 | +629 |
+| 58 | 102 | 200, glass | 5000 | +192 | +35 |
 
 (The 200-particle rows from `~/claude_scratch/bias_evol/boxscan/subbox.py`, the same estimator; the
-others `figures/galaxy_likelihood_profile/abacus_gxyonly_cosmo_amplitude_m*p*.json`.) The result
+others `figures/galaxy_likelihood_profile/abacus_gxyonly_cosmo_amplitude_m*p*.json`; the box-5000
+rows at meshes 54 and 58 with 200 particles rerun with `galaxy_likelihood_profile.py`, +65/+60 and
+−165/+208, `…_m54p200.json`, `…_m58p200.json`.) The result
 follows the ratio of the particle and paint grids, not the box or the cell: 196 and 204 particles at
 the same mesh differ by an order of magnitude, and a particle grid exactly twice the paint grid
 prefers a field at least 10 % too small at every mesh. The production grids (meshes 54 and 80 with
 200³ particles) put the minimum near A ≈ 0.97–0.98, and the box-5000 galaxy run is unbiased (§7.14).
-Mechanism not established.
+
+**Glass Lagrangian start** (the glass of §7.15 in place of the lattice through a monkeypatched
+`regular_pos`, `~/claude_scratch/bias_evol/glass/with_glass.py`, job 59682713,
+`…_amplitude_m58_glass.json`): at mesh 58 with 200³ particles the minimum moves from below 0.90 to
+A ≈ 1.005 and χ²(1) drops by 2566 (73595 against 76161); `bn2` at the profile is −115 against −1.
+The glass removes the regular lattice and also changes the reads: the particles are off the
+evolution-grid nodes, so `cic_read` of the displacements and of δ_L interpolates (not deconvolved
+here), where on the lattice it is exact. It ties the grid effect to the regular lattice without
+isolating the mechanism. Not adopted: the production grids are fine, the glass leaves its own κ
+template (§7.15), and off-node reads would need their own validation (§2.5).
 
 ## 8. Remaining steps before the paper
 
@@ -1371,14 +1446,13 @@ noise (§3.2).
    constraining at SO noise). Then `compare_runs.py` of the three, the paired gains against the
    Fisher of §7.10, the field and κ reconstructions.
 2. **To understand.** (a) The galaxy likelihood against the particle/paint grid ratio (§7.16), and
-   whether a glass Lagrangian start (no lattice, same particle count) removes it and the κ template
-   (bench by monkeypatching `regular_pos`; it would replace the box reduction). (b) The κ excess at
-   ℓ 2–11 at box 5000 (§7.15): non-periodic crop (fix: a buffer between the shells and the box faces)
-   or the Limber line-of-sight term of the 2500–3750 slab at low ℓ (fix: a non-Limber term); a
-   decomposition test is written (`~/claude_scratch/bias_evol/crop/crop_test.py`). (c) The galaxy `Omega_m`
-   width narrower than the Fisher (§7.13; at box 5000 0.0119 against 0.0288 with `b1_alpha` free, §7.10):
-   the closure with α free; whether the grid effect of §7.16 also adds spurious information. The κ-only
-   widths are explained by the lattice template (§7.15).
+   whether a glass Lagrangian start removes it: at mesh 58 it does, with changed reads; for the κ
+   template it does not (§7.15, §7.16). The production grid (mesh 54, 200³) is unaffected. (b) Done: the κ excess at ℓ 2–11 at box 5000 was the Limber
+   line-of-sight term, now exact at low ℓ (§3.2, §7.15). κ runs before it are not resumable (the
+   cached term changes at init). (c) Done: the galaxy `Omega_m`
+   width narrower than the Fisher was the Fisher's mode count (sphere instead of the grid's Fourier
+   cube) and its missing `bnpar` (§6, §7.10); galaxies and joint now within 11 %; the κ-only widths
+   against the exact likelihood (§7.15).
 3. **Other configs to box 5000 and SO noise.** The `f_NL` pair (`abacus/abacus_gxyonly.yaml`,
    `abacus/abacus_joint_Nl1p0.yaml`) and its field reconstruction (§7.1); the κ-only validations of
    §7.4 (`abacus_kappaonly_Nl{1p0,0p1}_fnlfixed`); the closure triplet (§7.13) and the density-scan
@@ -1391,7 +1465,8 @@ noise (§3.2).
    Gaussian draw of variance `N_ℓ + w_ℓ² C_ℓ^LOS`; the two-point theory is a Limber with the shells'
    window and the ℓ-dependent radial cut, times w_ℓ². Protocol fixed before either analysis runs: line
    of sight as noise, same priors and linear spectrum, the two-point contour produced first.
-5. **Code.** `fisher.kappa_spectra` still splits the far shell and the cut and has no tent ramps.
+5. **Code.** Done: `fisher.kappa_spectra` splits κ as the model does (§6). The `f_NL` Fisher of the
+   density scan (`galaxy_fisher_3d`) has the cube but not `bnpar`.
 6. **Linear spectrum changed** (ACE emulator, §2.1; `Omega_m` bounds [0.2, 0.55]). No run before it
    resumes (its `config.yaml` carries `lin_pk_table` or the old bounds). At fixed cosmology the Abacus
    spectrum moves by ≤ 0.11 % against the former table, so the fixed-cosmology Abacus records stand;
@@ -1412,7 +1487,8 @@ knob) to tell model error from realisation; the closure triplet at the depth of 
 box 5000 (step 3) — galaxy-only runs do not depend on the noise. Figures and numbers that carry
 `N_ℓ`: the IC tests' error in units of `N_ℓ` (§7.12, §7.15: `validate_kappa_from_ic.py` on a box-5000
 SO config), `plot_lensing_fraction.py`, the density-scan Fisher (`fisher.NELL_FILE` is now SO), the
-§7.10 box-7500 Fisher figures (record), the two-point comparison material (step 4).
+two-point comparison material (step 4); the box-7500 Fisher of §7.10 stays at ACT, the noise of the
+§7.13 runs it is compared with.
 
 **Figures to regenerate** (made with the abandoned inner cut-off `chi_min`, or at box 7500 with ACT;
 paper section in brackets):
@@ -1423,7 +1499,6 @@ paper section in brackets):
 | `results/density_scan.png` (06) | `density_scan.py` | after step 3 |
 | `results/reconstruction_noise_ladder_250.png` (06) | script not found | the κ noise ladder again, or drop |
 | `maps/maps2d_abacus_huge_chimin700.png` (04) | `plot_2D_maps.py` | on a box-5000 config |
-| `fisher_diagnostic/fisher_cosmo{,_contours,_resolution,_b1alpha}.*` (§7.10) | `fisher_cosmo.py` | box-5000 SO figures exist; keep the 7500 ones as the record of §7.13 |
 | `spectra_diagnostic/cl_closure_*` (05) | `quick_cl_spectra.py` | `validation/closure.yaml`, 20 realisations, seed 77 (GPU) |
 
 Removed from the tree and kept in the git history: the κ configs and figures of the `chi_min` set-up
