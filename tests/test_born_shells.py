@@ -36,7 +36,7 @@ def _cfg(**overrides):
                 "N_ell": np.full(64, 1e-9, dtype=float),
             },
             "full_los_correction": True,
-            "high_z_mode": "fixed",
+            "cl_out_mode": "fixed",
             "chi_high_z_max": 300.0,
         }
     )
@@ -67,7 +67,7 @@ def test_without_the_cut_the_los_covariance_is_the_matter_beyond_the_box_and_the
                                                          m.cmb_z_source))
         shells = np.asarray(compute_theoretical_cl_kappa(cosmo, m.ell_1d, max(start, 1.0),
                                                          m.chi_boundary, m.cmb_z_source))
-        term = np.asarray(m.cl_high_z_cached) / np.asarray(m.cmb_los_window2 * m.cmb_los_limber)
+        term = np.asarray(m.cl_out_cached) / np.asarray(m.cmb_los_window2 * m.cmb_los_limber)
         assert np.all(np.abs(term - beyond)[2:] < 0.05 * shells[2:])
 
 
@@ -100,25 +100,25 @@ def test_the_kappa_window_removes_only_the_matter_the_map_does_not_hold():
     assert np.all((cut > 0.2 * ref) & (cut < 0.8 * ref))
 
 
-def test_every_high_z_mode_carries_the_los_term_alike():
+def test_every_cl_out_mode_carries_the_out_term_alike():
     """fixed, taylor and exact agree at the fiducial; away from it taylor follows exact to first
     order and fixed does not move."""
     from desi_cmb_fli.bricks import get_cosmology
-    from desi_cmb_fli.cmb_lensing import compute_cl_high_z, compute_cl_outside_model
+    from desi_cmb_fli.cmb_lensing import compute_cl_out, compute_cl_outside_model
 
     def los(m, cosmo, linear=False):
         return np.asarray(compute_cl_outside_model(cosmo, m.ell_1d, **m.cmb_shells, chi_max=300.0,
                                                    linear_pk=linear)) * np.asarray(
             m.cmb_los_window2 * m.cmb_los_limber)
 
-    models = {mode: FieldLevelModel(**_cfg(cmb_shell_kmax=0.0, high_z_mode=mode))
+    models = {mode: FieldLevelModel(**_cfg(cmb_shell_kmax=0.0, cl_out_mode=mode))
               for mode in ("fixed", "taylor", "exact", "exact_linear")}
     fid = models["fixed"].loc_fid
     for ds8 in (0.0, 0.01):
         cosmo = get_cosmology(Omega_m=fid["Omega_m"], sigma8=fid["sigma8"] + ds8)
-        cl = {mode: np.asarray(compute_cl_high_z(
+        cl = {mode: np.asarray(compute_cl_out(
             cosmo, m.ell_1d, m.chi_boundary, m.chi_high_z_max, m.cmb_z_source, mode=mode,
-            cl_cached=m.cl_high_z_cached, gradients=m.high_z_gradients, loc_fid=m.loc_fid,
+            cl_cached=m.cl_out_cached, gradients=m.cl_out_gradients, loc_fid=m.loc_fid,
             shells=m.cmb_shells, window2=m.cmb_los_window2 * m.cmb_los_limber))[2:]
             for mode, m in models.items()}
         np.testing.assert_allclose(cl["exact"], los(models["exact"], cosmo)[2:], rtol=1e-10)
@@ -158,6 +158,20 @@ def test_removed_config_keys_are_rejected_with_kappa_on():
         bad = {**cfg, "cmb_lensing": {**cfg["cmb_lensing"], key: 700.0}}
         with pytest.raises(ValueError, match="chi_matter_min"):
             get_model_from_config(bad)
+
+
+def test_out_mode_under_both_names_is_rejected():
+    from pathlib import Path
+
+    import yaml
+
+    from desi_cmb_fli.model import get_model_from_config
+
+    root = Path(__file__).resolve().parents[1]
+    cfg = yaml.safe_load(open(root / "configs/inference/scan/closure_d1p00_joint.yaml"))
+    bad = {**cfg, "cmb_lensing": {**cfg["cmb_lensing"], "high_z_mode": "fixed"}}
+    with pytest.raises(ValueError, match="cl_out_mode only"):
+        get_model_from_config(bad)
 
 
 def test_chi_matter_min_out_of_range_is_rejected():

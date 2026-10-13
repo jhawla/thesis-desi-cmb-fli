@@ -97,7 +97,7 @@ default_config = {
     "cmb_mask": None,  # Optional external survey mask (npy/FITS or array)
 
     "cmb_z_source": 1100.0,  # CMB last scattering surface
-    "high_z_mode": "taylor",  # 'fixed', 'taylor', 'exact'
+    "cl_out_mode": "taylor",  # out-of-model C_l: 'fixed', 'taylor', 'exact', 'exact_linear'
     "cmb_likelihood_mode": "diagonal",  # 'diagonal' (fast, exact on full sky) | 'pixel_exact' (exact cut-sky via KL eigenmodes)
     "cmb_kl_rcond": 1e-6,  # pixel_exact: keep eigenmodes with lambda > rcond*lambda_max (supported Slepian subspace; 1e-6 keeps cond~1e6, safe in float32; lower=more complete but more fragile)
 
@@ -227,7 +227,7 @@ MODEL_CONFIG_KEYS = {
 CMB_CONFIG_KEYS = {
     "enabled", "observer_mode", "observer_position", "nside", "n_shells", "chi_matter_min",
     "shell_weights", "shell_kmax", "proj_oversamp", "likelihood", "likelihood_mode", "kl_rcond", "mask",
-    "full_los_correction", "chi_high_z_max", "z_source", "high_z_mode",
+    "full_los_correction", "chi_high_z_max", "z_source", "cl_out_mode", "high_z_mode",
     "cmb_noise_nell", "cmb_noise_scaling",
 }
 
@@ -339,12 +339,10 @@ def get_model_from_config(config_or_path):
         model_config["cmb_z_source"] = float(cmb_cfg.get("z_source", 1100.0))
         model_config["cmb_lensing_obs"] = None # Will be set via conditioning if needed
 
-        # High-Z mode selection
-        if "high_z_mode" in cmb_cfg:
-            model_config["high_z_mode"] = cmb_cfg["high_z_mode"]
-        else:
-            # Default
-            model_config["high_z_mode"] = "taylor"
+        # Out-of-model term mode; high_z_mode is its former name, in the configs of earlier runs.
+        if {"cl_out_mode", "high_z_mode"} <= set(cmb_cfg):
+            raise ValueError("cmb_lensing: give cl_out_mode only (high_z_mode is its former name).")
+        model_config["cl_out_mode"] = cmb_cfg.get("cl_out_mode", cmb_cfg.get("high_z_mode", "taylor"))
 
         if "cmb_noise_nell" in cmb_cfg:
             model_config["cmb_noise_nell"] = cmb_cfg["cmb_noise_nell"]
@@ -703,9 +701,9 @@ class FieldLevelModel(Model):
     cmb_z_source: float = field(default=default_config["cmb_z_source"])
     cmb_enabled: bool = field(default=False)  # Explicit flag to enable CMB lensing
 
-    full_los_correction: bool = field(default=False)  # Enable high-z kappa correction
-    chi_high_z_max: float | None = field(default=None)  # Upper chi limit for high-z correction (None = chi_CMB)
-    high_z_mode: str = field(default="taylor")  # 'fixed', 'taylor', 'exact'
+    full_los_correction: bool = field(default=False)  # Out-of-model C_l in the kappa covariance
+    chi_high_z_max: float | None = field(default=None)  # Where the map's matter stops (None = chi_CMB)
+    cl_out_mode: str = field(default="taylor")  # 'fixed', 'taylor', 'exact', 'exact_linear'
     cmb_likelihood_mode: str = field(default=default_config["cmb_likelihood_mode"])  # 'diagonal' | 'pixel_exact'
     cmb_kl_rcond: float = field(default=default_config["cmb_kl_rcond"])  # pixel_exact KL eigenmode cutoff
     # Primordial non-Gaussianity
@@ -831,7 +829,7 @@ class FieldLevelModel(Model):
             from desi_cmb_fli.cmb_lensing import (
                 _box_ray_intervals,
                 bilinear_window,
-                compute_cl_high_z,
+                compute_cl_out,
                 compute_sigma_hp,
                 limber_ratio_outside_model,
                 load_healpix_mask,
@@ -946,7 +944,7 @@ class FieldLevelModel(Model):
                     f"r_eff = {2 * self.cmb_nside / self.cmb_shell_kmax:.0f} Mpc/h)"
                 )
 
-            # 1-D ell array for high-z correction / harmonic covariance.
+            # 1-D ell array for the out-of-model term / harmonic covariance.
             self.cmb_lmax = 2 * self.cmb_nside
             self.ell_1d = np.arange(self.cmb_lmax + 1, dtype=float)
 
@@ -1042,16 +1040,16 @@ class FieldLevelModel(Model):
                         "cmb_lensing.proj_oversamp > 1 is only implemented for "
                         "likelihood_mode='diagonal' (pixel_exact works on the observable pixels)."
                     )
-                if self.full_los_correction and self.high_z_mode != "fixed":
+                if self.full_los_correction and self.cl_out_mode != "fixed":
                     raise ValueError(
-                        "cmb_likelihood_mode='pixel_exact' requires high_z_mode='fixed' when "
+                        "cmb_likelihood_mode='pixel_exact' requires cl_out_mode='fixed' when "
                         "full_los_correction=True (the pixel covariance is precomputed once and "
-                        f"must stay constant), got high_z_mode={self.high_z_mode!r}."
+                        f"must stay constant), got cl_out_mode={self.cl_out_mode!r}."
                     )
 
-            # Cache/Precompute High-Z Correction (1-D ell)
-            self.cl_high_z_cached = None
-            self.high_z_gradients = None
+            # Cache/Precompute the out-of-model term (1-D ell)
+            self.cl_out_cached = None
+            self.cl_out_gradients = None
             self.cmb_shells = None
             self.cmb_los_window2 = None
             self.cmb_los_limber = None
@@ -1084,21 +1082,21 @@ class FieldLevelModel(Model):
                     cosmo_fid, self.ell_1d, **self.cmb_shells, chi_max=chi_high_z_upper))
 
                 def _cl_los(c_, chi_up_):
-                    return compute_cl_high_z(
+                    return compute_cl_out(
                         c_, self.ell_1d, self.chi_boundary, chi_up_, self.cmb_z_source,
                         mode="exact", shells=self.cmb_shells,
                         window2=self.cmb_los_window2 * self.cmb_los_limber,
                     )
 
-                if self.high_z_mode in ["fixed", "taylor"]:
-                    self.cl_high_z_cached = _cl_los(cosmo_fid, chi_high_z_upper)
+                if self.cl_out_mode in ["fixed", "taylor"]:
+                    self.cl_out_cached = _cl_los(cosmo_fid, chi_high_z_upper)
                     print(
-                        f"  Cached C_l^{{high-z}} at fiducial "
-                        f"(mode={self.high_z_mode}, chi={self.chi_boundary:.0f}->{chi_high_z_upper:.0f} Mpc/h)"
+                        f"  Cached C_l^out at fiducial "
+                        f"(mode={self.cl_out_mode}, chi={self.chi_boundary:.0f}->{chi_high_z_upper:.0f} Mpc/h)"
                     )
 
-                if self.high_z_mode == "taylor":
-                    print("  Computing gradients for High-Z Taylor correction ...")
+                if self.cl_out_mode == "taylor":
+                    print("  Computing gradients of C_l^out for the Taylor mode ...")
 
                     def _cl_wrapper(theta):
                         c_ = get_cosmology(Omega_m=theta[0], sigma8=theta[1])
@@ -1115,20 +1113,20 @@ class FieldLevelModel(Model):
                     cl_s8_up = _cl_wrapper(jnp.array([om_fid, s8_fid + eps_s8]))
                     cl_s8_dn = _cl_wrapper(jnp.array([om_fid, s8_fid - eps_s8]))
 
-                    self.high_z_gradients = {
+                    self.cl_out_gradients = {
                         "dCl_dOm": (cl_om_up - cl_om_dn) / (2.0 * eps_om),
                         "dCl_ds8": (cl_s8_up - cl_s8_dn) / (2.0 * eps_s8),
                     }
 
                     print(
-                        f"  Gradients computed: dCl/dOm shape={self.high_z_gradients['dCl_dOm'].shape}"
+                        f"  Gradients computed: dCl/dOm shape={self.cl_out_gradients['dCl_dOm'].shape}"
                     )
 
-                    # Update sigma_hp to include high-z variance
+                    # Update sigma_hp to include the out-of-model variance
                     self.sigma_hp = compute_sigma_hp(
-                        ell_in, nell_in, self.cmb_nside, cl_extra_1d=self.cl_high_z_cached
+                        ell_in, nell_in, self.cmb_nside, cl_extra_1d=self.cl_out_cached
                     )
-                    print(f"[CMB] sigma_hp (with high-z) = {self.sigma_hp:.6f}")
+                    print(f"[CMB] sigma_hp (with C_l^out) = {self.sigma_hp:.6f}")
 
             if self.cmb_likelihood_mode == "pixel_exact":
                 self._build_cmb_pixel_cov()
@@ -1137,10 +1135,10 @@ class FieldLevelModel(Model):
     def _build_cmb_pixel_cov(self):
         """Build the exact cut-sky CMB-lensing likelihood via signal-eigenmode (KL) compression.
 
-        The masked-field stochastic covariance (noise N_l + fixed high-z C_l) of a band-limited
+        The masked-field stochastic covariance (noise N_l + fixed out-of-model C_l) of a band-limited
         HEALPix field over the observed pixels depends only on angular separation:
 
-            Cov_pix[i, j] = sum_l (2l+1)/(4pi) * (N_l + Cl_high_z_l) * P_l(cos theta_ij)
+            Cov_pix[i, j] = sum_l (2l+1)/(4pi) * (N_l + Cl_out_l) * P_l(cos theta_ij)
         """
         import healpy as hp
 
@@ -1148,10 +1146,10 @@ class FieldLevelModel(Model):
         lmax = int(self.cmb_lmax)
         n_modes = (lmax + 1) ** 2
 
-        # Constant total stochastic spectrum: instrument noise + (optional) fixed high-z.
+        # Constant total stochastic spectrum: instrument noise + (optional) fixed out-of-model term.
         cl = np.asarray(self.nell_1d, dtype=np.float64).copy()
-        if self.full_los_correction and self.cl_high_z_cached is not None:
-            cl = cl + np.asarray(self.cl_high_z_cached, dtype=np.float64)
+        if self.full_los_correction and self.cl_out_cached is not None:
+            cl = cl + np.asarray(self.cl_out_cached, dtype=np.float64)
         ell = np.arange(lmax + 1, dtype=np.float64)
         coef = (2.0 * ell + 1.0) / (4.0 * np.pi) * cl
 
@@ -1597,7 +1595,7 @@ class FieldLevelModel(Model):
             # CMB lensing likelihood (if enabled)
             if self.cmb_enabled and cosmology is not None and bias is not None:
                 from desi_cmb_fli.cmb_lensing import (
-                    compute_cl_high_z,
+                    compute_cl_out,
                     convergence_Born_spherical,
                     cut_shells,
                 )
@@ -1635,17 +1633,17 @@ class FieldLevelModel(Model):
                     scale_k = jnp.sqrt(self.cmb_kl_var * temp)
                     sample("kappa_obs", dist.Normal(loc_k, scale_k))
                 else:
-                    # High-z correction to the CMB covariance.
+                    # Out-of-model term of the CMB covariance.
                     if self.full_los_correction:
-                        cl_high_z_1d = compute_cl_high_z(
+                        cl_out_1d = compute_cl_out(
                             cosmology,
                             self.ell_1d,
                             self.chi_boundary,
                             self.chi_high_z_max,
                             self.cmb_z_source,
-                            mode=self.high_z_mode,
-                            cl_cached=self.cl_high_z_cached,
-                            gradients=self.high_z_gradients,
+                            mode=self.cl_out_mode,
+                            cl_cached=self.cl_out_cached,
+                            gradients=self.cl_out_gradients,
                             loc_fid=self.loc_fid,
                             shells=self.cmb_shells,
                             window2=self.cmb_los_window2 * self.cmb_los_limber,
@@ -1653,7 +1651,7 @@ class FieldLevelModel(Model):
 
                     total_cl_1d = jnp.asarray(self.nell_1d)
                     if self.full_los_correction:
-                        total_cl_1d = total_cl_1d + cl_high_z_1d
+                        total_cl_1d = total_cl_1d + cl_out_1d
 
                     loc_u = self.pack_kappa_map(kappa_pred)
                     var_l = jnp.matmul(self.cmb_M_ll, total_cl_1d * temp)

@@ -18,7 +18,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from analyze_run import _bands, plot_initial_conditions, plot_kappa_maps  # noqa: E402
+from analyze_run import (  # noqa: E402
+    _bands,
+    _field_samples,
+    _state_samples,
+    plot_initial_conditions,
+    plot_kappa_maps,
+)
 
 from desi_cmb_fli.model import FieldLevelModel, default_config  # noqa: E402
 
@@ -47,7 +53,7 @@ def _cfg(**overrides):
                 "N_ell": np.full(64, 1e-9, dtype=float),
             },
             "full_los_correction": True,
-            "high_z_mode": "fixed",
+            "cl_out_mode": "fixed",
             "chi_high_z_max": 300.0,
         }
     )
@@ -77,7 +83,7 @@ def test_the_initial_conditions_figure_is_drawn_around_the_observer(observer_mod
     model = FieldLevelModel(**_cfg(cmb_observer_mode=observer_mode))
     truth, positions = _run(model)
     out = tmp_path / "initial_conditions.png"
-    plot_initial_conditions(model, truth, positions, out)
+    plot_initial_conditions(model, truth, _state_samples(model, positions), out)
     assert out.exists() and out.stat().st_size > 0
 
     box = np.asarray(model.box_shape, dtype=float)
@@ -99,7 +105,7 @@ def test_the_initial_conditions_figure_refuses_mismatched_grids(tmp_path, capsys
     truth, positions = _run(model)
     truth["init_mesh"] = np.asarray(truth["init_mesh"])[:-1]
     out = tmp_path / "initial_conditions.png"
-    plot_initial_conditions(model, truth, positions, out)
+    plot_initial_conditions(model, truth, _state_samples(model, positions), out)
     assert "different grids" in capsys.readouterr().out
     assert not out.exists()
 
@@ -176,15 +182,15 @@ def test_the_convergence_figure_uses_the_fixed_parameters(tmp_path):
     field, fixed = _truth_latents(model, truth)
     positions = {k: np.stack([v, v]) for k, v in field.items()}
     held = plot_kappa_maps(model, truth, positions, tmp_path / "held.png", fixed=fixed)
-    np.testing.assert_allclose(held["r_sample"], 1.0, atol=1e-6)
+    np.testing.assert_allclose(held["r_samples"], 1.0, atol=1e-6)
     drawn = plot_kappa_maps(model, truth, positions, tmp_path / "drawn.png")
-    assert np.max(np.abs(drawn["r_sample"] - 1.0)) > 1e-3 or not np.allclose(
-        drawn["r_sample"], held["r_sample"])
+    assert np.max(np.abs(drawn["r_samples"] - 1.0)) > 1e-3 or not np.allclose(
+        drawn["r_samples"], held["r_samples"])
 
 
 def test_the_posterior_mean_comes_from_the_recorded_samples(tmp_path):
     """With per-batch samples the orange curve is their mean, and the posterior-mean figure is
-    drawn; samples scattered around the truth average back to it."""
+    drawn; samples scattered around the truth average back to it, each sample less coherent."""
     model = FieldLevelModel(**_cfg())
     truth, _ = _run(model)
     field, fixed = _truth_latents(model, truth)
@@ -196,3 +202,40 @@ def test_the_posterior_mean_comes_from_the_recorded_samples(tmp_path):
     res = plot_kappa_maps(model, truth, positions, out, fixed=fixed, kappa_samples=samples)
     assert (tmp_path / "kappa_posterior_mean.png").exists()
     assert np.all(res["r_mean"] > 0.95)
+    assert res["r_samples"].shape == (400, res["ell"].size)
+    assert np.all(np.median(res["r_samples"], axis=0) < res["r_mean"])
+
+
+def test_the_expected_curves_are_drawn_for_the_convergence_alone(tmp_path):
+    """The linear Gaussian expectations are those of a posterior from kappa alone: with galaxies
+    in the run they do not apply and are not drawn."""
+    model = FieldLevelModel(**_cfg())
+    truth, _ = _run(model)
+    field, fixed = _truth_latents(model, truth)
+    positions = {k: np.stack([v, v]) for k, v in field.items()}
+    alone = plot_kappa_maps(model, truth, positions, tmp_path / "alone.png", fixed=fixed)
+    assert alone["exp_truth"] is not None and alone["exp_mean"] is not None
+    model.galaxies_enabled = True
+    joint = plot_kappa_maps(model, truth, positions, tmp_path / "joint.png", fixed=fixed)
+    assert joint["exp_truth"] is None and joint["exp_mean"] is None
+
+
+def test_the_field_posterior_is_read_from_the_recorded_batches(tmp_path):
+    """run_inference.py records one field per batch and chain with its cosmology; the figures read
+    every batch after burn-in, and fall back on the final state of each chain without them."""
+    model = FieldLevelModel(**_cfg())
+    truth, positions = _run(model)
+    samples, what = _field_samples(tmp_path, model, positions)
+    assert "last state" in what and len(list(samples)) == N_CHAINS
+
+    (tmp_path / "config").mkdir()
+    k = np.asarray(truth["init_mesh"])
+    for b in range(4):
+        np.savez(tmp_path / "config" / f"field_batch_{b}.npz",
+                 init_mesh=np.stack([k * (b + 1), -k * (b + 1)]),
+                 Omega_m=np.full(2, 0.3 + b / 100), sigma8=np.full(2, 0.8))
+    samples, what = _field_samples(tmp_path, model, positions, burn_in=0.5, exclude_chains=[1])
+    got = list(samples)
+    assert what == "2 posterior samples"
+    np.testing.assert_allclose([np.asarray(f)[0, 0, 1] / k[0, 0, 1] for f, _ in got], [3, 4])
+    assert [c["Omega_m"] for _, c in got] == pytest.approx([0.32, 0.33])

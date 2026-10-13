@@ -500,7 +500,7 @@ def test_the_abacus_observation_lives_on_the_projection_sphere(tmp_path):
         "cmb_enabled": True, "cmb_nside": 4, "cmb_n_shells": 4, "cmb_observer_mode": "center",
         "cmb_proj_oversamp": 2, "cmb_shell_weights": "linear",
         "cmb_noise_nell": {"ell": np.arange(64, dtype=float), "N_ell": np.full(64, 1e-9)},
-        "full_los_correction": True, "high_z_mode": "fixed", "chi_high_z_max": 300.0,
+        "full_los_correction": True, "cl_out_mode": "fixed", "chi_high_z_max": 300.0,
     })
     model = FieldLevelModel(**cfg)
     rng = np.random.default_rng(1)

@@ -550,7 +550,7 @@ def angular_fisher_cosmo(
     between kappa["chi_min"] and kappa["chi_box"] at fixed comoving distance, a cosmology moving
     z(chi), the growth, Omega_m and chi_s in the kernel, under the per-shell cut (``kappa_spectra``).
     Kappa noise: N_l x noise_scaling, plus the line of sight (chi_box -> chi_high_z_max and the power
-    the cut removes) either at the fiducial as noise (``los='noise'``, high_z_mode fixed) or
+    the cut removes) either at the fiducial as noise (``los='noise'``, cl_out_mode fixed) or
     following the cosmology as signal ('signal').
     Sum over ell_min <= ell <= kappa["lmax"] of (2 ell + 1)/2 tr(C^-1 dC_a C^-1 dC_b), times fsky.
 

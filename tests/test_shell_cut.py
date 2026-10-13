@@ -13,7 +13,7 @@ from test_born_shells import _cfg
 
 from desi_cmb_fli.bricks import get_cosmology
 from desi_cmb_fli.cmb_lensing import (
-    compute_cl_high_z,
+    compute_cl_out,
     compute_cl_outside_model,
     compute_theoretical_cl_kappa,
     convergence_Born_spherical,
@@ -87,7 +87,7 @@ def test_a_cut_that_touches_no_shell_leaves_the_model_bit_identical():
     ref = FieldLevelModel(**_cfg(cmb_shell_kmax=0.0))
     same = FieldLevelModel(**_cfg(cmb_shell_kmax=10.0))  # every ell_res far above 2 nside
     assert not (same.cmb_shell_taper < 1).any()
-    np.testing.assert_array_equal(np.asarray(same.cl_high_z_cached), np.asarray(ref.cl_high_z_cached))
+    np.testing.assert_array_equal(np.asarray(same.cl_out_cached), np.asarray(ref.cl_out_cached))
     np.testing.assert_array_equal(np.asarray(_truth(same)["kappa_pred"]),
                                   np.asarray(_truth(ref)["kappa_pred"]))
 
@@ -98,7 +98,7 @@ def test_the_covariance_term_is_the_matter_the_shells_leave_out():
     cosmo = get_cosmology(**model.loc_fid)
     term = np.asarray(compute_cl_outside_model(cosmo, model.ell_1d, **model.cmb_shells,
                                                chi_max=model.chi_high_z_max))
-    np.testing.assert_allclose(np.asarray(model.cl_high_z_cached),
+    np.testing.assert_allclose(np.asarray(model.cl_out_cached),
                                term * np.asarray(model.cmb_los_window2 * model.cmb_los_limber),
                                rtol=1e-8, atol=1e-30)
     assert np.all(term[2:] > 0)
@@ -138,19 +138,19 @@ def test_linear_tents_leave_their_end_ramps_to_the_covariance():
     assert np.all(ramps[2:] > steps[2:])
 
 
-def test_every_high_z_mode_carries_the_cut_term_alike():
-    models = {mode: FieldLevelModel(**_cfg(cmb_shell_kmax=0.05, high_z_mode=mode))
+def test_every_cl_out_mode_carries_the_cut_term_alike():
+    models = {mode: FieldLevelModel(**_cfg(cmb_shell_kmax=0.05, cl_out_mode=mode))
               for mode in ("fixed", "taylor", "exact")}
     cosmo = get_cosmology(**models["fixed"].loc_fid)
-    cl = {mode: np.asarray(compute_cl_high_z(
+    cl = {mode: np.asarray(compute_cl_out(
         cosmo, m.ell_1d, m.chi_boundary, m.chi_high_z_max, m.cmb_z_source, mode=mode,
-        cl_cached=m.cl_high_z_cached, gradients=m.high_z_gradients, loc_fid=m.loc_fid,
+        cl_cached=m.cl_out_cached, gradients=m.cl_out_gradients, loc_fid=m.loc_fid,
         shells=m.cmb_shells, window2=m.cmb_los_window2 * m.cmb_los_limber))[2:]
         for mode, m in models.items()}
     np.testing.assert_allclose(cl["exact"], cl["fixed"], rtol=1e-8)
     np.testing.assert_allclose(cl["taylor"], cl["fixed"], rtol=1e-8)
-    ref = FieldLevelModel(**_cfg(high_z_mode="taylor", cmb_shell_kmax=0.0))
-    d = np.asarray(models["taylor"].high_z_gradients["dCl_ds8"]) - np.asarray(ref.high_z_gradients["dCl_ds8"])
+    ref = FieldLevelModel(**_cfg(cl_out_mode="taylor", cmb_shell_kmax=0.0))
+    d = np.asarray(models["taylor"].cl_out_gradients["dCl_ds8"]) - np.asarray(ref.cl_out_gradients["dCl_ds8"])
     assert np.all(d[2:] > 0)  # the removed power grows with sigma8
 
 

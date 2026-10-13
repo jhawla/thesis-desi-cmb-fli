@@ -634,12 +634,10 @@ print("=" * 80)
 model.reset()
 apply_conditioning()
 
-# Setup sampling function (pmap for parallel chains)
-# The field is only kept per sample when mcmc.save_large_fields asks for it.
-_keep_fields = bool(cfg.get("mcmc", {}).get("save_large_fields", False))
+# Setup sampling function (pmap for parallel chains); the field is not kept per sample.
 run_fn = pmap(jit(get_mclmc_run(
     model.logpdf, n_samples=num_samples, thinning=thinning, progress_bar=False,
-    drop_keys=() if _keep_fields else ("init_mesh_",),
+    drop_keys=("init_mesh_",),
 )))
 
 print(f"\nRunning {num_chains} chains in parallel, each with {num_batches} sequential batches")
@@ -653,22 +651,26 @@ print()
 
 
 
-# The field is not kept per sample, so the posterior of the convergence map is recorded here: once
-# per batch and chain, the kappa_obs observable (packed a_lm, or KL amplitudes) of the current state.
+# The field is not kept per sample, so its posterior is recorded here, once per batch and chain from
+# the current state: the initial field (Fourier, a = 1, init grid) with the cosmology of that state
+# and, with CMB lensing, the kappa_obs observable (packed a_lm, or KL amplitudes) (docs/pipeline.md 6).
+fixed_latents = {k: v for k, v in model.reparam(fixed_dict, inv=True).items()
+                 if k in fixed_latent_keys} if fixed_dict else {}
+
+
+def _field_and_cosmology(position):
+    base = model.reparam({**position, **fixed_latents})
+    return {"init_mesh": base["init_mesh"]} | {k: base[k] for k in model.groups["cosmo"]}
+
+
+field_fn = pmap(jit(_field_and_cosmology))
 kappa_fn = None
 if cmb_enabled:
-    fixed_latents = {k: v for k, v in model.reparam(fixed_dict, inv=True).items()
-                     if k in fixed_latent_keys} if fixed_dict else {}
-
     kappa_fn = pmap(jit(lambda position: model.kappa_observable({**position, **fixed_latents})))
 
 # Storage
 samples_scalars = {}  # For small parameters (scalars)
 param_names = None
-
-# Optional: control saving of large fields
-mcmc_io_cfg = cfg.get("mcmc", {})
-save_large_fields = bool(mcmc_io_cfg.get("save_large_fields", False))
 
 # Load existing batches if resuming
 if RESUME_MODE and start_batch > 0:
@@ -720,20 +722,16 @@ for batch_idx in range(start_batch, num_batches):
 
     # Process batch
     batch_scalars = {}
-    batch_large = {}
 
     cpu_samples = jax.device_get(samples_dict)
     for p in param_names:
-        val = cpu_samples[p]
         if p in scalar_params:
-            samples_scalars[p].append(val)
-            batch_scalars[p] = val
-        elif save_large_fields:
-            batch_large[p] = val
+            samples_scalars[p].append(cpu_samples[p])
+            batch_scalars[p] = cpu_samples[p]
 
     # Save batch to disk
-    batch_content = {**batch_scalars, **batch_large}
-    jnp.savez(config_dir / f"samples_batch_{batch_idx}.npz", **batch_content)
+    jnp.savez(config_dir / f"samples_batch_{batch_idx}.npz", **batch_scalars)
+    jnp.savez(config_dir / f"field_batch_{batch_idx}.npz", **jax.device_get(field_fn(state.position)))
 
     if kappa_fn is not None:
         jnp.savez(config_dir / f"kappa_batch_{batch_idx}.npz",
@@ -786,7 +784,7 @@ for batch_idx in range(start_batch, num_batches):
             _f.write("".join(diag_lines) + "\n")
 
     # Explicitly delete large arrays to free memory
-    del batch_large, batch_content, batch_scalars
+    del batch_scalars
     gc.collect()
 
 print("\n✓ All batches complete!")

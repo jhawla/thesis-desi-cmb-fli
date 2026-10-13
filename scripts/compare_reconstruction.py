@@ -8,9 +8,11 @@ radial shells around the observer, and overlays several runs (joint vs galaxy-on
 
     python scripts/compare_reconstruction.py RUN_JOINT RUN_GXY --labels "joint" "galaxies only"
 
-The correlation is computed per chain and shown as mean +/- spread across chains; the fields are
-never averaged together, since averaging independent posterior samples suppresses the amplitude
-wherever the data does not constrain the field.
+Reconstruction is a property of the posterior: the correlation is computed for every posterior
+sample (the fields run_inference.py records per batch and chain, after burn-in; the last state of
+each chain for runs that predate them) and shown as its posterior median and 16-84 %, beside the
+correlation of the posterior mean, which has less amplitude than the truth wherever the data do not
+constrain the field.
 """
 
 import argparse
@@ -34,7 +36,13 @@ from desi_cmb_fli.model import get_model_from_config  # noqa: E402
 from desi_cmb_fli.utils import restore_model_state_from_truth  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from analyze_run import IC_SMOOTHING_MPC, _fixed_latents, _load_field_state  # noqa: E402
+from analyze_run import (  # noqa: E402
+    IC_SMOOTHING_MPC,
+    _field_samples,
+    _fixed_latents,
+    _load_field_state,
+    _quantiles,
+)
 
 
 def _smoothing_kernel(shape, box, scale_mpc):
@@ -46,8 +54,8 @@ def _smoothing_kernel(shape, box, scale_mpc):
     return jnp.asarray(np.exp(-0.5 * k2 * scale_mpc**2))
 
 
-def load_run(run_dir, smoothing):
-    """Return everything the two panels need, or None if the run cannot be compared."""
+def load_run(run_dir):
+    """The model, truth and geometry of a run, or None if it cannot be compared."""
     run_dir = Path(run_dir)
     model, _ = get_model_from_config(run_dir / "config" / "config.yaml")
     positions, truth = _load_field_state(run_dir)
@@ -57,68 +65,68 @@ def load_run(run_dir, smoothing):
         print(f"{run_dir.name}: truth.npz has no init_mesh (no abacus_ic in the config); skipping.")
         return None
     restore_model_state_from_truth(model, truth)
-    fixed = _fixed_latents(run_dir, model)  # held by the run, absent from the sampler state
-
     box = np.asarray(model.box_shape, dtype=float)
     shape = tuple(int(s) for s in model.init_shape)
-    true_k = jnp.asarray(truth["init_mesh"])
-    n_chains = int(np.shape(positions["init_mesh_"])[0])
-    rec_k = [model.reparam({k: jnp.asarray(np.asarray(v)[c]) for k, v in positions.items()}
-                           | fixed)["init_mesh"]
-             for c in range(n_chains)]
-    if tuple(np.shape(true_k)) != tuple(np.shape(rec_k[0])):
-        print(f"{run_dir.name}: truth init_mesh {np.shape(true_k)} and the sampled field "
-              f"{np.shape(rec_k[0])} are on different grids; skipping.")
-        return None
-
-    smooth = _smoothing_kernel(shape, box, smoothing)
-    true_r = np.asarray(jnp.fft.irfftn(true_k * smooth))
-    rec_r = [np.asarray(jnp.fft.irfftn(r * smooth)) for r in rec_k]
-    coh = [np.asarray(model.powtranscoh(jnp.fft.irfftn(true_k), jnp.fft.irfftn(r))[3])
-           for r in rec_k]
-    ks = np.asarray(model.powtranscoh(jnp.fft.irfftn(true_k), jnp.fft.irfftn(rec_k[0]))[0])
-
-    rmesh = np.asarray(radius_mesh(model.box_center, box, np.asarray(shape),
-                                   curved_sky=True))
+    rmesh = np.asarray(radius_mesh(model.box_center, box, np.asarray(shape), curved_sky=True))
     chi_gxy = (tuple(float(x) for x in np.asarray(truth["chi_range_gxy"]))
                if "chi_range_gxy" in truth else None)
     return {
-        "name": run_dir.name, "true": true_r, "rec": rec_r, "rmesh": rmesh, "box": box,
-        "ks": ks, "coh": coh, "chi_gxy": chi_gxy,
+        "dir": run_dir, "name": run_dir.name, "model": model, "truth": truth,
+        "positions": positions, "fixed": _fixed_latents(run_dir, model),  # absent from the state
+        "rmesh": rmesh, "box": box, "shape": shape, "chi_gxy": chi_gxy,
         "cmb": bool(getattr(model, "cmb_enabled", False)),
         "chi_min": float(getattr(model, "cmb_chi_matter_min", 0.0)),
         "chi_max": float(getattr(model, "chi_boundary", box[2])),
     }
 
 
-def radial_correlation(run, edges, min_cells=200):
-    """Pearson r between true and reconstructed field, per radial shell, per chain."""
-    out = np.full((len(run["rec"]), len(edges) - 1), np.nan)
-    for b, (lo, hi) in enumerate(zip(edges[:-1], edges[1:], strict=False)):
-        sel = (run["rmesh"] >= lo) & (run["rmesh"] < hi)
-        if sel.sum() < min_cells:
-            continue
-        t = run["true"][sel]
-        t = t - t.mean()
-        nt = np.sqrt((t**2).sum())
-        if nt == 0:
-            continue
-        for c, rec in enumerate(run["rec"]):
-            r = rec[sel]
-            r = r - r.mean()
-            nr = np.sqrt((r**2).sum())
-            if nr > 0:
-                out[c, b] = float((t * r).sum() / (nt * nr))
-    return out
+def measure(run, edges, smoothing, burn_in, min_cells=200):
+    """Per posterior sample: the Pearson r between true and sampled field per radial shell, the
+    whole-box coherence, and the residual rms inside and outside the galaxy shell; the posterior
+    mean of the smoothed field. Samples are streamed, never held together."""
+    model, true_k = run["model"], jnp.asarray(run["truth"]["init_mesh"])
+    samples, run["what"] = _field_samples(run["dir"], model, run["positions"], run["fixed"],
+                                          burn_in)
+    smooth = _smoothing_kernel(run["shape"], run["box"], smoothing)
+    true_r = np.asarray(jnp.fft.irfftn(true_k * smooth))
+    rmesh = run["rmesh"]
+    sels = [(rmesh >= lo) & (rmesh < hi) for lo, hi in zip(edges[:-1], edges[1:], strict=False)]
+    chi_gxy = run["chi_gxy"]
+    m_in = (rmesh >= chi_gxy[0]) & (rmesh <= chi_gxy[1]) if chi_gxy else np.ones_like(rmesh, bool)
+    m_out = (~m_in) & (rmesh < (run["chi_max"] if run["cmb"] else rmesh.max()))
+
+    def corr(a, b):
+        a, b = a - a.mean(), b - b.mean()
+        den = np.sqrt((a**2).sum() * (b**2).sum())
+        return float((a * b).sum() / den) if den > 0 else np.nan
+
+    run.update(true=true_r, corr=[], coh=[], rms_in=[], rms_out=[])
+    total, n = np.zeros_like(true_r), 0
+    for rec_k, _ in samples:
+        if tuple(np.shape(rec_k)) != tuple(np.shape(true_k)):
+            print(f"{run['name']}: truth init_mesh {np.shape(true_k)} and the sampled field "
+                  f"{np.shape(rec_k)} are on different grids; skipping.")
+            return False
+        rec_r = np.asarray(jnp.fft.irfftn(rec_k * smooth))
+        run["corr"].append([corr(true_r[m], rec_r[m]) if m.sum() >= min_cells else np.nan
+                            for m in sels])
+        ks, *_, coh = model.powtranscoh(jnp.fft.irfftn(true_k), jnp.fft.irfftn(rec_k))
+        run["coh"].append(np.asarray(coh))
+        run["rms_in"].append(float(np.std((rec_r - true_r)[m_in])))
+        run["rms_out"].append(float(np.std((rec_r - true_r)[m_out])))
+        total, n = total + rec_r, n + 1
+    run["ks"], run["mean"] = np.asarray(ks), total / n
+    run["corr_mean"] = [corr(true_r[m], run["mean"][m]) if m.sum() >= min_cells else np.nan
+                        for m in sels]
+    print(f"{run['name']}: posterior from {run['what']}")
+    return True
 
 
-def plot_slices(runs, out_path, smoothing, chain=0):
-    """The same comparison seen directly: one plane through the observer.
-
-    One posterior sample per run, never a mean over chains -- averaging independent samples
-    suppresses the amplitude wherever the data does not constrain the field, which would read as a
-    reconstruction that lost power when every sample carries the right power.
-    """
+def plot_slices(runs, out_path, smoothing):
+    """The same comparison seen directly: one plane through the observer, the truth against each
+    run's posterior mean and its residual. The mean is the posterior's best estimate; it has less
+    amplitude than the truth wherever the data do not constrain the field, which the radial
+    profile of the other figure quantifies."""
     ref = runs[0]
     rmesh = ref["rmesh"]
     obs_idx = np.unravel_index(int(np.argmin(rmesh)), rmesh.shape)
@@ -129,15 +137,15 @@ def plot_slices(runs, out_path, smoothing, chain=0):
               (-obs_idx[1] - 0.5) * cell, (ny - obs_idx[1] - 0.5) * cell]
 
     truth = ref["true"][:, :, sl].T
-    recs = [r["rec"][chain][:, :, sl].T for r in runs]
+    means = [r["mean"][:, :, sl].T for r in runs]
     lim = float(np.percentile(np.abs(truth), 99.5))
-    rlim = max(float(np.percentile(np.abs(r - truth), 99.5)) for r in recs)
+    rlim = max(float(np.percentile(np.abs(m - truth), 99.5)) for m in means)
 
     panels = [(truth, "True initial field", "RdBu_r", lim)]
-    panels += [(r, f"Reconstructed — {run['label']}", "RdBu_r", lim)
-               for r, run in zip(recs, runs, strict=False)]
-    panels += [(r - truth, f"Residual — {run['label']}", "PuOr_r", rlim)
-               for r, run in zip(recs, runs, strict=False)]
+    panels += [(m, f"Posterior mean — {run['label']}", "RdBu_r", lim)
+               for m, run in zip(means, runs, strict=False)]
+    panels += [(m - truth, f"Posterior mean − truth — {run['label']}", "PuOr_r", rlim)
+               for m, run in zip(means, runs, strict=False)]
 
     fig, axes = plt.subplots(1, len(panels), figsize=(4.6 * len(panels), 4.9))
     chi_gxy = next((r["chi_gxy"] for r in runs if r["chi_gxy"] is not None), None)
@@ -159,23 +167,18 @@ def plot_slices(runs, out_path, smoothing, chain=0):
     axes[0].set_ylabel("y [Mpc/h]")
     axes[0].legend(fontsize=7, loc="upper right")
     fig.suptitle(f"Initial field in the plane through the observer, Gaussian smoothing "
-                 f"{smoothing:.0f} Mpc/h — one posterior sample (chain {chain}). "
+                 f"{smoothing:.0f} Mpc/h — posterior means. "
                  f"Solid: galaxy shell. Dotted: Born integration range.", fontsize=10)
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
     plt.close(fig)
     print(f"Saved {out_path}")
-    # The slice above is one chain and one plane, so quote the residual over the whole 3D volume
-    # and over every chain instead -- the picture illustrates, these numbers measure.
-    m_in = ((rmesh >= chi_gxy[0]) & (rmesh <= chi_gxy[1])) if chi_gxy else np.ones_like(rmesh, bool)
-    m_out = (~m_in) & (rmesh < (chi_born if chi_born else rmesh.max()))
-    print("\nrms residual over the full volume, mean +- spread over chains:")
+    # The slice is one plane, so quote the residual over the whole 3D volume, per sample.
+    print("\nrms of (sample - truth) over the full volume, posterior median [16, 84 %]:")
     for run in runs:
-        res = [(rec - run["true"]) for rec in run["rec"]]
-        ins = np.array([float(np.std(r[m_in])) for r in res])
-        out = np.array([float(np.std(r[m_out])) for r in res])
-        print(f"   {run['label']:28s} inside the galaxy shell {ins.mean():.4g} ±{ins.std():.1g}"
-              f"   outside {out.mean():.4g} ±{out.std():.1g}")
+        q_in, q_out = _quantiles(run["rms_in"]), _quantiles(run["rms_out"])
+        print(f"   {run['label']:28s} inside the galaxy shell {q_in[0]:.4g} [{q_in[1]:.4g}, "
+              f"{q_in[2]:.4g}]   outside {q_out[0]:.4g} [{q_out[1]:.4g}, {q_out[2]:.4g}]")
 
 
 def main():
@@ -187,6 +190,8 @@ def main():
     p.add_argument("--nbins", type=int, default=18, help="number of radial shells")
     p.add_argument("--smoothing", type=float, default=IC_SMOOTHING_MPC,
                    help="Gaussian smoothing of both fields, Mpc/h")
+    p.add_argument("--burn_in", type=float, default=0.5,
+                   help="fraction of the recorded batches dropped (analyze_run's default)")
     args = p.parse_args()
 
     labels = args.labels or [Path(r).name for r in args.runs]
@@ -196,7 +201,7 @@ def main():
     runs = []
     for path, label in zip(args.runs, labels, strict=False):
         print(f"\nLoading {path} ...")
-        r = load_run(path, args.smoothing)
+        r = load_run(path)
         if r is not None:
             r["label"] = label
             runs.append(r)
@@ -207,27 +212,37 @@ def main():
     rmax = min(float(r["rmesh"].max()) for r in runs)
     edges = np.linspace(0.0, rmax, args.nbins + 1)
     centres = 0.5 * (edges[:-1] + edges[1:])
+    runs = [r for r in runs if measure(r, edges, args.smoothing, args.burn_in)]
+    if not runs:
+        print("Nothing to compare.")
+        return
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
-    print(f"\n{'shell [Mpc/h]':>16s}" + "".join(f"{r['label']:>22s}" for r in runs))
-    corrs = [radial_correlation(r, edges) for r in runs]
+    print("\ncorrelation with the truth per shell: a posterior sample, median [16, 84 %]; "
+          "the posterior mean")
+    print(f"{'shell [Mpc/h]':>16s}" + "".join(f"{r['label']:>32s}" for r in runs))
+    corrs = [np.asarray(r["corr"]) for r in runs]
     for b in range(len(centres)):
         if all(np.all(np.isnan(c[:, b])) for c in corrs):
             continue
         row = f"{edges[b]:7.0f}-{edges[b + 1]:7.0f}"
-        for c in corrs:
-            row += f"{np.nanmean(c[:, b]):15.3f} ±{np.nanstd(c[:, b]):5.3f}"
+        for r, c in zip(runs, corrs, strict=False):
+            q = _quantiles(c[:, b])
+            row += f"{q[0]:10.3f} [{q[1]:6.3f}, {q[2]:6.3f}]{r['corr_mean'][b]:7.3f}"
         print(row)
 
     for i, (r, c) in enumerate(zip(runs, corrs, strict=False)):
-        m, s = np.nanmean(c, axis=0), np.nanstd(c, axis=0)
-        axes[0].plot(centres, m, "-o", ms=3, color=colors[i % len(colors)], label=r["label"])
-        axes[0].fill_between(centres, m - s, m + s, color=colors[i % len(colors)], alpha=0.2)
-        kk = np.asarray(r["ks"])
-        cc = np.nanmean(np.asarray(r["coh"]), axis=0)
-        axes[1].semilogx(kk, cc, "-", color=colors[i % len(colors)], label=r["label"])
+        color = colors[i % len(colors)]
+        med, lo, hi = _quantiles(c)
+        axes[0].plot(centres, med, "-o", ms=3, color=color, label=f"{r['label']}: a sample")
+        axes[0].fill_between(centres, lo, hi, color=color, alpha=0.2, lw=0)
+        axes[0].plot(centres, r["corr_mean"], "--", color=color,
+                     label=f"{r['label']}: posterior mean")
+        med, lo, hi = _quantiles(r["coh"])
+        axes[1].semilogx(r["ks"], med, "-", color=color, label=r["label"])
+        axes[1].fill_between(r["ks"], lo, hi, color=color, alpha=0.2, lw=0)
 
     chi_gxy = next((r["chi_gxy"] for r in runs if r["chi_gxy"] is not None), None)
     if chi_gxy is not None:
@@ -241,7 +256,8 @@ def main():
 
     axes[0].set_xlabel(r"$\chi$ from the observer [Mpc/h]")
     axes[0].set_ylabel(r"corr(true, reconstructed)")
-    axes[0].set_title(f"Initial field, per radial shell\n(Gaussian smoothing {args.smoothing:.0f} Mpc/h)")
+    axes[0].set_title(f"Initial field, per radial shell (Gaussian smoothing {args.smoothing:.0f} "
+                      f"Mpc/h)\nposterior median and 16-84 % of a sample, and the posterior mean")
     axes[0].axhline(0.0, color="k", lw=0.8, alpha=0.5)
     axes[0].set_ylim(-0.1, 1.05)
     axes[0].legend(fontsize=8)
@@ -249,7 +265,7 @@ def main():
 
     axes[1].set_xlabel(r"$k$ [h/Mpc]")
     axes[1].set_ylabel("coherence")
-    axes[1].set_title("Initial field, all scales (whole box)")
+    axes[1].set_title("Initial field, all scales (whole box), a posterior sample")
     axes[1].axhline(0.0, color="k", lw=0.8, alpha=0.5)
     axes[1].set_ylim(-0.1, 1.05)
     axes[1].legend(fontsize=8)

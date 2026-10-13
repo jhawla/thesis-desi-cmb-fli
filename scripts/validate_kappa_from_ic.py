@@ -325,8 +325,8 @@ def main():
                 )
         cl = spectra(t_map, m_map, lmax, mask_t, mask_m)
         los = np.zeros(lmax + 1)
-        if getattr(model, "cl_high_z_cached", None) is not None:
-            los = np.asarray(model.cl_high_z_cached, dtype=float)[: lmax + 1]
+        if getattr(model, "cl_out_cached", None) is not None:
+            los = np.asarray(model.cl_out_cached, dtype=float)[: lmax + 1]
         nell = np.asarray(model.nell_1d, dtype=float)[: lmax + 1]
         cl.update(los=los, nell=nell)
         results[kmax] = cl

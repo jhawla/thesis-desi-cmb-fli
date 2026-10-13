@@ -235,8 +235,8 @@ def main():
         # cut removes, both through the projection sphere's bilinear window w_l), and w_l itself.
         ell = np.arange(int(model.cmb_lmax) + 1)
         nell = np.asarray(model.nell_1d, dtype=float)[: ell.size]
-        los = (np.zeros(ell.size) if model.cl_high_z_cached is None
-               else np.asarray(model.cl_high_z_cached, dtype=float)[: ell.size])
+        los = (np.zeros(ell.size) if model.cl_out_cached is None
+               else np.asarray(model.cl_out_cached, dtype=float)[: ell.size])
         w = (np.ones(ell.size) if model.cmb_los_window2 is None
              else np.sqrt(np.asarray(model.cmb_los_window2, dtype=float))[: ell.size])
         spec = output_dir / f"kappa_noise_spectrum_{timestamp}.txt"

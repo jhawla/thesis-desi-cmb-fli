@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Comprehensive benchmark: High-z correction modes (fixed, taylor, exact_linear)
+Comprehensive benchmark: modes of the out-of-model term C_l^out (fixed, taylor, exact_linear)
 Tests precision and performance across different grid sizes.
 """
 
@@ -15,7 +15,7 @@ import numpy as np
 from jax import jacfwd
 
 from desi_cmb_fli.bricks import get_cosmology
-from desi_cmb_fli.cmb_lensing import compute_cl_high_z, compute_theoretical_cl_kappa
+from desi_cmb_fli.cmb_lensing import compute_cl_out, compute_theoretical_cl_kappa
 
 jax.config.update("jax_enable_x64", True)
 
@@ -110,7 +110,7 @@ def benchmark_precision():
 
         # Exact (reference)
         print("    Computing exact (reference)...")
-        cl_exact = compute_cl_high_z(
+        cl_exact = compute_cl_out(
             cosmo_test, ell_eval, chi_max_box, None, cmb_z_source,
             mode='exact', n_steps=150
         )
@@ -128,12 +128,12 @@ def benchmark_precision():
             if mode_name == 'fixed':
                 cl_mode = cl_cached
             elif mode_name == 'taylor':
-                cl_mode = compute_cl_high_z(
+                cl_mode = compute_cl_out(
                     cosmo_test, ell_eval, chi_max_box, None, cmb_z_source,
                     mode='taylor', cl_cached=cl_cached, gradients=gradients, loc_fid=loc_fid
                 )
             elif mode_name == 'exact_linear':
-                cl_mode = compute_cl_high_z(
+                cl_mode = compute_cl_out(
                     cosmo_test, ell_eval, chi_max_box, None, cmb_z_source,
                     mode='exact_linear', n_steps=150
                 )
@@ -252,7 +252,7 @@ def benchmark_performance():
         for mode_name, kwargs in modes_to_test:
             @jax.jit
             def bench_fn(c, e, kwargs=kwargs):
-                return compute_cl_high_z(c, e, chi_max_box, None, cmb_z_source, **kwargs)
+                return compute_cl_out(c, e, chi_max_box, None, cmb_z_source, **kwargs)
 
             # Warmup
             _ = bench_fn(cosmo_test, ell_eval).block_until_ready()
@@ -350,7 +350,7 @@ def benchmark_performance():
 def main():
     """Run both benchmarks."""
     print("\n" + "=" * 70)
-    print("HIGH-Z CORRECTION MODES: COMPREHENSIVE BENCHMARK")
+    print("OUT-OF-MODEL TERM MODES: COMPREHENSIVE BENCHMARK")
     print("=" * 70)
 
     # Run benchmarks

@@ -11,8 +11,8 @@ primordial non-Gaussianity ($f_{\mathrm{NL}}$). Our differentiable forward model
 conditions through Lagrangian Perturbation Theory (2LPT), applies a Lagrangian bias expansion, and
 computes the CMB lensing convergence along the line of sight via the Born approximation. The joint
 likelihood combines galaxy number counts with the convergence map observations, incorporating ACT DR6
-reconstruction noise and analytically accounting for the unmodeled high-z lensing contribution beyond
-the simulation volume. The high-dimensional posterior is explored efficiently with the MCLMC sampler,
+reconstruction noise and analytically accounting, as Gaussian variance, for the convergence the
+model does not generate (beyond the simulation volume and below its resolution). The high-dimensional posterior is explored efficiently with the MCLMC sampler,
 the joint problem converging as well as galaxies alone. The pipeline is validated against
 AbacusLensing simulations. Preliminary results show that CMB lensing improves the reconstruction of
 the initial field outside the galaxy survey volume, where clustering alone carries no information.

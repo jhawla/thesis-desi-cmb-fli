@@ -44,9 +44,10 @@ python scripts/run_inference.py --config configs/inference/config.yaml --resume 
   after 8 weeks without access); `run_inference.py` and `analyze_run.py` copy the run to
   `/global/cfs/cdirs/desi/users/jhawla/desi-cmb-fli/runs/` at their end (`storage.keep_run`); script outputs go next to their figure in
   `figures/<topic>/` (`.npz`/`.json`), caches in `data/cache/` — never to scratch.
-- `samples_batch_*.npz` hold **scalars only**; the sampled field survives only in
-  `sampler_state.pkl` — that is what the field-level figures read. With CMB lensing,
-  `kappa_batch_*.npz` hold the κ observable of each chain after every batch (posterior mean/std).
+- `samples_batch_*.npz` hold **scalars only**. After every batch, `field_batch_*.npz` hold each
+  chain's initial field (Fourier, with its cosmology) and, with CMB lensing, `kappa_batch_*.npz` its
+  κ observable: these are the posterior samples the field-level figures read. Runs that predate
+  `field_batch` have the field only in `sampler_state.pkl` (final state per chain).
 
 Everything is driven by one YAML ([configs/inference/config.yaml](configs/inference/config.yaml)):
 SLURM block, `model`, `cmb_lensing`, `truth_params`, `latents` (priors), `mcmc`, `observation_mode`
@@ -87,7 +88,7 @@ reconstruction figures), `compare_runs.py` / `compare_reconstruction.py` (overla
   resolution. Runs predating that refactor store overdensity and are neither resumable nor
   comparable with current ones.
 - **Cosmology is inferable but fixed by default** (`mcmc.fixed_params: [Omega_m, sigma8]`,
-  `high_z_mode: fixed`) so the constraint concentrates on PNG.
+  `cl_out_mode: fixed`) so the constraint concentrates on PNG.
 - **`png_type`**: use `fNL` (universality). `fNL_bias` frees the PNG amplitudes and is not
   identifiable — it is bimodal in the sign of a quadratic PNG combination.
 - Upstream pins matter: `jax<0.10`, a forked `jax_cosmo`, a pinned commit of `JaxPM` (its former `41-spherical-lensing` branch, deleted upstream), a pinned `jax-healpy`

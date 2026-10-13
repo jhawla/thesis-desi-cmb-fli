@@ -909,11 +909,11 @@ def compute_theoretical_cl_kg(
 
 
 # =========================================================================
-# High-z correction (1-D ell array, not 2-D FFT grid)
+# Out-of-model term C_l^out (1-D ell array, not 2-D FFT grid)
 # =========================================================================
 
 
-def compute_cl_high_z(
+def compute_cl_out(
     cosmo,
     ell_1d,
     chi_min,
@@ -928,8 +928,8 @@ def compute_cl_high_z(
     shells=None,
     window2=None,
 ):
-    """Line-of-sight C_ell^{kappa kappa} correction: the matter the data map holds and the model
-    does not, up to ``chi_max`` (where the map's matter stops; the CMB if None). With ``shells``
+    """Out-of-model term C_ell^out of the kappa covariance: the matter the data map holds and the
+    model does not, up to ``chi_max`` (where the map's matter stops; the CMB if None). With ``shells``
     (the keyword arguments of ``compute_cl_outside_model`` but ``cosmo``, ``ell`` and ``chi_max``)
     it is everything the Born shells leave out: beyond the box, the end ramps of the tents and the
     per-shell cut; without, the Limber power of ``[chi_min, chi_max]``. Times ``window2`` if given

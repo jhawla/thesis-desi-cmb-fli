@@ -25,7 +25,7 @@ def _make_stub(nside, mask, cl, rcond=1e-8):
     stub.cmb_lmax = 2 * nside
     stub.nell_1d = np.asarray(cl, dtype=np.float64)
     stub.full_los_correction = False
-    stub.cl_high_z_cached = None
+    stub.cl_out_cached = None
     stub.cmb_mask = np.asarray(mask, dtype=bool)
     stub.cmb_kl_rcond = rcond
     return stub

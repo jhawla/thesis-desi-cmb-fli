@@ -105,7 +105,7 @@ def measure(args):
         zero=np.array(zero),
         l_of_u=np.asarray(model.cmb_l_of_u),
         N=np.asarray(model.cmb_M_ll @ jnp.asarray(model.nell_1d))[: lmax + 1],
-        LOS=np.asarray(model.cmb_M_ll @ jnp.asarray(model.cl_high_z_cached))[: lmax + 1],
+        LOS=np.asarray(model.cmb_M_ll @ jnp.asarray(model.cl_out_cached))[: lmax + 1],
         u_half=u_half,
         spacing=spacing,
         box=float(model.box_shape[0]),

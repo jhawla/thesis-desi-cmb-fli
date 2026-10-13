@@ -8,7 +8,7 @@ and approximations in docs/pipeline.md §6 ("Fisher forecasts"):
   (|k_i| <= pi / cell, as the cell likelihood), k >= 2 pi / V^(1/3), with the Finger-of-God bnpar;
 - kappa alone: Limber Fisher of kappa over l = 2 ... 2 nside (``angular_fisher_cosmo``, probes 'k');
 - joint: galaxies + the kappa increment F[shells + kappa] - F[shells] (tomographic Limber);
-- the line of sight outside the model as noise at the fiducial (high_z_mode fixed) or as signal;
+- the line of sight outside the model as noise at the fiducial (cl_out_mode fixed) or as signal;
 - the Gaussian priors of the config's latents on every parameter.
 
 Usage:

@@ -38,7 +38,7 @@ cmb_lensing:
   cmb_noise_nell: /global/homes/j/jhawla/thesis-desi-cmb-fli/data/N_L_kk_so_v3_1_1_baseline_mv.txt  # Simons Observatory baseline (pipeline 3.2)
   cmb_noise_scaling: 1.0
   full_los_correction: true
-  high_z_mode: fixed
+  cl_out_mode: fixed
   likelihood_mode: diagonal
   kl_rcond: 1e-2
   chi_high_z_max: 3750
@@ -114,7 +114,6 @@ mcmc:
   num_samples: 50
   num_batches: 140
   num_chains: 4
-  save_large_fields: false
   mesh_desired_energy_var: 1.0e-05
   mclmc:
     desired_energy_var: 1.0e-07

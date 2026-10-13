@@ -73,8 +73,11 @@ squeue -u $USER
 
 ### Interactive job
 
+Runs with galaxies need the 80 GB A100s (`hbm80g`): on a 40 GB node the joint runs out of memory on
+GPU 0 and hangs without an error (job 59687440).
+
 ```bash
-salloc --nodes 1 --qos interactive --time 04:00:00 --constraint gpu --gpus 4 --account=desi
+salloc --nodes 1 --qos interactive --time 04:00:00 --constraint "gpu&hbm80g" --gpus 4 --account=desi
 module load cudatoolkit/12.4
 source /global/common/software/desi/users/adematti/perlmutter/cosmodesiconda/20251214-1.0.0/conda/etc/profile.d/conda.sh
 conda activate ${SCRATCH}/envs/desi-cmb-fli
