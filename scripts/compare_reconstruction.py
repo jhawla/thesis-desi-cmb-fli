@@ -80,10 +80,11 @@ def load_run(run_dir):
     }
 
 
-def measure(run, edges, smoothing, burn_in, min_cells=200):
+def measure(run, edges, smoothing, burn_in, chi_gxy, min_cells=200):
     """Per posterior sample: the Pearson r between true and sampled field per radial shell, the
     whole-box coherence, and the residual rms inside and outside the galaxy shell; the posterior
-    mean of the smoothed field. Samples are streamed, never held together."""
+    mean of the smoothed field. ``chi_gxy`` is the galaxy shell of the comparison, the same for every
+    run. Samples are streamed, never held together."""
     model, true_k = run["model"], jnp.asarray(run["truth"]["init_mesh"])
     samples, run["what"] = _field_samples(run["dir"], model, run["positions"], run["fixed"],
                                           burn_in)
@@ -91,7 +92,6 @@ def measure(run, edges, smoothing, burn_in, min_cells=200):
     true_r = np.asarray(jnp.fft.irfftn(true_k * smooth))
     rmesh = run["rmesh"]
     sels = [(rmesh >= lo) & (rmesh < hi) for lo, hi in zip(edges[:-1], edges[1:], strict=False)]
-    chi_gxy = run["chi_gxy"]
     m_in = (rmesh >= chi_gxy[0]) & (rmesh <= chi_gxy[1]) if chi_gxy else np.ones_like(rmesh, bool)
     m_out = (~m_in) & (rmesh < (run["chi_max"] if run["cmb"] else rmesh.max()))
 
@@ -212,7 +212,8 @@ def main():
     rmax = min(float(r["rmesh"].max()) for r in runs)
     edges = np.linspace(0.0, rmax, args.nbins + 1)
     centres = 0.5 * (edges[:-1] + edges[1:])
-    runs = [r for r in runs if measure(r, edges, args.smoothing, args.burn_in)]
+    chi_gxy = next((r["chi_gxy"] for r in runs if r["chi_gxy"] is not None), None)
+    runs = [r for r in runs if measure(r, edges, args.smoothing, args.burn_in, chi_gxy)]
     if not runs:
         print("Nothing to compare.")
         return

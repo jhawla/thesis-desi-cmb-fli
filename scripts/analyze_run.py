@@ -469,7 +469,7 @@ def plot_initial_conditions(model, truth, samples, out_path, truth_cosmo=None,
 
 
 def plot_kappa_maps(model, truth, positions, out_path, fixed=None, truth_has_los=False,
-                    kappa_samples=None):
+                    kappa_samples=None, run_name=None):
     """Observed convergence against its posterior, with their spectra and harmonic coherence.
 
     The posterior samples are ``kappa_samples`` (n_samples, n_obs), the kappa_obs observable
@@ -484,8 +484,8 @@ def plot_kappa_maps(model, truth, positions, out_path, fixed=None, truth_has_los
 
     Everything is shown in the band the likelihood actually uses (l <= 2*cmb_nside, at cmb_nside),
     so this is the reconstruction as the inference sees it, not a prettier high-resolution version
-    of it. With cmb_lensing.proj_oversamp > 1 the model map is scattered on a finer sphere and is
-    band-limited here, exactly as pack_kappa_map does before the likelihood.
+    of it: every map is brought to the observable by pack_kappa_obs, as the likelihood does (with
+    cmb_lensing.proj_oversamp > 1 from the finer sphere the model scatters on), so l < 2 is absent.
     """
     if "kappa_pred" not in truth:
         print("truth.npz has no kappa_pred: skipping the convergence figure.")
@@ -493,7 +493,6 @@ def plot_kappa_maps(model, truth, positions, out_path, fixed=None, truth_has_los
 
     nside, lmax = int(model.cmb_nside), int(model.cmb_lmax)
     mask = np.asarray(model.cmb_mask)
-    proj_mask = np.asarray(model.cmb_proj_mask)
     f_sky = float(np.mean(mask))
     sigma = float(model.sigma_hp)
     bands = _bands(lmax)
@@ -506,34 +505,49 @@ def plot_kappa_maps(model, truth, positions, out_path, fixed=None, truth_has_los
     if kappa_obs is not None and kappa_obs.shape != kappa_true.shape:
         kappa_obs = None
 
-    def to_band(m):
-        """Mask, band-limit to the likelihood's band and resynthesise at the observable nside."""
-        w = proj_mask if m.size == proj_mask.size else mask
-        return hp.alm2map(hp.map2alm(np.asarray(m) * w, lmax=lmax), nside)
+    # Spectra from the a_lm of the observable itself (the likelihood's band, l >= 2): one healpy
+    # transform per sample and spectrum would be thousands, slow where OpenMP oversubscribes.
+    packed = model.cmb_likelihood_mode != "pixel_exact"
+
+    def obs_alm(v):
+        """The kappa_obs observable as a_lm (healpy ordering, l <= lmax)."""
+        if packed:
+            return np.asarray(model.unpack_u(jnp.asarray(v)))
+        return hp.map2alm(np.asarray(model.unpack_kappa_obs_to_map(v)), lmax=lmax)
+
+    def map_alm(m):
+        """A map (observable or projection sphere) brought to the observable, as a_lm."""
+        return obs_alm(model.pack_kappa_obs(jnp.asarray(m)))
 
     if kappa_samples is not None and len(kappa_samples) > 1:
+        post_alm = [obs_alm(v) for v in kappa_samples]
         post = np.stack([np.asarray(model.unpack_kappa_obs_to_map(v)) for v in kappa_samples])
         what = f"{len(post)} posterior samples"
     else:
-        post = []
+        post_alm = []
         for c in range(int(np.shape(next(iter(positions.values())))[0])):
             pos = {k: jnp.asarray(np.asarray(v)[c]) for k, v in positions.items()} | (fixed or {})
             model.reset()
             k_model = model.predict(samples=pos, hide_det=False, hide_base=True, frombase=False,
                                     rng=0)["kappa_pred"]
-            post.append(to_band(np.asarray(k_model)))
-        post = np.stack(post)
+            post_alm.append(map_alm(k_model))
+        post = np.stack([hp.alm2map(a, nside, lmax=lmax) for a in post_alm])
         what = f"the last state of each of {len(post)} chains"
-    true_b = to_band(kappa_true)
+    a_true = map_alm(kappa_true)
+    a_mean = np.mean(post_alm, axis=0)
+    true_b = hp.alm2map(a_true, nside, lmax=lmax)
     mean_b, std_b = post.mean(0), post.std(0)
-    noise_b = to_band(kappa_obs - kappa_true) if kappa_obs is not None else None
+    a_noise = map_alm(kappa_obs - kappa_true) if kappa_obs is not None else None
 
-    def cl(m, m2=None):
-        return hp.anafast(m, m2, lmax=lmax) / f_sky
+    def cl(a, b=None):
+        return hp.alm2cl(a, b, lmax=lmax) / f_sky
 
-    cl_tt = cl(true_b)
-    cl_mm = np.array([cl(m) for m in post])
-    cl_err = np.array([cl(true_b - m) for m in post])
+    cl_tt = cl(a_true)
+    cl_mm = np.array([cl(a) for a in post_alm])
+    cl_err = np.array([cl(a_true - a) for a in post_alm])
+    # truth - sample = (truth - mean) + (mean - sample): its power is B + V exactly
+    cl_bias = cl(a_true - a_mean)
+    cl_var = np.mean([cl(a_mean - a) for a in post_alm], axis=0)
 
     # The covariance the likelihood assumes exists only in the modes that build it.
     assumed = None
@@ -544,14 +558,22 @@ def plot_kappa_maps(model, truth, positions, out_path, fixed=None, truth_has_los
             out = np.asarray(model.cl_out_cached)
         assumed = np.asarray(model.cmb_M_ll) @ (total + out)
         out = np.asarray(model.cmb_M_ll) @ out
+        noise = np.asarray(model.cmb_M_ll) @ total
 
     # Linear Gaussian posterior from the convergence alone: the model generates S_m = S_t - L (L, the
     # out-of-model part, only in an external map); one sample's error power is then
     # S_t + S_m - 2 W S_t, W = S_m/(S_m + N_a) (pipeline 6).
     out_t = out if (assumed is not None and truth_has_los) else np.zeros_like(cl_tt)
     s_m_l = np.maximum(cl_tt - out_t, 1e-30)
-    exp_err = (cl_tt + s_m_l - 2 * s_m_l / (s_m_l + assumed) * cl_tt
-               if assumed is not None and kappa_only else None)
+    exp_err = exp_bias = exp_var = None
+    if assumed is not None and kappa_only:
+        w_l = s_m_l / (s_m_l + assumed)
+        exp_err = cl_tt + s_m_l - 2 * w_l * cl_tt
+        # mean = W d, d = Born + out-of-model + noise; the truth holds the out-of-model part only on
+        # an external map: B = (1-W)^2 S_m + [(1-W)^2 or W^2] L + W^2 N, V = W (N + L)
+        exp_bias = ((1 - w_l) ** 2 * s_m_l + ((1 - w_l) ** 2 if truth_has_los else w_l**2) * out
+                    + w_l**2 * noise)
+        exp_var = w_l * assumed
     ell = np.arange(len(cl_tt))
     exp_rms = float(np.sqrt(((2 * ell + 1) * s_m_l)[2:].sum() / ((2 * ell + 1) * cl_tt)[2:].sum()))
 
@@ -567,73 +589,91 @@ def plot_kappa_maps(model, truth, positions, out_path, fixed=None, truth_has_los
                          for lo, hi in zip(edges[:-1], edges[1:], strict=False)])
 
     ell_bin = 0.5 * (edges[:-1] + edges[1:] - 1)
-    r_samples = np.array([coherence(true_b, m) for m in post])
-    r_mean = coherence(true_b, mean_b)
+
+    def binned(x):
+        return np.array([np.asarray(x)[..., lo:hi].sum(-1)
+                         for lo, hi in zip(edges[:-1], edges[1:], strict=False)]).T
+
+    r_samples = np.array([coherence(a_true, a) for a in post_alm])
+    r_mean = coherence(a_true, a_mean)
     exp_truth = exp_mean = None
     if assumed is not None and kappa_only:
-        def binned(x):
-            return np.array([np.asarray(x)[lo:hi].sum()
-                             for lo, hi in zip(edges[:-1], edges[1:], strict=False)])
         s_t = binned(cl_tt)
         s_m = np.maximum(s_t - (binned(out) if truth_has_los else 0.0), 1e-30)
         w = s_m / (s_m + binned(assumed))
         exp_truth = w * np.sqrt(s_t / s_m)
         exp_mean = np.sqrt(w * s_t / s_m)
 
-    fig = plt.figure(figsize=(27, 5.2))
+    resid = (true_b - mean_b) / np.maximum(std_b, 1e-30)
+    fig = plt.figure(figsize=(24, 10))
     vmax = float(np.percentile(np.abs(true_b), 99)) / sigma
-    for i, (m, title) in enumerate((
-        (true_b, "Observed κ (truth, noiseless)"),
-        (mean_b, f"Posterior mean of the Born κ ({what})"),
-        (true_b - mean_b, "Truth − posterior mean"),
+    for i, (m, title, lim, cmap, unit) in enumerate((
+        (true_b / sigma, "Observed κ (truth, noiseless)", vmax, "RdBu_r", r"$\kappa/\sigma_{\rm hp}$"),
+        (mean_b / sigma, "Posterior mean of the Born κ", vmax, "RdBu_r", r"$\kappa/\sigma_{\rm hp}$"),
+        (std_b / sigma, "Posterior standard deviation", None, "viridis", r"$\kappa/\sigma_{\rm hp}$"),
+        (resid, "(truth − posterior mean) / posterior std", 3.0, "RdBu_r", "σ"),
     )):
-        hp.mollview(m / sigma, sub=(1, 5, i + 1), title=title, min=-vmax, max=vmax,
-                    cmap="RdBu_r", unit=r"$\kappa/\sigma_{\rm hp}$", fig=fig.number)
+        kw = {"min": -lim, "max": lim} if lim is not None else {}
+        hp.mollview(m, sub=(2, 4, i + 1), title=title, cmap=cmap, unit=unit, fig=fig.number, **kw)
 
     def band(ax, x, curves, label, **kw):
         med, lo, hi = _quantiles(curves)
         ax.plot(x, med, label=label, **kw)
         ax.fill_between(x, lo, hi, color=kw.get("color"), alpha=0.25, lw=0)
 
-    ax = fig.add_subplot(1, 5, 4)
+    ax = fig.add_subplot(2, 3, 4)
     ax.plot(ell[2:], cl_tt[2:], color="k", label="truth κ")
-    band(ax, ell[2:], cl_mm[:, 2:], "Born κ of a sample (model mean)", color="C0")
-    band(ax, ell[2:], cl_err[:, 2:], "truth − sample", color="C3", lw=2)
+    band(ax, ell[2:], cl_mm[:, 2:], "Born κ of a sample", color="C0")
     if truth_has_los and assumed is not None:
         ax.plot(ell[2:], (np.median(cl_mm, 0) + out)[2:], color="C0", ls="--",
-                label=r"Born κ + $C_\ell^{\rm out}$ (expected: truth κ)")
-    if assumed is not None:
-        ax.plot(ell[2:], assumed[2:], color="C2", ls="--",
-                label=r"$N_\ell + C_\ell^{\rm out}$ assumed by the likelihood")
-    if exp_err is not None:
-        ax.plot(ell[2:], exp_err[2:], color="C3", ls=":", lw=2,
-                label="expected truth − sample (linear Gaussian, κ alone)")
-    if noise_b is not None:
-        ax.plot(ell[2:], cl(noise_b)[2:], color="0.6", ls=":", label="the noise realisation")
+                label=r"Born κ + $C_\ell^{\rm out}$ (expected: truth)")
+    if a_noise is not None:
+        ax.plot(ell[2:], cl(a_noise)[2:], color="0.5", ls=":", label=r"noise $N_\ell$ (realisation)")
     ax.set_yscale("log")
     ax.set_xlabel(r"$\ell$")
     ax.set_ylabel(r"$C_\ell$")
-    ax.legend(fontsize=8)
+    ax.legend(fontsize=8, loc="lower left")
     ax.grid(alpha=0.3)
-    ax.set_title("Is the model error inside the assumed covariance?", fontsize=11)
+    ax.set_title("Power budget", fontsize=11)
 
-    ax = fig.add_subplot(1, 5, 5)
+    ax = fig.add_subplot(2, 3, 5)
+    if assumed is not None and binned(out).min() > 0:
+        ax.plot(ell_bin, binned(cl_bias) / binned(out), color="C3", lw=2,
+                label=r"truth − posterior mean, over $C_\ell^{\rm out}$")
+        ax.plot(ell_bin, binned(cl_var) / binned(noise), color="C0", lw=2,
+                label=r"posterior variance, over $N_\ell$")
+        if exp_bias is not None:
+            ax.plot(ell_bin, binned(exp_bias) / binned(out), color="C3", ls=":", lw=2,
+                    label="expected (linear Gaussian, κ alone)")
+            ax.plot(ell_bin, binned(exp_var) / binned(noise), color="C0", ls=":", lw=2,
+                    label="expected (linear Gaussian, κ alone)")
+        ax.axhline(1.0, color="k", lw=0.8)
+        ax.legend(fontsize=8, loc="upper right")
+    ax.set_ylim(0, 2)
+    ax.set_xlabel(r"$\ell$")
+    ax.set_ylabel("ratio")
+    ax.grid(alpha=0.3)
+    ax.set_title("Truth − mean against the out-of-model term, spread against the noise",
+                 fontsize=11)
+
+    ax = fig.add_subplot(2, 3, 6)
     band(ax, ell_bin, r_samples, "a posterior sample vs truth (median, 16-84 %)", color="C0")
     ax.plot(ell_bin, r_mean, color="C1", lw=2, label="posterior mean vs truth")
     if exp_truth is not None:
         ax.plot(ell_bin, exp_truth, color="C0", ls=":", lw=2,
-                label="expected, sample vs truth (linear Gaussian, κ alone)")
+                label="expected, sample (linear Gaussian, κ alone)")
         ax.plot(ell_bin, exp_mean, color="C1", ls=":", lw=2,
-                label="expected, posterior mean vs truth (linear Gaussian, κ alone)")
+                label="expected, posterior mean (linear Gaussian, κ alone)")
     ax.axhline(0, color="k", lw=0.6)
     ax.set_ylim(-0.2, 1.0)
     ax.set_xlabel(r"$\ell$")
     ax.set_ylabel(r"$r_\ell = C_\ell^{tm}/\sqrt{C_\ell^{tt}C_\ell^{mm}}$")
-    ax.legend(fontsize=8)
+    ax.legend(fontsize=8, loc="lower left")
     ax.grid(alpha=0.3)
     ax.set_title("Harmonic coherence with the truth", fontsize=11)
-    fig.suptitle(f"CMB lensing — {Path(out_path).parent.parent.name}, posterior from {what}, maps "
-                 f"band-limited to the likelihood's own l <= {lmax} at nside {nside}", fontsize=11)
+    fig.suptitle(f"CMB lensing — {run_name or Path(out_path).parent.parent.name}, posterior from {what}; maps "
+                 f"and spectra in the likelihood's band, l = 2 ... {lmax} at nside {nside}",
+                 fontsize=12)
     fig.savefig(out_path, dpi=130, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved {out_path}")
@@ -643,7 +683,10 @@ def plot_kappa_maps(model, truth, positions, out_path, fixed=None, truth_has_los
           + (f" (expected {exp_rms * true_b.std() / sigma:.2f} without the out-of-model part)"
              if truth_has_los else "")
           + f", truth - mean {(true_b - mean_b).std() / sigma:.2f}"
-          + (f", noise {noise_b.std() / sigma:.2f}" if noise_b is not None else ""))
+          + (f", noise {hp.alm2map(a_noise, nside, lmax=lmax).std() / sigma:.2f}"
+             if a_noise is not None else ""))
+    print(f"  mean posterior std / truth rms {std_b.mean() / true_b.std():.2f}; "
+          f"rms of (truth - mean)/std {resid.std():.2f}")
     print(f"  {'band':>40}" + "".join(f"  {a}-{b}".rjust(10) for a, b in bands))
     err = cl_err.mean(0)
     ratios = [("truth - sample / signal (posterior mean)", err / np.maximum(cl_tt, 1e-30))]
@@ -655,6 +698,15 @@ def plot_kappa_maps(model, truth, positions, out_path, fixed=None, truth_has_los
     for name, y in ratios:
         v = [np.asarray(y)[(ell >= a) & (ell < b)].mean() for a, b in bands]
         print(f"  {name:>40}" + "".join(f"  {x:8.2f}" for x in v))
+    if assumed is not None:
+        parts = [("truth - mean / C_out", cl_bias, out), ("posterior variance / N", cl_var, noise)]
+        if exp_bias is not None:
+            parts[1:1] = [("expected (linear Gaussian, kappa alone)", exp_bias, out)]
+            parts.append(("expected (linear Gaussian, kappa alone)", exp_var, noise))
+        for name, num, den in parts:
+            v = [num[(ell >= a) & (ell < b)].sum() / max(den[(ell >= a) & (ell < b)].sum(), 1e-30)
+                 for a, b in bands]
+            print(f"  {name:>40}" + "".join(f"  {x:8.2f}" for x in v))
     print(f"  harmonic coherence r_l with the truth, in l bins of 4 (l = {int(ell_bin[0])} ... "
           f"{int(ell_bin[-1])}):")
     q = _quantiles(r_samples)
@@ -664,43 +716,8 @@ def plot_kappa_maps(model, truth, positions, out_path, fixed=None, truth_has_los
         rows += [("expected sample", exp_truth), ("expected mean", exp_mean)]
     for name, y in rows:
         print(f"  {name:>20}" + "".join(f" {x:5.2f}" for x in y))
-
-    if len(post) > 1:
-        _plot_kappa_posterior_mean(true_b, mean_b, std_b, what, sigma, lmax, nside,
-                                   Path(out_path).with_name("kappa_posterior_mean.png"))
     return {"ell": ell_bin, "r_samples": r_samples, "r_mean": r_mean, "exp_truth": exp_truth,
             "exp_mean": exp_mean}
-
-
-def _plot_kappa_posterior_mean(true_b, mean_b, std_b, what, sigma, lmax, nside, out_path):
-    """Truth, posterior mean, per-pixel posterior spread and the normalised residual. The mean is
-    the best estimate of the map but has less power than the truth where the data are weak; the
-    spread says where. Only l >= 2 is recorded, so the truth is shown without its monopole and
-    dipole as well."""
-    alm = hp.map2alm(true_b, lmax=lmax)
-    for ell in (0, 1):
-        for m in range(ell + 1):
-            alm[hp.Alm.getidx(lmax, ell, m)] = 0.0
-    true_l2 = hp.alm2map(alm, nside)
-    resid = (true_l2 - mean_b) / np.maximum(std_b, 1e-30)
-    fig = plt.figure(figsize=(22, 5.2))
-    vmax = float(np.percentile(np.abs(true_l2), 99)) / sigma
-    for i, (m, title, lim, cmap, unit) in enumerate((
-        (true_l2 / sigma, "Observed κ (truth, noiseless)", vmax, "RdBu_r", r"$\kappa/\sigma_{\rm hp}$"),
-        (mean_b / sigma, f"Posterior mean ({what})", vmax, "RdBu_r", r"$\kappa/\sigma_{\rm hp}$"),
-        (std_b / sigma, "Posterior standard deviation per pixel", None, "viridis",
-         r"$\kappa/\sigma_{\rm hp}$"),
-        (resid, "(truth − mean) / posterior std", 3.0, "RdBu_r", "σ"),
-    )):
-        kw = {"min": -lim, "max": lim} if lim is not None else {}
-        hp.mollview(m, sub=(1, 4, i + 1), title=title, cmap=cmap, unit=unit, fig=fig.number, **kw)
-    fig.suptitle(f"CMB lensing posterior — {Path(out_path).parent.parent.name}, l = 2 ... {lmax} "
-                 f"at nside {nside}", fontsize=11)
-    fig.savefig(out_path, dpi=130, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved {out_path}")
-    print(f"  posterior mean rms / truth rms {mean_b.std() / true_l2.std():.2f}; mean posterior std / "
-          f"truth rms {std_b.mean() / true_l2.std():.2f}; rms of (truth - mean)/std {resid.std():.2f}")
 
 
 def _load_kappa_samples(run_dir, burn_in=0.0, exclude_chains=None):

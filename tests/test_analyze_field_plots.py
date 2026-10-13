@@ -189,8 +189,8 @@ def test_the_convergence_figure_uses_the_fixed_parameters(tmp_path):
 
 
 def test_the_posterior_mean_comes_from_the_recorded_samples(tmp_path):
-    """With per-batch samples the orange curve is their mean, and the posterior-mean figure is
-    drawn; samples scattered around the truth average back to it, each sample less coherent."""
+    """With per-batch samples the orange curve is their mean; samples scattered around the truth
+    average back to it, each sample less coherent."""
     model = FieldLevelModel(**_cfg())
     truth, _ = _run(model)
     field, fixed = _truth_latents(model, truth)
@@ -200,7 +200,7 @@ def test_the_posterior_mean_comes_from_the_recorded_samples(tmp_path):
     samples = centre + 0.3 * centre.std() * rng.normal(size=(400, centre.size))
     out = tmp_path / "kappa_reconstruction.png"
     res = plot_kappa_maps(model, truth, positions, out, fixed=fixed, kappa_samples=samples)
-    assert (tmp_path / "kappa_posterior_mean.png").exists()
+    assert out.exists()
     assert np.all(res["r_mean"] > 0.95)
     assert res["r_samples"].shape == (400, res["ell"].size)
     assert np.all(np.median(res["r_samples"], axis=0) < res["r_mean"])

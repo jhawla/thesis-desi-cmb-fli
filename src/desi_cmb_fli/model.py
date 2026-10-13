@@ -1066,7 +1066,7 @@ class FieldLevelModel(Model):
                 chi_high_z_upper = float(self.chi_high_z_max) if self.chi_high_z_max is not None else chi_source_fid
                 if self.chi_high_z_max is not None:
                     print(
-                        f"  [high-z] chi_high_z_max={self.chi_high_z_max:.0f} Mpc/h "
+                        f"  [C_l^out] chi_high_z_max={self.chi_high_z_max:.0f} Mpc/h "
                         f"(chi_CMB={chi_source_fid:.0f})"
                     )
                 # The covariance term is everything the shells leave out of the map's matter (3.2).
