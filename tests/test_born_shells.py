@@ -44,6 +44,20 @@ def _cfg(**overrides):
     return cfg
 
 
+def _limber(cosmo, ell, lo, hi, z_source, n=800):
+    """Limber C_ell of the CMB kernel over [lo, hi] with the out-of-model term's own linear
+    spectrum and background, on a grid of its own."""
+    from desi_cmb_fli.bricks import lin_power_interp
+    from desi_cmb_fli.cmb_lensing import lensing_kernel
+    from desi_cmb_fli.nbody import a2chi, a2g, chi2a
+
+    chi = jnp.linspace(max(1.0, lo), hi, n)
+    a = chi2a(cosmo, chi)
+    w = lensing_kernel(cosmo, chi, a, a2chi(cosmo, jnp.asarray(1.0 / (1.0 + z_source))))
+    pk = lin_power_interp(cosmo)((jnp.asarray(ell, dtype=float)[:, None] + 0.5) / chi) * a2g(cosmo, a) ** 2
+    return np.asarray(jnp.trapezoid(w**2 / chi**2 * pk, chi, axis=1))
+
+
 def test_shells_tile_the_matter_start_to_chi_boundary():
     ref = FieldLevelModel(**_cfg())
     late = FieldLevelModel(**_cfg(cmb_chi_matter_min=60.0))
@@ -58,15 +72,12 @@ def test_without_the_cut_the_los_covariance_is_the_matter_beyond_the_box_and_the
     """No low-z term: the matter below the shells is the matter the map does not hold. Without the
     cut, nearest bins leave out the matter beyond the box and the steps of the shells only."""
     from desi_cmb_fli.bricks import get_cosmology
-    from desi_cmb_fli.cmb_lensing import compute_theoretical_cl_kappa
 
     for start in (0.0, 60.0):
         m = FieldLevelModel(**_cfg(cmb_chi_matter_min=start, cmb_shell_kmax=0.0))
         cosmo = get_cosmology(**m.loc_fid)
-        beyond = np.asarray(compute_theoretical_cl_kappa(cosmo, m.ell_1d, m.chi_boundary, 300.0,
-                                                         m.cmb_z_source))
-        shells = np.asarray(compute_theoretical_cl_kappa(cosmo, m.ell_1d, max(start, 1.0),
-                                                         m.chi_boundary, m.cmb_z_source))
+        beyond = _limber(cosmo, m.ell_1d, m.chi_boundary, 300.0, m.cmb_z_source)
+        shells = _limber(cosmo, m.ell_1d, start, m.chi_boundary, m.cmb_z_source)
         term = np.asarray(m.cl_out_cached) / np.asarray(m.cmb_los_window2 * m.cmb_los_limber)
         assert np.all(np.abs(term - beyond)[2:] < 0.05 * shells[2:])
 
@@ -101,32 +112,33 @@ def test_the_kappa_window_removes_only_the_matter_the_map_does_not_hold():
 
 
 def test_every_cl_out_mode_carries_the_out_term_alike():
-    """fixed, taylor and exact agree at the fiducial; away from it taylor follows exact to first
-    order and fixed does not move."""
+    """fixed and exact agree at the fiducial; away from it exact is the windowed term at the new
+    cosmology (linear: it scales as sigma8^2) and fixed does not move."""
     from desi_cmb_fli.bricks import get_cosmology
     from desi_cmb_fli.cmb_lensing import compute_cl_out, compute_cl_outside_model
 
-    def los(m, cosmo, linear=False):
-        return np.asarray(compute_cl_outside_model(cosmo, m.ell_1d, **m.cmb_shells, chi_max=300.0,
-                                                   linear_pk=linear)) * np.asarray(
-            m.cmb_los_window2 * m.cmb_los_limber)
-
     models = {mode: FieldLevelModel(**_cfg(cmb_shell_kmax=0.0, cl_out_mode=mode))
-              for mode in ("fixed", "taylor", "exact", "exact_linear")}
+              for mode in ("fixed", "exact")}
     fid = models["fixed"].loc_fid
-    for ds8 in (0.0, 0.01):
+    m = models["exact"]
+    window2 = np.asarray(m.cmb_los_window2 * m.cmb_los_limber)
+    cl = {}
+    for ds8 in (0.0, 0.05):
         cosmo = get_cosmology(Omega_m=fid["Omega_m"], sigma8=fid["sigma8"] + ds8)
-        cl = {mode: np.asarray(compute_cl_out(
-            cosmo, m.ell_1d, m.chi_boundary, m.chi_high_z_max, m.cmb_z_source, mode=mode,
-            cl_cached=m.cl_out_cached, gradients=m.cl_out_gradients, loc_fid=m.loc_fid,
-            shells=m.cmb_shells, window2=m.cmb_los_window2 * m.cmb_los_limber))[2:]
-            for mode, m in models.items()}
-        np.testing.assert_allclose(cl["exact"], los(models["exact"], cosmo)[2:], rtol=1e-10)
-        np.testing.assert_allclose(cl["exact_linear"],
-                                   los(models["exact"], cosmo, linear=True)[2:], rtol=1e-10)
-        np.testing.assert_allclose(cl["taylor"], cl["exact"], rtol=2e-3)
-        np.testing.assert_allclose(cl["fixed"], los(models["fixed"], get_cosmology(**fid))[2:],
-                                   rtol=1e-10)
+        cl[ds8] = {mode: np.asarray(compute_cl_out(
+            cosmo, m.ell_1d, m.chi_high_z_max, m.cmb_shells, mode=mode, cl_cached=m.cl_out_cached,
+            window2=m.cmb_los_window2 * m.cmb_los_limber))[2:] for mode, m in models.items()}
+        los = np.asarray(compute_cl_outside_model(cosmo, m.ell_1d, **m.cmb_shells, chi_max=300.0))
+        np.testing.assert_allclose(cl[ds8]["exact"], (los * window2)[2:], rtol=1e-10)
+        np.testing.assert_allclose(cl[ds8]["fixed"], cl[0.0]["fixed"], rtol=1e-12)
+    np.testing.assert_allclose(cl[0.0]["exact"], cl[0.0]["fixed"], rtol=1e-6)
+    np.testing.assert_allclose(cl[0.05]["exact"] / cl[0.0]["exact"],
+                               ((fid["sigma8"] + 0.05) / fid["sigma8"]) ** 2, rtol=1e-4)
+
+
+def test_an_unknown_cl_out_mode_is_an_error():
+    with pytest.raises(ValueError, match="'taylor' and 'exact_linear' were replaced"):
+        FieldLevelModel(**_cfg(cl_out_mode="taylor"))
 
 
 def test_the_los_covariance_carries_the_squared_bilinear_window_of_the_projection_sphere():
@@ -290,9 +302,10 @@ def test_forward_and_gradient_run_with_proj_oversamp(oversamp):
 def test_sampling_omega_m_puts_no_jax_cosmo_callback_in_the_graph():
     """The jax_cosmo fork computes growth and distances through host callbacks that re-solve for
     every new cosmology; with Omega_m sampled they exhaust the compiler's memory on a GPU run. Every
-    background quantity of the model must come from the emulator or be evaluated at a = 1."""
+    background quantity of the model must come from the emulator or be evaluated at a = 1, the
+    out-of-model term following the cosmology included."""
     model = FieldLevelModel(**_cfg(galaxies_enabled=True, png_type="fNL", a_obs=None, cmb_chi_matter_min=60.0,
-                                   cmb_shell_weights="linear"))
+                                   cmb_shell_weights="linear", cl_out_mode="exact"))
     truth = model.predict(samples={"Omega_m": 0.315192, "sigma8": 0.811355, "b1": 1.0, "fNL": 10.0},
                           hide_base=False, hide_samp=False, hide_det=False, frombase=True, rng=0)
     model.reset()

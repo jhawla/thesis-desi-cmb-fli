@@ -10,10 +10,15 @@ band l = 2 ... 2 nside:
   z_max, from the observer and from the model's chi_matter_min; red line at the model's box edge.
 - lensing_spectra_comparison.png: total C_l, what the model shells hold (before the per-shell
   multipole cut, which moves part of it to the covariance), what the data map holds (Abacus or
-  closure), the beyond-the-box line-of-sight term of the likelihood covariance, the part in neither,
-  and N_l.
+  closure), the matter beyond the box, the part in neither, N_l, and the out-of-model term C_l^out
+  of the likelihood as the model computes it (model.cl_out_cached: beyond the box, tent ramps and
+  per-shell cut, exact-over-Limber ratio and window w_l^2, linear ACE spectrum; docs/pipeline.md 3.2).
 
-Usage: python scripts/plot_lensing_fraction.py [--config configs/inference/abacus/abacus_joint_Nl1p0.yaml]
+The printed bands give, per band, (N_l + C_l^out) / (N_l + C_l^out + w_l^2 C_l^neither): the share of
+a real map's out-of-model variance (the matter in neither reaches it through the same window) that
+the runs' covariance holds.
+
+Usage: python scripts/plot_lensing_fraction.py [--config configs/inference/abacus/abacus_joint_so_cosmo_box5000.yaml]
 """
 
 import argparse
@@ -26,8 +31,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 
+from desi_cmb_fli import utils
 from desi_cmb_fli.bricks import get_cosmology
 from desi_cmb_fli.cmb_lensing import compute_theoretical_cl_kappa, lensing_kernel
+from desi_cmb_fli.model import get_model_from_config
 
 ROOT = Path(__file__).resolve().parents[1]
 BLUE, AQUA, ORANGE, RED, GREY = "#2a78d6", "#1baf7a", "#eb6834", "#e34948", "#8a8984"
@@ -87,12 +94,15 @@ def weighted(ell, x):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument(
-        "--config", default=str(ROOT / "configs/inference/abacus/abacus_joint_Nl1p0.yaml")
+        "--config", default=str(ROOT / "configs/inference/abacus/abacus_joint_so_cosmo_box5000.yaml")
     )
     ap.add_argument("--out_dir", default=str(ROOT / "figures/lensing_fraction"))
     args = ap.parse_args()
 
     g = run_geometry(yaml.safe_load(open(args.config)))
+    cfg = utils.yload(args.config)
+    cfg["model"]["galaxies_enabled"] = False  # the kappa likelihood's attributes only
+    model, _ = get_model_from_config(cfg)
     cosmo = get_cosmology(**g["cosmo"])
     chi_s = float(jc.background.radial_comoving_distance(cosmo, jnp.atleast_1d(1 / (1 + g["z_source"])))[0])
     ell = np.arange(2, g["lmax"] + 1).astype(float)
@@ -109,9 +119,12 @@ def main():
     parts = {
         "model shells": los.cl(g["chi_min"], g["chi_boundary"]),
         "data map": los.cl(g["chi_map_min"], g["chi_high_z_max"]),
-        "LOS in the covariance": los.cl(g["chi_boundary"], g["chi_high_z_max"]),
+        "beyond the box": los.cl(g["chi_boundary"], g["chi_high_z_max"]),
         "in neither": los.cl(1.0, g["chi_map_min"]) + los.cl(g["chi_high_z_max"], chi_s),
     }
+    sel = np.isin(np.asarray(model.ell_1d).astype(int), ell.astype(int))
+    cl_out = np.asarray(model.cl_out_cached)[sel]
+    window2 = np.asarray(model.cmb_los_window2)[sel]
     nell = None
     if g["nell_file"]:
         tab = np.loadtxt(g["nell_file"])
@@ -125,9 +138,11 @@ def main():
         row = "  ".join(f"{k} {weighted(ell[m], v[m]) / weighted(ell[m], tot[m]):.3f}" for k, v in parts.items())
         extra = f"  model/data map {weighted(ell[m], parts['model shells'][m]) / weighted(ell[m], parts['data map'][m]):.3f}"
         if nell is not None:
-            cov = weighted(ell[m], nell[m] + parts["LOS in the covariance"][m])
+            cov = weighted(ell[m], nell[m] + cl_out[m])
             extra += f"  N_l {weighted(ell[m], nell[m]) / weighted(ell[m], tot[m]):.2f}"
-            extra += f"  (N_l + LOS) / (N_l + LOS + neither) {cov / (cov + weighted(ell[m], parts['in neither'][m])):.2f}"
+            extra += f"  C_out {weighted(ell[m], cl_out[m]) / weighted(ell[m], tot[m]):.3f}"
+            extra += (f"  (N_l + C_out) / (N_l + C_out + w^2 neither) "
+                      f"{cov / (cov + weighted(ell[m], window2[m] * parts['in neither'][m])):.2f}")
         print(f"  l {lo}-{hi}: {row}{extra}")
 
     # ---- fraction vs depth -------------------------------------------------------------------
@@ -187,13 +202,16 @@ def main():
               label=rf"model shells, {g['chi_min']:.0f}–{g['chi_boundary']:.0f} Mpc/$h$")
     ax.loglog(ell, parts["data map"], color=AQUA, ls="--", lw=2,
               label=rf"{g['data']}, {g['chi_map_min']:.1f}–{g['chi_high_z_max']:.0f} Mpc/$h$")
-    ax.loglog(ell, parts["LOS in the covariance"], color=ORANGE, ls="-.", lw=2,
-              label=r"line of sight in the covariance, $C_\ell^\mathrm{LOS}$")
+    ax.loglog(ell, parts["beyond the box"], color=ORANGE, ls=":", lw=1.5,
+              label=rf"beyond the box, {g['chi_boundary']:.0f}–{g['chi_high_z_max']:.0f} Mpc/$h$")
+    ax.loglog(ell, cl_out, color=ORANGE, ls="-.", lw=2,
+              label=r"out-of-model term of the likelihood, $w_\ell^2 C_\ell^\mathrm{out}$ (model)")
     ax.loglog(ell, parts["in neither"], color=RED, ls=":", lw=2, label=f"in neither (absent from the {g['data']})")
     if nell is not None:
-        ax.loglog(ell, nell, color=GREY, lw=1.5, label=rf"$N_\ell$ (ACT DR6 $\times${g['nell_scale']:g})")
+        ax.loglog(ell, nell, color=GREY, lw=1.5,
+                  label=rf"$N_\ell$ ({Path(g['nell_file']).stem} $\times${g['nell_scale']:g})")
     ax.set_xlabel(r"$\ell$")
-    ax.set_ylabel(r"$C_\ell^{\kappa\kappa}$ (Limber, non-linear $P$)")
+    ax.set_ylabel(r"$C_\ell^{\kappa\kappa}$ (Limber, non-linear $P$; $C_\ell^\mathrm{out}$: the model's)")
     ax.set_title("What each part of the line of sight contributes")
     ax.grid(alpha=0.25, which="both")
     ax.legend(fontsize=8, loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=False)

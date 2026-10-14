@@ -63,9 +63,10 @@ where the emulator is more accurate than Eisenstein–Hu throughout and than the
 Eisenstein–Hu × fiducial CLASS/EH ratio everywhere but at the fiducial itself (§7.11); a model with
 wider bounds is an error. Everything built on the linear spectrum takes it: the prior and the Kaiser
 preconditioner (`lin_power_mesh`), the φ→δ transfer of `add_png` and of the scale-dependent bias
-(`trans_phi2delta_interp`), the Kaiser model, the Wiener start and `desi_cmb_fli.fisher`. Closures
-use the same spectrum as the Abacus runs. The Limber C_ℓ (the out-of-model term, diagnostics) keep
-jax_cosmo's Eisenstein–Hu halofit. Measured accuracy in §7.11.
+(`trans_phi2delta_interp`), the Kaiser model, the Wiener start, the out-of-model term of the κ
+covariance and its exact-over-Limber ratio (§3.2) and `desi_cmb_fli.fisher`. Closures use the same
+spectrum as the Abacus runs. The diagnostic Limber C_ℓ (`compute_theoretical_cl_*`) keep jax_cosmo's
+Eisenstein–Hu halofit. Measured accuracy in §7.11.
 
 ### 2.2 Primordial non-Gaussianity
 
@@ -159,9 +160,8 @@ that re-solve for every new cosmology, and with `Omega_m` sampled they exhaust t
 and threads. Every background quantity in the sampled graph comes from the emulator — including `χ_s`
 in `convergence_Born_spherical` (`nbody.a2chi`) — or is evaluated where it is known exactly (the
 growth at a = 1 in the linear spectrum, §2.1); `test_sampling_omega_m_puts_no_jax_cosmo_callback_in_the_graph`
-checks the full lightcone model with galaxies, κ and PNG. The exception is `compute_cl_out` /
-`compute_theoretical_cl_*` under the `exact`/`exact_linear` modes of the out-of-model term, which call jax_cosmo with
-the sampled cosmology. Tables are
+checks the full lightcone model with galaxies, κ (the out-of-model term following the cosmology,
+§3.2) and PNG. Tables are
 precomputed once on CPU over `n_Om=100` values of `Ω_m ∈ [0.05, 0.7]` (`χ` on `logspace(-4,0,512)`),
 then bilinearly interpolated in `(Ω_m, a)`. Activated automatically when the fixed background matches
 the Abacus fiducial (`_is_abacus_background`: `Ω_b, h, n_s, w0=−1, wa=0, Ω_k=0`) — i.e. the Abacus
@@ -527,7 +527,7 @@ data map holds and the Born shells do not, as Gaussian variance; below). Two mod
   `model.cmb_M_ll`). **Exact on the full sky** ($W=1$: pseudo-$a_{\ell m}$ = true $a_{\ell m}$). On a
   cut sky it drops the mask-induced (ℓ,ℓ')/(m,m') coupling, so it is approximate (can mis-size error
   bars) but fast, and the only option for full-sky / high-nside runs. Includes the parameter-dependent
-  log-determinant `ln C_ℓ` (needed in the `taylor`/`exact` modes, where `C_ℓ^{out}` depends on
+  log-determinant `ln C_ℓ` (needed under `cl_out_mode: exact`, where `C_ℓ^{out}` depends on
   Ω_m,σ8).
 
 - **`pixel_exact`**: the **exact cut-sky** field-level likelihood via signal-eigenmode (KL)
@@ -551,8 +551,8 @@ data map holds and the Born shells do not, as Gaussian variance; below). Two mod
 **Out-of-model term `C_ℓ^out` (`full_los_correction`, `cl_out_mode`).** The covariance of
 everything the data map holds and the Born shells do not: the matter beyond the box (`χ_box →
 χ_high_z_max`), the end ramps of the linear tents, and the power the per-shell multipole cut removes
-(§2.6), one Limber term (`jax_cosmo`) added to the variance; every mode below treats its parts alike
-(one cache, one pair of `taylor` gradients, one recomputation in the `exact` modes;
+(§2.6), one Limber term added to the variance; both modes below treat its parts alike (one
+computation, cached at the fiducial or repeated at the sampled cosmology;
 `test_every_cl_out_mode_carries_the_cut_term_alike`). It has no separate low-z range since the
 inner cut-off `chi_min` went (§2.6): the cut power comes mostly from the near shells and one tent
 ramp sits at `chi_matter_min`, but both are parts of this one kernel. It enters the variance only:
@@ -564,8 +564,8 @@ configs of earlier runs.
 
 **The window of the term.** The term is multiplied by `w_ℓ²`, the squared bilinear window of the
 projection sphere (`bilinear_window` at `proj_nside`, `model.cmb_los_window2`; 0.88 at ℓ = 50 and
-0.81 at ℓ = 64 at `proj_nside` 64), in every mode: the `exact` computation carries it, and the
-`fixed` cache and the `taylor` gradients are built from that computation. The data map reaches the
+0.81 at ℓ = 64 at `proj_nside` 64), in both modes: the computation carries it, and the `fixed`
+cache is that computation at the fiducial. The data map reaches the
 observable through that kernel, the line-of-sight matter and the power the cut removes included —
 on Abacus through the loader's `bilinear_resample_healpix` (§4), on a real map by the same
 resampling — while the model map gets it from the Born scatter. The residual data − model is
@@ -575,10 +575,18 @@ likelihood itself, so they follow whatever the term holds. Without the window th
 of that part would be `1/w_ℓ²` too large, 1.14 × at ℓ = 50 and 1.24 × at ℓ = 64: small while the
 term held only the matter beyond the box (2–6 % of the Abacus power over the band), not once it
 holds what the cut removes (17–25 % of it at ℓ ≥ 48, §7.12). Modes:
-- `fixed` — cached at the fiducial cosmology (required by `pixel_exact`, exact if `Ω_m,σ8` fixed).
-- `taylor` (default) — first-order expansion `C_ℓ(θ) ≈ C_ℓ(θ_fid) + ∇C_ℓ·Δθ`, gradients precomputed.
-- `exact_linear` — recompute the Limber integral each step with the **linear** P(k) (slow).
-- `exact` — full recompute each step (very slow).
+- `exact` (default) — recomputed at the sampled cosmology at every evaluation of the likelihood.
+- `fixed` — cached at the fiducial cosmology (required by `pixel_exact`; the same as `exact` when
+  `Ω_m`, `σ8` are fixed). The cache `model.cl_out_cached` exists in both modes and is what the
+  diagnostics read.
+
+The term is computed in linear theory with the model's own spectrum and background: the ACE
+spectrum (`lin_power_interp`, §2.1) grown with the emulator's D(a), and χ(a), a(χ), χ_s from the
+background emulator (§2.3), the same χ_s as the projector's. Nothing in it calls jax_cosmo, so it
+follows a sampled cosmology without host callbacks, and its gradient is the emulators'. Halofit
+would change it by at most 0.4 % (0.006 nats) at the fiducial at box 5000 (§7.18). No expansion
+around the fiducial stands in for it: to first order the error reaches 16 nats within the κ-only
+posterior at box 5000 (§7.18). Any other `cl_out_mode` is an error.
 
 **What the out-of-model term holds.** The data map holds the matter with the lensing kernel
 `W(χ)` from `chi_matter_min` to `chi_high_z_max`; shell s holds it with `q_s(χ) = d_r W(r_s) p_s(χ)
@@ -592,8 +600,9 @@ Limber misses the radial modes of a kernel whose radial extent is not large agai
 is the Limber C_ℓ times the exact-over-Limber ratio of the same kernel in linear theory at the
 fiducial cosmology (`cmb_lensing.limber_ratio_outside_model`, `model.cmb_los_limber`), exact being
 `(2/π) ∫ dk k² P(k) [∫ dχ B_ℓ(χ) D(χ) j_ℓ(kχ)]²` on a k grid that resolves the kernel's radial
-extent. It enters every mode as the window does; in `taylor` and `exact` the Limber part follows the
-cosmology and the ratio stays at the fiducial. It matters when the box is smaller than the map's
+extent. It enters both modes as the window does; under `exact` the Limber part follows the
+cosmology and the ratio stays at the fiducial (from Eisenstein–Hu to the ACE spectrum it moved by
+≤ 0.3 %, at ℓ = 2, box-5000 geometry). It matters when the box is smaller than the map's
 depth: at box 5000 the 2500–3750 slab is twice its Limber power at ℓ = 2 (§7.15). The term is
 computed and cached at init, so a κ run started before the ratio does not resume.
 
@@ -612,7 +621,11 @@ covariance: data and likelihood agree, but the map is that of an experiment with
 of the power from the observer to `χ_s`, ℓ bins 2–4 / 5–10 / 11–20 / 21–36 / 37–64 weighted by
 2ℓ+1, before the per-shell cut: model shells and data map (292.6 → 3750) 0.76 / 0.82 / 0.81 / 0.76 /
 0.69; in neither 0.24 / 0.18 / 0.19 / 0.24 / 0.31. The κ constraints and gains are those of a map
-without that matter, i.e. with a smaller variance than a real map at the same `N_ℓ`. Figures
+without that matter, i.e. with a smaller variance than a real map at the same `N_ℓ`: at box 5000 with
+SO noise (`abacus/abacus_joint_so_cosmo_box5000.yaml`) the likelihood's `N_ℓ + w_ℓ² C_ℓ^out` (the
+model's term, `model.cl_out_cached`; 0.22 / 0.19 / 0.22 / 0.28 / 0.33 of the total power) is 0.70 /
+0.68 / 0.66 / 0.65 / 0.63 of what it would be with the matter in neither added through the same
+window. Figures
 `figures/lensing_fraction/lensing_fraction_vs_z.png` and `lensing_spectra_comparison.png`.
 
 Noise (`cmb_lensing.cmb_noise_nell`, a file of columns ℓ, N_ℓ; `cmb_noise_scaling`, default 1.0,
@@ -785,14 +798,14 @@ the script and are not exposed by any config switch.
 **Cosmology: inferred or fixed, per config.** `Omega_m` and `sigma8` are ordinary latents with
 priors in `latents`, and the background emulator (§2.3) covers a varying `Ω_m`. Two families of
 runs: the `Omega_m`–`sigma8` runs (`*_cosmo.yaml`, `fixed_params: [fNL]`) and the `f_NL` runs
-(`fixed_params: [Omega_m, sigma8]`, as the default `config.yaml`). Every config keeps
-`cmb_lensing.cl_out_mode: fixed`, the out-of-model term cached at the fiducial cosmology (also what
-`pixel_exact` requires, §3.2): in the `Omega_m`–`sigma8` runs that term does not follow the cosmology.
-There the out-of-model term is noise of a fixed spectrum, as in the Fisher of §7.10 they are
-compared with; it carries cosmological information the runs leave out (Fisher, κ alone, SO:
-σ(`Omega_m`), σ(`sigma8`) 0.0477, 0.0230 with it as noise, 0.0312, 0.0163 as signal, §7.10). The
-`taylor`/`exact`/`exact_linear` modes make it follow the cosmology; earlier runs used them
-(`figures/high_z_modes_comparaison/`), no current config does.
+(`fixed_params: [Omega_m, sigma8]`, as the default `config.yaml`). The box-5000 κ-only and joint
+`Omega_m`–`sigma8` configs (`abacus/abacus_{kappaonly,joint}_so_cosmo_box5000.yaml`) set
+`cmb_lensing.cl_out_mode: exact`: the out-of-model term follows the cosmology, as the generative
+model of the map does, and carries its information (Fisher, κ alone, SO: σ(`Omega_m`), σ(`sigma8`)
+0.0312, 0.0163 with it as signal, 0.0477, 0.0230 as noise, §7.10). The other configs keep `fixed`,
+the term cached at the fiducial (what `pixel_exact` requires, §3.2; the same at fixed cosmology); in
+an `Omega_m`–`sigma8` run it is then noise of a fixed spectrum, as in the box-5000 runs of §7.15 and
+§7.17.
 
 **Kaiser preconditioning** (`precond: kaiser`/`kaiser_dyn`). The field is sampled in a whitened basis
 with `scale = √(1 + B(k,μ)²·P(k)/noise_eff)`, `transfer = √P(k)/scale`
@@ -859,9 +872,10 @@ measures and the conventions that make its output comparable with the model.
 | `density_scan.py` | measured paired gain on σ(`f_NL`) against the Fisher, per density of `scan/density_scan_runs.yaml`; `--noise_table` the gain per `N_ℓ` scaling (§7.2, §7.3) | `figures/results/density_scan.{png,json}` |
 | `compare_linear_power.py` | the model's linear P(k) (and Eisenstein–Hu) against the CLASS spectrum of the Abacus ICs; `--omega_m_scan` the emulator, the former EH × fiducial ratio and EH against CLASS as `Omega_m` moves, from the reference written by `linear_power_class_reference.py` (cosmodesi env, cosmoprimo) (§7.11) | `figures/spectra_diagnostic/linear_power_*` |
 | `plot_cmb_noise_comparison.py` | Planck PR4, ACT DR6, SO baseline `N_ℓ` and their ratio to ACT, likelihood band shaded | `figures/spectra_diagnostic/cmb_noise_comparison.png` |
-| `plot_lensing_fraction.py` | Limber κ power along the line of sight at a config's geometry: fraction captured against depth, model shells, map, covariance term, `N_ℓ` (§3.2) | `figures/lensing_fraction/` |
+| `plot_lensing_fraction.py` | Limber κ power along the line of sight at a config's geometry (default the box-5000 joint): fraction captured against depth, model shells, map, beyond the box, the model's out-of-model term `w_ℓ² C_ℓ^out`, `N_ℓ` of the config; per band, the share of a real map's out-of-model variance the likelihood holds (§3.2) | `figures/lensing_fraction/` |
 | `plot_2D_maps.py` | κ and galaxy-projection maps of one forward realisation (the galaxy panel ray-casts the mesh, display only) | `figures/maps/` |
-| `benchmark_highz_cl_modes.py`, `plot_highz_correction_vs_depth.py` | precision and speed of the modes of the out-of-model term; its beyond-box part against depth | `figures/high_z_modes_comparaison/` |
+| `benchmark_cl_out_modes.py` | the `fixed` out-of-model term against `exact` over an (`Omega_m`, `sigma8`) grid at a config's geometry: band error and expected error on ln L (KL, nats); halofit against linear at the fiducial; per-ℓ curves in the npz (§7.18) | `figures/cl_out_modes/` |
+| `plot_highz_correction_vs_depth.py` | the beyond-box part of the term against depth | `figures/lensing_fraction/` |
 | `make_abacus_kappa_mask.py`, `plot_linear_vs_nbody.py` | AbacusLensing footprint at the model nside; linear against N-body field from one IC | — |
 
 `DIAGNOSE_FREEZE=1` in `run_inference.py` prints the log-density, per-group gradients and 1-D scans of
@@ -1582,6 +1596,23 @@ from k ≈ 0.004. The rms of the residual outside the shell is not compared: it 
 `sigma8`. Figures: `figures/results/abacus_box5000_reconstruction_joint_kappa_gxy_{100,250}Mpc_run_…{,_slices}.png`
 (run ids as the triangle's).
 
+### 7.18 Out-of-model term against the cosmology — measured
+
+`benchmark_cl_out_modes.py` on `abacus/abacus_kappaonly_so_cosmo_box5000.yaml` (box 5000, SO, map to
+3750, ℓ 2–64), grid `Omega_m` 0.22–0.50 × σ8 0.73–0.89 (50 points), expected error on ln L against
+`exact` in nats (`figures/cl_out_modes/abacus_kappaonly_so_cosmo_box5000.{json,npz,png}`). The term is
+1.2–3.1 × `N_ℓ` summed over the band.
+
+- **`fixed`** (the term at the fiducial): 0.99 nats at the nearest grid point, (0.34, 0.811); 1.5–37
+  at `Omega_m` 0.28, 4.4–19 at 0.315 (σ8 ≠ 0.811), 1.5–35 at 0.37, 5.0–49 at 0.43, up to 122 at
+  (0.22, 0.89). Within the κ-only posterior (`Omega_m` 0.367 ± 0.055, §7.17) the term does not stay
+  at its fiducial value.
+- **Halofit against linear** (jax_cosmo, same kernel, at the fiducial): ≤ 0.4 % per multipole,
+  0.0059 nats.
+- **First-order Taylor** (`taylor`, measured on 2026-10-13 against the former term before its
+  removal, `figures/cl_out_modes/abacus_kappaonly_so_cosmo_box5000_taylor.{json,npz,png}`): below
+  0.6 nats over the whole σ8 range only for `Omega_m` 0.28–0.34; 2.0 at (0.37, 0.73), 0.7–16 at 0.40–0.43, 75 at (0.50, 0.73).
+
 ## 8. Remaining steps before the paper
 
 Runs: a 4 h interactive `salloc` with a bare `run_inference.py` (`docs/hpc.md`), two at a time. The
@@ -1590,16 +1621,17 @@ template S/N 1.3, §7.15), treated as periodic like real data (to state in the p
 noise (§3.2).
 
 0. **Priority: the κ-only and joint box-5000 `Omega_m`–`sigma8` runs again with
-   `cl_out_mode: taylor`** (`abacus/abacus_kappaonly_so_cosmo_box5000.yaml`,
+   `cl_out_mode: exact`** (set in `abacus/abacus_kappaonly_so_cosmo_box5000.yaml`,
    `abacus/abacus_joint_so_cosmo_box5000.yaml`; the galaxy run has no κ and stands). In §7.15 and
    §7.17 the out-of-model term is noise of a fixed spectrum (§5), though it holds ≈ 47 % of the map's
    power in the band at box 5000 and depends on `Omega_m`, `sigma8`: the generative model of the
    observation is then not the same at every cosmology (H. Simon-Onfroy's remark), and its information
    is left out (Fisher, κ alone: σ 0.0477 / 0.0230 as noise, 0.0312 / 0.0163 as signal, §7.10). The
-   new runs also record `field_batch` (§5), so the field figures get a posterior of their own. Before
-   them: the accuracy of the first-order `taylor` term against `exact` over the κ-only range of
-   `Omega_m` (σ ≈ 0.055 around 0.37; `benchmark_highz_cl_modes.py`), and the Fisher of the joint with
-   the term as signal, to compare the runs with.
+   new runs also record `field_batch` (§5), so the field figures get a posterior of their own. The
+   Fisher with the term as signal (§7.10 json, SO): κ alone 0.0312 / 0.0163, joint 0.00941 / 0.0108
+   (κ gain on the joint 14 % / 79 %, against 13 % / 70 % with the term as noise). The term is
+   recomputed at every step from the emulators (§3.2), with no Taylor expansion (§7.18). Not yet
+   measured: its cost in a run.
 1. **The galaxy likelihood against the particle/paint grid ratio** (§7.16): mechanism not
    established. A glass Lagrangian start removes it at mesh 58, with changed reads; it does not remove
    the κ template (§7.15). The production grid (mesh 54, 200³) is unaffected.
@@ -1615,7 +1647,7 @@ noise (§3.2).
    Gaussian draw of variance `N_ℓ + w_ℓ² C_ℓ^out`. Protocol fixed before either analysis runs: the
    two-point analysis takes the full theory `C_ℓ^κκ(θ)` (the shells' part and `C_ℓ^out`, both times
    w_ℓ², both following the cosmology) with `N_ℓ` as its only fixed noise, as a standard analysis does;
-   the field level runs `cl_out_mode: taylor`, so that the out-of-model part enters it as it enters
+   the field level runs `cl_out_mode: exact`, so that the out-of-model part enters it as it enters
    the two-point likelihood (H. Simon-Onfroy's remark); same priors and linear spectrum, the two-point
    contour produced first.
 4. **`f_NL` Fisher of the density scan** (`galaxy_fisher_3d`): it has the Fourier cube but not `bnpar`.
@@ -1640,7 +1672,7 @@ knob) to tell model error from realisation; the closure triplet at the depth of 
 §7.17). Runs: the `f_NL` pair, the κ-only validations and the closures as they move to
 box 5000 (step 2) — galaxy-only runs do not depend on the noise. Figures and numbers that carry
 `N_ℓ`: the IC tests' error in units of `N_ℓ` (§7.12, §7.15: `validate_kappa_from_ic.py` on a box-5000
-SO config), `plot_lensing_fraction.py`, the density-scan Fisher (`fisher.NELL_FILE` is now SO), the
+SO config), the density-scan Fisher (`fisher.NELL_FILE` is now SO), the
 two-point comparison material (step 3); the box-7500 Fisher of §7.10 stays at ACT, the noise of the
 §7.13 runs it is compared with.
 
@@ -1677,7 +1709,11 @@ are in §2–§5, measurements in §7.
 - **Line of sight**: the unmodelled depth as a Gaussian covariance term (`1206a30`), its
   cosmology-dependent modes (`94c6e0f`) and the `ln C` term of the likelihood (`1421d32`); later
   the power the per-shell cut removes and the tents' end ramps in one kernel, and the map's true depth
-  3750 Mpc/h instead of its last source plane 3942 (§3.2).
+  3750 Mpc/h instead of its last source plane 3942 (§3.2). The term called jax_cosmo's
+  Eisenstein–Hu halofit and ODE background, whose host callbacks a sampled `Omega_m` cannot carry, so
+  it followed the cosmology through a first-order Taylor expansion (`taylor`) or a slow recomputation
+  (`exact`, `exact_linear`); recomputed from the ACE spectrum and the background emulator it is one
+  `exact` mode beside `fixed` (§3.2, §7.18).
 - **Aliasing**: a k-filter at 0.85 × Nyquist (`9f6309a`) replaced by montecosmo's oversampled grids
   (init, evolution, particles, paint) with interlaced deconvolved painting (`c3ffe91`, `dbc760e`, §2.5).
 - **Galaxy model**: PNG with or without universality (`png_type: fNL_bias` turned out not

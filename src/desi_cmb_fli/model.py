@@ -42,7 +42,7 @@ from desi_cmb_fli.bricks import (
 )
 from desi_cmb_fli.chains import Chains
 from desi_cmb_fli.metrics import powtranscoh, spectrum
-from desi_cmb_fli.nbody import a2g, g2a, lpt, nbody_bf
+from desi_cmb_fli.nbody import a2chi, a2g, g2a, lpt, nbody_bf
 from desi_cmb_fli.utils import (
     DetruncTruncNorm,
     DetruncUnif,
@@ -97,7 +97,7 @@ default_config = {
     "cmb_mask": None,  # Optional external survey mask (npy/FITS or array)
 
     "cmb_z_source": 1100.0,  # CMB last scattering surface
-    "cl_out_mode": "taylor",  # out-of-model C_l: 'fixed', 'taylor', 'exact', 'exact_linear'
+    "cl_out_mode": "exact",  # out-of-model C_l: 'exact' (follows the cosmology) or 'fixed'
     "cmb_likelihood_mode": "diagonal",  # 'diagonal' (fast, exact on full sky) | 'pixel_exact' (exact cut-sky via KL eigenmodes)
     "cmb_kl_rcond": 1e-6,  # pixel_exact: keep eigenmodes with lambda > rcond*lambda_max (supported Slepian subspace; 1e-6 keeps cond~1e6, safe in float32; lower=more complete but more fragile)
 
@@ -342,7 +342,7 @@ def get_model_from_config(config_or_path):
         # Out-of-model term mode; high_z_mode is its former name, in the configs of earlier runs.
         if {"cl_out_mode", "high_z_mode"} <= set(cmb_cfg):
             raise ValueError("cmb_lensing: give cl_out_mode only (high_z_mode is its former name).")
-        model_config["cl_out_mode"] = cmb_cfg.get("cl_out_mode", cmb_cfg.get("high_z_mode", "taylor"))
+        model_config["cl_out_mode"] = cmb_cfg.get("cl_out_mode", cmb_cfg.get("high_z_mode", "exact"))
 
         if "cmb_noise_nell" in cmb_cfg:
             model_config["cmb_noise_nell"] = cmb_cfg["cmb_noise_nell"]
@@ -703,7 +703,7 @@ class FieldLevelModel(Model):
 
     full_los_correction: bool = field(default=False)  # Out-of-model C_l in the kappa covariance
     chi_high_z_max: float | None = field(default=None)  # Where the map's matter stops (None = chi_CMB)
-    cl_out_mode: str = field(default="taylor")  # 'fixed', 'taylor', 'exact', 'exact_linear'
+    cl_out_mode: str = field(default=default_config["cl_out_mode"])  # 'exact' | 'fixed'
     cmb_likelihood_mode: str = field(default=default_config["cmb_likelihood_mode"])  # 'diagonal' | 'pixel_exact'
     cmb_kl_rcond: float = field(default=default_config["cmb_kl_rcond"])  # pixel_exact KL eigenmode cutoff
     # Primordial non-Gaussianity
@@ -1049,20 +1049,20 @@ class FieldLevelModel(Model):
 
             # Cache/Precompute the out-of-model term (1-D ell)
             self.cl_out_cached = None
-            self.cl_out_gradients = None
             self.cmb_shells = None
             self.cmb_los_window2 = None
             self.cmb_los_limber = None
 
+            if self.cl_out_mode not in ("exact", "fixed"):
+                raise ValueError(f"cl_out_mode must be 'exact' or 'fixed', got {self.cl_out_mode!r} "
+                                 "('taylor' and 'exact_linear' were replaced by 'exact').")
             if self.full_los_correction:
                 # The matter outside the model reaches the data through the projection sphere's
                 # bilinear window, as the model's own map does (docs/pipeline.md 3.2).
                 self.cmb_los_window2 = jnp.asarray(
                     bilinear_window(int(self.cmb_proj_nside), int(self.cmb_lmax)) ** 2
                 )
-                chi_source_fid = float(
-                    jc.background.radial_comoving_distance(cosmo_fid, 1.0 / (1.0 + self.cmb_z_source))[0]
-                )
+                chi_source_fid = float(a2chi(cosmo_fid, 1.0 / (1.0 + self.cmb_z_source)))
                 chi_high_z_upper = float(self.chi_high_z_max) if self.chi_high_z_max is not None else chi_source_fid
                 if self.chi_high_z_max is not None:
                     print(
@@ -1081,52 +1081,15 @@ class FieldLevelModel(Model):
                 self.cmb_los_limber = jnp.asarray(limber_ratio_outside_model(
                     cosmo_fid, self.ell_1d, **self.cmb_shells, chi_max=chi_high_z_upper))
 
-                def _cl_los(c_, chi_up_):
-                    return compute_cl_out(
-                        c_, self.ell_1d, self.chi_boundary, chi_up_, self.cmb_z_source,
-                        mode="exact", shells=self.cmb_shells,
-                        window2=self.cmb_los_window2 * self.cmb_los_limber,
-                    )
-
-                if self.cl_out_mode in ["fixed", "taylor"]:
-                    self.cl_out_cached = _cl_los(cosmo_fid, chi_high_z_upper)
-                    print(
-                        f"  Cached C_l^out at fiducial "
-                        f"(mode={self.cl_out_mode}, chi={self.chi_boundary:.0f}->{chi_high_z_upper:.0f} Mpc/h)"
-                    )
-
-                if self.cl_out_mode == "taylor":
-                    print("  Computing gradients of C_l^out for the Taylor mode ...")
-
-                    def _cl_wrapper(theta):
-                        c_ = get_cosmology(Omega_m=theta[0], sigma8=theta[1])
-                        chi_src_ = jc.background.radial_comoving_distance(c_, 1.0 / (1.0 + self.cmb_z_source))[0]
-                        return _cl_los(c_, jnp.minimum(jnp.array(chi_high_z_upper), chi_src_))
-
-                    om_fid = self.loc_fid["Omega_m"]
-                    s8_fid = self.loc_fid["sigma8"]
-                    eps_om = 1e-3
-                    eps_s8 = 1e-3
-
-                    cl_om_up = _cl_wrapper(jnp.array([om_fid + eps_om, s8_fid]))
-                    cl_om_dn = _cl_wrapper(jnp.array([om_fid - eps_om, s8_fid]))
-                    cl_s8_up = _cl_wrapper(jnp.array([om_fid, s8_fid + eps_s8]))
-                    cl_s8_dn = _cl_wrapper(jnp.array([om_fid, s8_fid - eps_s8]))
-
-                    self.cl_out_gradients = {
-                        "dCl_dOm": (cl_om_up - cl_om_dn) / (2.0 * eps_om),
-                        "dCl_ds8": (cl_s8_up - cl_s8_dn) / (2.0 * eps_s8),
-                    }
-
-                    print(
-                        f"  Gradients computed: dCl/dOm shape={self.cl_out_gradients['dCl_dOm'].shape}"
-                    )
-
-                    # Update sigma_hp to include the out-of-model variance
-                    self.sigma_hp = compute_sigma_hp(
-                        ell_in, nell_in, self.cmb_nside, cl_extra_1d=self.cl_out_cached
-                    )
-                    print(f"[CMB] sigma_hp (with C_l^out) = {self.sigma_hp:.6f}")
+                # At the fiducial in every mode: the likelihood under 'fixed', the diagnostics.
+                self.cl_out_cached = compute_cl_out(
+                    cosmo_fid, self.ell_1d, chi_high_z_upper, self.cmb_shells, mode="exact",
+                    window2=self.cmb_los_window2 * self.cmb_los_limber,
+                )
+                print(
+                    f"  C_l^out at the fiducial (mode={self.cl_out_mode}, "
+                    f"chi={self.chi_boundary:.0f}->{chi_high_z_upper:.0f} Mpc/h)"
+                )
 
             if self.cmb_likelihood_mode == "pixel_exact":
                 self._build_cmb_pixel_cov()
@@ -1636,16 +1599,8 @@ class FieldLevelModel(Model):
                     # Out-of-model term of the CMB covariance.
                     if self.full_los_correction:
                         cl_out_1d = compute_cl_out(
-                            cosmology,
-                            self.ell_1d,
-                            self.chi_boundary,
-                            self.chi_high_z_max,
-                            self.cmb_z_source,
-                            mode=self.cl_out_mode,
-                            cl_cached=self.cl_out_cached,
-                            gradients=self.cl_out_gradients,
-                            loc_fid=self.loc_fid,
-                            shells=self.cmb_shells,
+                            cosmology, self.ell_1d, self.chi_high_z_max, self.cmb_shells,
+                            mode=self.cl_out_mode, cl_cached=self.cl_out_cached,
                             window2=self.cmb_los_window2 * self.cmb_los_limber,
                         )
 

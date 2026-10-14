@@ -9,13 +9,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from test_born_shells import _cfg
+from test_born_shells import _cfg, _limber
 
-from desi_cmb_fli.bricks import get_cosmology
+from desi_cmb_fli.bricks import get_cosmology, lin_power_interp
 from desi_cmb_fli.cmb_lensing import (
     compute_cl_out,
     compute_cl_outside_model,
-    compute_theoretical_cl_kappa,
     convergence_Born_spherical,
     cut_shells,
     lensing_kernel,
@@ -54,9 +53,10 @@ def test_the_taper_follows_the_resolved_multipole_of_each_shell():
 
 def test_cut_shells_sums_untouched_shells_and_keeps_a_band_limited_shell():
     nside, lmax = 16, 32
-    rng = np.random.default_rng(0)
-    alm = hp.synalm(np.ones(lmax + 1), lmax=lmax, new=True)
-    alm[hp.Alm.getlm(lmax)[0] > 8] = 0.0
+    rng = np.random.default_rng(0)  # hp.synalm draws from the unseeded global state
+    ell, m = hp.Alm.getlm(lmax)
+    alm = rng.normal(size=ell.size) + 1j * np.where(m > 0, rng.normal(size=ell.size), 0.0)
+    alm[ell > 8] = 0.0
     low = hp.alm2map(alm, nside, lmax=lmax)
     shells = jnp.asarray(np.stack([low, rng.normal(size=low.size)]))
     taper = np.ones((2, lmax + 1))
@@ -109,8 +109,7 @@ def test_the_covariance_term_is_the_matter_the_shells_leave_out():
                                                    chi_max=chi_max, n_per_shell=200))
 
     def limber(lo, hi):
-        return np.asarray(compute_theoretical_cl_kappa(cosmo, model.ell_1d, max(1.0, lo), hi,
-                                                       model.cmb_z_source, n_steps=800))
+        return _limber(cosmo, model.ell_1d, lo, hi, model.cmb_z_source)
 
     full = limber(r[0] - h / 2, end)
     # nearest bins, no cut, the map stopping at the box: only the Riemann steps of the shells
@@ -140,18 +139,19 @@ def test_linear_tents_leave_their_end_ramps_to_the_covariance():
 
 def test_every_cl_out_mode_carries_the_cut_term_alike():
     models = {mode: FieldLevelModel(**_cfg(cmb_shell_kmax=0.05, cl_out_mode=mode))
-              for mode in ("fixed", "taylor", "exact")}
-    cosmo = get_cosmology(**models["fixed"].loc_fid)
-    cl = {mode: np.asarray(compute_cl_out(
-        cosmo, m.ell_1d, m.chi_boundary, m.chi_high_z_max, m.cmb_z_source, mode=mode,
-        cl_cached=m.cl_out_cached, gradients=m.cl_out_gradients, loc_fid=m.loc_fid,
-        shells=m.cmb_shells, window2=m.cmb_los_window2 * m.cmb_los_limber))[2:]
-        for mode, m in models.items()}
-    np.testing.assert_allclose(cl["exact"], cl["fixed"], rtol=1e-8)
-    np.testing.assert_allclose(cl["taylor"], cl["fixed"], rtol=1e-8)
-    ref = FieldLevelModel(**_cfg(cl_out_mode="taylor", cmb_shell_kmax=0.0))
-    d = np.asarray(models["taylor"].cl_out_gradients["dCl_ds8"]) - np.asarray(ref.cl_out_gradients["dCl_ds8"])
-    assert np.all(d[2:] > 0)  # the removed power grows with sigma8
+              for mode in ("fixed", "exact")}
+    ref = FieldLevelModel(**_cfg(cl_out_mode="exact", cmb_shell_kmax=0.0))
+    fid = models["fixed"].loc_fid
+
+    def cl(m, ds8=0.0):
+        cosmo = get_cosmology(Omega_m=fid["Omega_m"], sigma8=fid["sigma8"] + ds8)
+        return np.asarray(compute_cl_out(cosmo, m.ell_1d, m.chi_high_z_max, m.cmb_shells,
+                                         mode=m.cl_out_mode, cl_cached=m.cl_out_cached,
+                                         window2=m.cmb_los_window2 * m.cmb_los_limber))[2:]
+
+    np.testing.assert_allclose(cl(models["exact"]), cl(models["fixed"]), rtol=1e-6)
+    removed = cl(models["exact"], 0.01) - cl(ref, 0.01) - (cl(models["exact"]) - cl(ref))
+    assert np.all(removed > 0)  # the removed power grows with sigma8
 
 
 def test_the_cut_lowers_the_model_power_at_the_top_of_the_band():
@@ -205,8 +205,8 @@ def test_the_covariance_term_is_the_exact_projection_where_limber_fails():
     chi_s = jc.background.radial_comoving_distance(cosmo, 1.0 / 1101.0)[0]
     kern = np.asarray(lensing_kernel(cosmo, jnp.asarray(chi), a, chi_s) *
                       jc.background.growth_factor(cosmo, a))
-    k = np.geomspace(1e-5, 1.0, 20000)
-    pk = np.asarray(jc.power.linear_matter_power(cosmo, jnp.asarray(k)))
+    k = np.geomspace(1e-4, 1.0, 20000)
+    pk = np.asarray(lin_power_interp(cosmo)(jnp.asarray(k)))  # the model's spectrum
     for i, ell_val in enumerate(ell):
         proj = np.trapezoid(kern[None] * spherical_jn(ell_val, np.outer(k, chi)), chi, axis=1)
         exact = 2.0 / np.pi * np.trapezoid(k**2 * pk * proj**2, k)

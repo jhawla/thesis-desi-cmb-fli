@@ -114,7 +114,6 @@ def _build_abacus_proxy(cfg_dict, cell_size):
         chi_high_z_max=None,
         cl_out_mode="exact",
         cl_out_cached=None,
-        cl_out_gradients=None,
     )
     return proxy, dict(model_cfg, cell_size=cell_size)
 

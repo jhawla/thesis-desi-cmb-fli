@@ -598,7 +598,7 @@ def sample_healpix_gaussian(key, cl_1d, nside, lmax=None, mask=None):
 # =========================================================================
 
 
-def compute_theoretical_cl_kappa(cosmo, ell, chi_min, chi_max, z_source, n_steps=100, linear_pk=False, n_interp=48):
+def compute_theoretical_cl_kappa(cosmo, ell, chi_min, chi_max, z_source, n_steps=100, n_interp=48):
     """C_ell^{kappa kappa} via Limber approximation."""
     chi_s = jc.background.radial_comoving_distance(cosmo, 1.0 / (1.0 + z_source))[0]
     chi_max = jnp.minimum(chi_max, chi_s)
@@ -608,14 +608,9 @@ def compute_theoretical_cl_kappa(cosmo, ell, chi_min, chi_max, z_source, n_steps
 
     def get_cl_per_ell(ell_val):
         k = (ell_val + 0.5) / chi
-        if linear_pk:
-            pk = jax.vmap(
-                lambda ki, ai: jnp.squeeze(jc.power.linear_matter_power(cosmo, ki, ai))
-            )(k, a)
-        else:
-            pk = jax.vmap(
-                lambda ki, ai: jnp.squeeze(jc.power.nonlinear_matter_power(cosmo, ki, ai))
-            )(k, a)
+        pk = jax.vmap(
+            lambda ki, ai: jnp.squeeze(jc.power.nonlinear_matter_power(cosmo, ki, ai))
+        )(k, a)
         integrand = (w_val**2 / chi**2) * pk
         return jax.scipy.integrate.trapezoid(integrand, x=chi)
 
@@ -755,9 +750,11 @@ def cut_shells(shells, taper, nside):
 
 def compute_cl_outside_model(
     cosmo, ell, r_shells, a_shells, d_r, shell_weights, z_source, chi_max, taper=None,
-    n_per_shell=40, n_beyond=200, linear_pk=False,
+    n_per_shell=40, n_beyond=200,
 ):
-    """Limber C_ell of the matter the data map holds and the model map does not.
+    """Limber C_ell of the matter the data map holds and the model map does not, in linear theory
+    with the model's own spectrum and background (``bricks.lin_power_interp``, ``nbody``): no
+    jax_cosmo callback, so it can follow a sampled cosmology (docs/pipeline.md 3.2).
 
     The map holds the matter with the lensing kernel ``W(chi)`` from where the shells start to
     ``chi_max`` (where the map's matter stops). Shell ``s`` holds it with ``q_s = d_r W(r_s)
@@ -767,15 +764,18 @@ def compute_cl_outside_model(
     box, the end ramps of the tents and what the cut removes; it is one kernel, so their cross
     terms enter. ``ell`` are integers indexing the columns of ``taper``.
     """
+    from desi_cmb_fli.bricks import lin_power_interp
+    from desi_cmb_fli.nbody import a2g
+
     ell_idx = np.asarray(ell).astype(int)
     chi_j, a, w_map, q = _outside_kernel(cosmo, r_shells, a_shells, d_r, shell_weights, z_source,
                                          chi_max, n_per_shell, n_beyond)
-    power = jc.power.linear_matter_power if linear_pk else jc.power.nonlinear_matter_power
+    pk_fn = lin_power_interp(cosmo)
+    growth2 = a2g(cosmo, a) ** 2
 
     def per_ell(ell_val, held):
         kern = w_map - (held[:, None] * q).sum(0)
-        k = (ell_val + 0.5) / chi_j
-        pk = jax.vmap(lambda ki, ai: jnp.squeeze(power(cosmo, ki, ai)))(k, a)
+        pk = pk_fn((ell_val + 0.5) / chi_j) * growth2
         return jax.scipy.integrate.trapezoid(kern**2 / chi_j**2 * pk, x=chi_j)
 
     held = (np.ones((q.shape[0], ell_idx.size)) if taper is None
@@ -786,7 +786,9 @@ def compute_cl_outside_model(
 def _outside_kernel(cosmo, r_shells, a_shells, d_r, shell_weights, z_source, chi_max, n_per_shell,
                     n_beyond):
     """Distances ``chi``, scale factors, map kernel ``W(chi)`` and shell kernels ``q_s(chi)`` of
-    ``compute_cl_outside_model``."""
+    ``compute_cl_outside_model``, on the background the projector uses (``nbody.a2chi``)."""
+    from desi_cmb_fli.nbody import a2chi, chi2a
+
     r = np.asarray(r_shells, dtype=float)
     h = np.broadcast_to(np.asarray(d_r, dtype=float), r.shape)
     chi_in, p = shell_profiles(r, h, shell_weights, n_per_shell)
@@ -797,10 +799,10 @@ def _outside_kernel(cosmo, r_shells, a_shells, d_r, shell_weights, z_source, chi
     t = np.linspace(0.0, 1.0, n_beyond)[1:]
     chi_j = jnp.concatenate([jnp.asarray(chi_in), chi_in[-1] + jnp.maximum(chi_max - chi_in[-1], 0.0) * t])
     p = np.concatenate([p, np.zeros((r.size, t.size))], axis=1)
-    chi_s = jc.background.radial_comoving_distance(cosmo, 1.0 / (1.0 + z_source))[0]
+    chi_s = a2chi(cosmo, jnp.asarray(1.0 / (1.0 + z_source)))
     w = lensing_kernel(cosmo, jnp.asarray(r), jnp.asarray(a_shells), chi_s)
     q = (jnp.asarray(h) * w)[:, None] * jnp.asarray(p) * chi_j**2 / jnp.asarray(vol)[:, None]
-    a = jc.background.a_of_chi(cosmo, chi_j)
+    a = chi2a(cosmo, chi_j)
     return chi_j, a, lensing_kernel(cosmo, chi_j, a, chi_s), q
 
 
@@ -814,15 +816,16 @@ def limber_ratio_outside_model(
     The k grid resolves the radial extent of the kernel; 1 at ell < 2."""
     from scipy.special import spherical_jn
 
+    from desi_cmb_fli.bricks import lin_power_interp
     from desi_cmb_fli.nbody import a2g
 
     ell_idx = np.asarray(ell).astype(int)
-    k_tab = np.geomspace(1e-6, 10.0, 4000)
+    k_tab = np.geomspace(1e-4, 10.0, 4000)  # the support of lin_power_interp
 
-    def tables(c):  # jitted, as the rest of the code calls jax_cosmo (its host cache keys on it)
+    def tables(c):
         chi, a, w_map, q = _outside_kernel(c, r_shells, a_shells, d_r, shell_weights, z_source,
                                            chi_max, n_per_shell, n_beyond)
-        return chi, a, w_map, q, a2g(c, a), jc.power.linear_matter_power(c, jnp.asarray(k_tab))
+        return chi, a, w_map, q, a2g(c, a), lin_power_interp(c)(jnp.asarray(k_tab))
 
     chi, a, w_map, q, growth, p_tab = (np.asarray(x, dtype=float) for x in jax.jit(tables)(cosmo))
     k = np.linspace(0.0, k_max, int(np.ceil(4.0 * k_max * chi[-1] / np.pi)) + 1)[1:]
@@ -913,68 +916,31 @@ def compute_theoretical_cl_kg(
 # =========================================================================
 
 
-def compute_cl_out(
-    cosmo,
-    ell_1d,
-    chi_min,
-    chi_max,
-    z_source,
-    mode="fixed",
-    cosmo_fid=None,
-    cl_cached=None,
-    gradients=None,
-    loc_fid=None,
-    n_steps=100,
-    shells=None,
-    window2=None,
-):
-    """Out-of-model term C_ell^out of the kappa covariance: the matter the data map holds and the
-    model does not, up to ``chi_max`` (where the map's matter stops; the CMB if None). With ``shells``
-    (the keyword arguments of ``compute_cl_outside_model`` but ``cosmo``, ``ell`` and ``chi_max``)
-    it is everything the Born shells leave out: beyond the box, the end ramps of the tents and the
-    per-shell cut; without, the Limber power of ``[chi_min, chi_max]``. Times ``window2`` if given
-    (per multipole: the squared angular window with which that matter reaches the observable, the
-    projection sphere's ``bilinear_window``, times ``limber_ratio_outside_model``). ``cl_cached``
-    and ``gradients`` hold the windowed term.
+def compute_cl_out(cosmo, ell_1d, chi_max, shells, mode="exact", cl_cached=None, window2=None):
+    """Out-of-model term C_ell^out of the kappa covariance: everything the Born shells leave out of
+    the matter the data map holds up to ``chi_max`` (the CMB if None) -- beyond the box, the end
+    ramps of the tents and the per-shell cut (``compute_cl_outside_model``, whose keyword arguments
+    but ``cosmo``, ``ell`` and ``chi_max`` are ``shells``). Times ``window2`` if given (per
+    multipole: the squared angular window with which that matter reaches the observable, the
+    projection sphere's ``bilinear_window``, times ``limber_ratio_outside_model``).
 
     Modes:
-      'fixed'  : returns cached C_ell at fiducial cosmology.
-      'taylor' : first-order Taylor in (Omega_m, sigma_8).
-      'exact'  : dynamic Limber integral for current cosmo (nonlinear Pk).
-      'exact_linear' : dynamic Limber integral for current cosmo (linear Pk).
+      'exact' : recomputed at ``cosmo`` (linear, the model's spectrum and background).
+      'fixed' : ``cl_cached``, the windowed term at the fiducial cosmology.
     """
     if mode == "fixed":
         if cl_cached is None:
             raise ValueError("mode='fixed' requires cl_cached")
         return cl_cached
+    if mode != "exact":
+        raise ValueError(f"Unknown cl_out_mode '{mode}': 'fixed' or 'exact' ('taylor' and "
+                         "'exact_linear' were replaced by 'exact', docs/pipeline.md 3.2)")
+    from desi_cmb_fli.nbody import a2chi
 
-    elif mode == "taylor":
-        if cl_cached is None or gradients is None or loc_fid is None:
-            raise ValueError("mode='taylor' requires cl_cached, gradients, loc_fid")
-        Om_curr = cosmo.Omega_c + cosmo.Omega_b
-        s8_curr = cosmo.sigma8
-        dOm = Om_curr - loc_fid["Omega_m"]
-        ds8 = s8_curr - loc_fid["sigma8"]
-        cl = cl_cached + gradients["dCl_dOm"] * dOm + gradients["dCl_ds8"] * ds8
-        return jnp.maximum(cl, 1e-30)
-
-    elif mode in ("exact", "exact_linear"):
-        linear_pk = mode == "exact_linear"
-        chi_source = jc.background.radial_comoving_distance(cosmo, 1.0 / (1.0 + z_source))[0]
-        chi_max_eff = chi_source if chi_max is None else chi_max
-        if shells is not None:
-            cl = compute_cl_outside_model(cosmo, ell_1d, **shells, chi_max=chi_max_eff,
-                                          linear_pk=linear_pk)
-        else:
-            cl = compute_theoretical_cl_kappa(
-                cosmo, ell_1d, chi_min, chi_max_eff, z_source, n_steps=n_steps, linear_pk=linear_pk
-            )
-        if window2 is not None:
-            cl = cl * window2
-        return cl
-
-    else:
-        raise ValueError(f"Unknown mode '{mode}'. Must be 'fixed', 'taylor', 'exact', or 'exact_linear'")
+    if chi_max is None:
+        chi_max = a2chi(cosmo, jnp.asarray(1.0 / (1.0 + shells["z_source"])))
+    cl = compute_cl_outside_model(cosmo, ell_1d, **shells, chi_max=chi_max)
+    return cl if window2 is None else cl * window2
 
 
 # =========================================================================
