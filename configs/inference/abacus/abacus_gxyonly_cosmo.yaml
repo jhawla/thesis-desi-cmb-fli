@@ -22,6 +22,8 @@ model:
   lpt_order: 2
   precond: kaiser
   init_oversamp: 1.5
+  # Particle count N = evol_oversamp x final cells (even); check before a run (docs/pipeline.md 2.5):
+  #   galaxies: the galaxy profile at the true ICs (scripts/galaxy_likelihood_profile.py) has its minimum in A within 0.02 of 1 (docs/pipeline.md 7.16)
   evol_oversamp: 2.5
   ptcl_oversamp: 2.5
   paint_oversamp: 1.75

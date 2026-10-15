@@ -57,8 +57,9 @@ def parse_args():
     parser.add_argument("--output_dir", default=None)
     parser.add_argument("--show", action="store_true")
     parser.add_argument("--bias_run", default=None,
-                        help="Abacus mode: take the biases (posterior means, second half) of this "
-                             "run instead of truth_params, so the model is the fitted one")
+                        help="Abacus mode: take the biases and cosmology (posterior means, second "
+                             "half) of this run instead of truth_params, so the model is the fitted "
+                             "one (with the cosmology free the biases pair with the run's sigma8)")
     parser.add_argument("--set_bias", nargs="+", default=[], metavar="NAME=VALUE",
                         help="Abacus mode: override single biases after --bias_run, e.g. bn2=0 "
                              "bnpar=0, to see which one moves the model spectrum")
@@ -66,7 +67,7 @@ def parse_args():
 
 
 def posterior_bias_means(run_dir, model):
-    """Posterior means of the bias parameters of a run (second half of its chains)."""
+    """Posterior means of the bias and cosmology parameters of a run (second half of its chains)."""
     import sys
     from pathlib import Path as _P
 
@@ -74,7 +75,8 @@ def posterior_bias_means(run_dir, model):
     from analyze_run import load_and_process_run
 
     samples = load_and_process_run(run_dir, burn_in=0.5)["physical_samples"]
-    return {k: float(np.mean(samples[k])) for k in model.groups.get("bias", []) if k in samples}
+    names = model.groups.get("bias", []) + model.groups.get("cosmo", [])
+    return {k: float(np.mean(samples[k])) for k in names if k in samples}
 
 
 def pk_theory_nonlinear(cosmo, k_hmpc, a):
@@ -365,8 +367,9 @@ def _main_abacus(args, cfg_dict, output_dir):
     cond_params = conditioning_params(
         model, truth_params, cfg_dict.get("abacus_truth_params", {}), bias_from_run
     )
-    print("  Biases used by the model: "
-          f"{ {k: round(float(cond_params[k]), 4) for k in model.groups.get('bias', [])} }"
+    used = model.groups.get("bias", []) + model.groups.get("cosmo", [])
+    print("  Biases and cosmology used by the model: "
+          f"{ {k: round(float(cond_params[k]), 4) for k in used} }"
           + (f" (posterior means of {args.bias_run})" if args.bias_run else " (config truth_params)"))
 
     all_pk_model = []
@@ -396,7 +399,8 @@ def _main_abacus(args, cfg_dict, output_dir):
     corner = k_arr >= k_nyq
 
     print("\n" + "=" * 78)
-    print("Galaxy P(k) COMPARISON: Abacus vs Model (config cosmology)")
+    print("Galaxy P(k) COMPARISON: Abacus vs Model "
+          + ("(run posterior means)" if args.bias_run else "(config truth)"))
     print("=" * 78)
     print(f"  {'k [h/Mpc]':>10s}  {'P_Abacus':>12s}  {'P_Model':>12s}  {'ratio':>8s}")
     for i in range(len(k_arr)):
@@ -427,7 +431,8 @@ def _main_abacus(args, cfg_dict, output_dir):
     ax_pk.fill_between(k_arr, pk_model_mean - pk_model_std, pk_model_mean + pk_model_std,
                        color="steelblue", alpha=0.25)
     ax_pk.loglog(k_arr, pk_model_mean, "s-", color="steelblue", lw=2, ms=3,
-                 label=f"Model ({n_real} real.), config cosmology")
+                 label=f"Model ({n_real} real.), "
+                 + ("run posterior means" if args.bias_run else "config truth"))
 
     ax_pk.axvline(k_nyq, color="red", lw=1, ls=":", alpha=0.6,
                   label=f"$k_{{Nyq}}={k_nyq:.3f}$")
@@ -436,8 +441,8 @@ def _main_abacus(args, cfg_dict, output_dir):
     ax_pk.axvspan(k_nyq, np.sqrt(3) * k_nyq, color="red", alpha=0.07,
                   label="corner modes")
 
-    Omega_m = truth_params.get("Omega_m", "?")
-    sigma8  = truth_params.get("sigma8", "?")
+    Omega_m = f"{float(cond_params['Omega_m']):.4g}"
+    sigma8  = f"{float(cond_params['sigma8']):.4g}"
     mesh_shape = tuple(int(x) for x in model.mesh_shape)
     title = (f"3D Galaxy $P_{{gg}}(k)$ — Abacus vs Model\n"
              f"Mesh {mesh_shape}, Box {tuple(int(b) for b in model.box_shape)} Mpc/h, "

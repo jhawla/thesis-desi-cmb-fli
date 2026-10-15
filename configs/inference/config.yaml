@@ -26,6 +26,9 @@ model:
   lpt_order: 2
   precond: kaiser  # kaiser or kaiser_dyn
   init_oversamp: 1.5   # inferred linear field grid; enlarges the inferred field
+  # Particle count N = evol_oversamp x final cells (even); check before a run (docs/pipeline.md 2.5):
+  #   galaxies: the galaxy profile at the true ICs (scripts/galaxy_likelihood_profile.py) has its minimum in A within 0.02 of 1 (docs/pipeline.md 7.16)
+  #   CMB lensing: box / N <= 25 Mpc/h (the model warns otherwise).
   evol_oversamp: 2.5  # LPT evolution + bias-product mesh; add_png runs here too
   ptcl_oversamp: 2.5  # particle cloud density
   paint_oversamp: 1.75  # CIC paint mesh
@@ -146,6 +149,7 @@ observation_mode: abacus
 
 closure_geometry_from_abacus: false # closure only : if true, the closure test uses the selection function defined by the Abacus galaxy randoms
 closure_gxy_density_scale: 1.0 # closure only : multiplies the catalog n_bar when closure_geometry_from_abacus is true; 1.0 reproduces the abacus-mode density
+closure_init_from_abacus_ic: false # closure only : if true, the closure's initial field is the abacus_ic below instead of a draw from seed (tells the sky from model error)
 
 # AbacusSummit c000 true cosmology (used as corner-plot markers in abacus mode)
 abacus_truth_params:

@@ -10,11 +10,11 @@ framework that jointly samples the posterior of the initial density field, galax
 parameters ($\Omega_m$, $\sigma_8$) and local primordial non-Gaussianity ($f_{\mathrm{NL}}$). Our differentiable forward model propagates initial conditions through Lagrangian Perturbation Theory (2LPT), applies a Lagrangian bias expansion, and
 computes the CMB lensing convergence along the line of sight via the Born approximation. The joint
 likelihood combines galaxy number counts with the convergence map observations, incorporating SO
-reconstruction noise and analytically accounting, as Gaussian variance, for the convergence the
-model does not generate (beyond the simulation volume and below its resolution). The high-dimensional posterior is explored efficiently with the MCLMC sampler, the joint problem converging as well as galaxies alone. On the AbacusSummit HUGE light cone (LRG mock and CMB-lensing map of the same simulation), with $\Omega_m$ and $\sigma_8$ free, the joint
-posterior is unbiased and CMB lensing shrinks the uncertainty on $\sigma_8$ by 69 % and on $\Omega_m$
-by 19 % relative to galaxies alone, in agreement with a Fisher forecast, by breaking the degeneracy
-between the galaxy bias and $\sigma_8$.
+reconstruction noise and analytically accounting, as a Gaussian variance that follows the cosmology, for
+the convergence the model does not generate (beyond the simulation volume and below its resolution). The high-dimensional posterior is explored efficiently with the MCLMC sampler, the joint problem converging as well as galaxies alone. On the AbacusSummit HUGE light cone (LRG mock and CMB-lensing map of the same simulation), with $\Omega_m$ and $\sigma_8$ free, the joint
+posterior is consistent with the truth and CMB lensing shrinks the uncertainty on $\sigma_8$ by 79 % and
+on $\Omega_m$ by 19 % relative to galaxies alone, in agreement with a Fisher forecast, by breaking the
+degeneracy between the galaxy bias and $\sigma_8$.
 
 ## Code Attribution
 

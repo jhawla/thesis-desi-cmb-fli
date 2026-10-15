@@ -193,7 +193,7 @@ def plot_spectra(results, lmax, config_name, cell_size, fig=None):
     axes[2].set(
         yscale="log",
         ylabel=r"$C_\ell^{\rm err}/N_\ell$",
-        title="Error power over the ACT DR6 noise (dotted: LOS covariance)",
+        title="Error power over the noise N_l (dotted: LOS covariance)",
     )
     axes[2].axhline(1, color="k", lw=0.6)
     axes[3].set(

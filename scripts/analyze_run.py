@@ -433,6 +433,11 @@ def plot_initial_conditions(model, truth, samples, out_path, truth_cosmo=None,
     ax.plot(mid, corr_mean, color="C2", ls="--", label="correlation of the posterior mean")
     if chi_lo is not None:
         ax.axvspan(chi_lo, chi_hi, color="0.85", zorder=0, label="galaxy coverage")
+    if getattr(model, "cmb_enabled", False):
+        kappa_lo, kappa_hi = float(model.cmb_chi_matter_min), float(model.chi_boundary)
+        for x in (kappa_lo, kappa_hi):
+            ax.axvline(x, color="k", ls=":", lw=1.2,
+                       label=f"κ shells ({kappa_lo:.0f}–{kappa_hi:.0f})" if x == kappa_lo else None)
     ax.axhline(1.0, color="k", lw=0.8, alpha=0.5)
     ax.set_xlabel("distance from the observer [Mpc/h]")
     ax.set_ylim(-0.05, 1.6)

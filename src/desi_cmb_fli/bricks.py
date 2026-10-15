@@ -803,6 +803,28 @@ def paint_arbitrary(mesh, positions, weights=None, chunk_size=None):
 INTERLACE_ORDER = 2
 
 
+def lattice_aliases(ptcl, paint, final, interlace_order=INTERLACE_ORDER, m_max=3):
+    """Harmonics of a particle lattice that CIC painting aliases into the final grid (one axis).
+
+    Harmonic ``m`` of ``ptcl`` particles per side, folded by ``n`` paint periods, lands at index
+    ``a = m * ptcl - n * paint``; interlacing of order ``p`` cancels the folds with ``n`` not a
+    multiple of ``p``; the Fourier crop keeps ``|a| <= final / 2`` (the Nyquist plane included).
+    Returns the surviving ``(m, n, a)``: a deterministic lattice pattern in the unmasked painted field.
+    It does not decide the galaxy likelihood, whose selection multiplies the field before the crop
+    (docs/pipeline.md 2.5, 7.16).
+    """
+    out = []
+    for m in range(1, m_max + 1):
+        for n in range(0, m * ptcl // paint + 2):
+            a = m * ptcl - n * paint
+            if n % interlace_order == 0 and abs(a) <= final // 2:
+                out.append((m, n, a))
+    return out
+
+
+KAPPA_LATTICE_MAX_SPACING = 25.0  # Mpc/h: the particle spacing the κ lattice template is debiased at (§7.15)
+
+
 def interlace_accumulate(shifted, pos_paint, weights=None, chunk_size=None):
     """Add one batch of positions to the per-shift painted meshes.
 

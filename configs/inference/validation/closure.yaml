@@ -13,8 +13,8 @@ slurm:
 
 # Model configuration
 model:
-  cell_size: 93.75  # Mpc/h
-  box_shape: [7500.0, 7500.0, 7500.0]  # Mpc/h
+  cell_size: 92.5925925925926  # 5000 / 54, the paper configuration (abacus_joint_so_cosmo_box5000.yaml)
+  box_shape: [5000.0, 5000.0, 5000.0]  # Mpc/h
   galaxies_enabled: true  # Set to false for cmb-only runs
   gxy_stoch_noise: false  # false : s_e fixed to 1 (pure Poisson), true : s_e inferred
   gxy_ngbar_free: false  # Free per-z-shell mean density -> marginalise the integral constraint
@@ -26,8 +26,11 @@ model:
   lpt_order: 2
   precond: kaiser  # kaiser or kaiser_dyn
   init_oversamp: 1.5   # inferred linear field grid; enlarges the inferred field
-  evol_oversamp: 2.5  # LPT evolution + bias-product mesh; add_png runs here too
-  ptcl_oversamp: 2.5  # particle cloud density
+  # Particle count N = evol_oversamp x final cells (even); check before a run (docs/pipeline.md 2.5):
+  #   galaxies: the galaxy profile at the true ICs (scripts/galaxy_likelihood_profile.py) has its minimum in A within 0.02 of 1 (docs/pipeline.md 7.16)
+  #   CMB lensing: box / N <= 25 Mpc/h (the model warns otherwise).
+  evol_oversamp: 3.7037037037037037  # 200^3 particles (lattice template, pipeline 7.15); add_png runs here too
+  ptcl_oversamp: 3.7037037037037037  # particle cloud density
   paint_oversamp: 1.75  # CIC paint mesh
   gxy_density: 8.43318125e-4 # used only in closure mode; overwritten by load_abacus_galaxy_observation in abacus mode
   # los: null  # Disable RSD (comment out to enable RSD)
@@ -45,7 +48,7 @@ cmb_lensing:
   cmb_noise_nell: /global/homes/j/jhawla/thesis-desi-cmb-fli/data/N_L_kk_so_v3_1_1_baseline_mv.txt  # Simons Observatory baseline (pipeline 3.2)
   cmb_noise_scaling: 1.0  # multiplies N_l, to test the sensitivity to the noise level
   full_los_correction: true
-  cl_out_mode: fixed # exact (follows the cosmology) or fixed (at the fiducial; pixel_exact)
+  cl_out_mode: exact # exact (follows the cosmology) or fixed (at the fiducial; pixel_exact)
   likelihood_mode: diagonal # diagonal (fast; exact on full sky; over-confident on cut sky) | pixel_exact (exact cut-sky via signal-eigenmode/KL: diagonalises the observed-pixel covariance once, keeps the supported Slepian subspace; full mask coupling kept exactly; requires fixed cosmo + cl_out_mode=fixed)
   kl_rcond: 1e-2  # pixel_exact: keep eigenmodes with lambda > kl_rcond*lambda_max (default 1e-6; lower=more complete but more fragile in float32)
   chi_high_z_max: 3750  # where the map's matter stops (Mpc/h); unset = the CMB (real data). AbacusSummit HUGE: 3750, the half box (full-sky light cone to z = 2.18)

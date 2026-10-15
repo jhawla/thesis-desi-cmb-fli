@@ -203,8 +203,12 @@ else:
                 f"gxy_count = {model.gxy_count:.6g} (catalog n̄ x {dscale})"
             )
 
+        closure_samples = dict(truth_params)
+        if cfg.get("closure_init_from_abacus_ic", False):
+            closure_samples["init_mesh"] = load_abacus_ic_truth(cfg["abacus_ic"], model)["init_mesh"]
+            print("[Closure test] initial field: the Abacus ICs (closure_init_from_abacus_ic)")
         truth = model.predict(
-            samples=truth_params,
+            samples=closure_samples,
             hide_base=False,
             hide_samp=False,
             hide_det=False,

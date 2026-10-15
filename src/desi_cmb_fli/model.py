@@ -1,5 +1,6 @@
 from __future__ import annotations  # for Union typing with | in python<3.10
 
+import warnings
 from dataclasses import asdict, dataclass, field
 from functools import partial
 from pathlib import Path
@@ -20,6 +21,7 @@ from numpyro.infer.util import log_density
 from desi_cmb_fli.bricks import (
     ACE_OMEGA_M_RANGE,
     INTERLACE_ORDER,
+    KAPPA_LATTICE_MAX_SPACING,
     add_png,
     band_limit,
     fNL_bias,
@@ -32,6 +34,7 @@ from desi_cmb_fli.bricks import (
     kaiser_posterior,
     lagrangian_fog_velocity,
     lagrangian_weights,
+    lattice_aliases,
     lin_power_mesh,
     regular_pos,
     rsd,
@@ -767,6 +770,17 @@ class FieldLevelModel(Model):
                (self.init_shape[0], self.evol_shape[0], self.ptcl_shape[0], self.paint_shape[0])):
             print(f"  Oversampling: init={tuple(self.init_shape)} evol={tuple(self.evol_shape)} "
                   f"ptcl={tuple(self.ptcl_shape)} paint={tuple(self.paint_shape)} (final={tuple(self.sim_mesh_shape)})")
+        if self.galaxies_enabled:
+            self._check_lattice_aliases()
+        spacing = float(np.max(np.asarray(self.box_shape, dtype=float) / self.ptcl_shape))
+        if self.cmb_enabled and spacing > KAPPA_LATTICE_MAX_SPACING:
+            warnings.warn(
+                f"Particle spacing {spacing:.1f} Mpc/h above {KAPPA_LATTICE_MAX_SPACING} Mpc/h: the "
+                "particle lattice leaves a κ template the field level reads (docs/pipeline.md 2.6, "
+                f"7.15); use at least {int(np.ceil(np.max(self.box_shape) / KAPPA_LATTICE_MAX_SPACING))} "
+                "particles per side (even).",
+                stacklevel=2,
+            )
 
         if self.los is not None:
             self.los = np.asarray(self.los)
@@ -1276,6 +1290,26 @@ class FieldLevelModel(Model):
         delta = jnp.asarray(obs) / jnp.maximum(nbar, 1e-10) - 1.0
         mask = getattr(self, "gxy_occ_mask3d", None)
         return delta if mask is None else jnp.where(jnp.asarray(mask), delta, 0.0)
+
+    def _check_lattice_aliases(self):
+        """Report the lattice harmonics that land in the unmasked painted band.
+
+        The galaxy paint (``paint_and_deconv``) interlaces unless the paint, final and evolution grids
+        coincide; ``lattice_aliases`` gives the harmonics that survive (docs/pipeline.md 2.5). They
+        do not decide the galaxy likelihood, where the selection multiplies the field before the crop:
+        the galaxy profile at the true ICs does (``scripts/galaxy_likelihood_profile.py``, §7.16).
+        """
+        plain = (np.array_equal(self.paint_shape, self.sim_mesh_shape)
+                 and np.array_equal(self.evol_shape, self.sim_mesh_shape))
+        order = 1 if plain else INTERLACE_ORDER
+        axes = {(int(p), int(q), int(f)) for p, q, f in
+                zip(self.ptcl_shape, self.paint_shape, self.sim_mesh_shape, strict=True)}
+        for ptcl, paint, final in sorted(axes):
+            hits = lattice_aliases(ptcl, paint, final, order)
+            if hits:
+                print(f"  Lattice harmonics in the unmasked band ({ptcl} particles, paint {paint}, "
+                      f"final {final}; harmonic m, fold n, index): {hits}. Validate the particle "
+                      "count with scripts/galaxy_likelihood_profile.py (docs/pipeline.md 2.5, 7.16).")
 
     def paint_and_deconv(self, pos, weights=None, from_shape=None, crop=True):
         """CIC paint + interlace + deconvolve, with optional oversampled Fourier crop.
