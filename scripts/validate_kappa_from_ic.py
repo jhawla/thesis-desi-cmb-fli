@@ -55,6 +55,7 @@ from desi_cmb_fli.cmb_lensing import (  # noqa: E402
     load_abacus_kappa_observation,
 )
 from desi_cmb_fli.model import get_model_from_config  # noqa: E402
+from desi_cmb_fli.utils import get_scaled_shape  # noqa: E402
 from desi_cmb_fli.validation import conditioning_params  # noqa: E402
 
 BIN_EDGES = [2, 12, 24, 36, 48, 56]
@@ -121,7 +122,19 @@ def polar_report(t, m, label):
     print(f"    Abacus map rms {t.std():.4f}")
 
 
-def plot_polar_maps(t, m, lmax, kmax, cell, fig_path, half_width_deg=25.0):
+def grid_label(cfg, cell_size=None):
+    """Box, particles and cell of a config as the model builds them: a title label and a file tag."""
+    model_cfg = cfg["model"]
+    box = float(model_cfg["box_shape"][0])
+    cell = float(cell_size or model_cfg["cell_size"])
+    mesh = int(round(box / cell))
+    mesh += mesh % 2
+    ptcl = int(get_scaled_shape((mesh,), float(model_cfg.get("ptcl_oversamp", 1.0)))[0])
+    return (f"box {box:g} Mpc/h, {ptcl}³ particles, cell {box / mesh:.2f} Mpc/h",
+            f"box{box:g}_ptcl{ptcl}")
+
+
+def plot_polar_maps(t, m, lmax, kmax, grid, fig_path, half_width_deg=25.0):
     """Abacus, model and model − Abacus around both poles, at full pixel resolution and at ℓ ≤ lmax."""
     rows = [("full resolution", t, m), (f"ℓ ≤ {lmax}", band_limit(t, lmax), band_limit(m, lmax))]
     vmax = 3 * float(np.std(t))
@@ -153,7 +166,7 @@ def plot_polar_maps(t, m, lmax, kmax, cell, fig_path, half_width_deg=25.0):
                 )
     fig.suptitle(
         f"κ around the poles (±{half_width_deg:g}°, gnomonic, pole at the centre), "
-        f"shell_kmax {kmax:.4g}, cell {cell} Mpc/h; colour range ±3 × the Abacus map rms",
+        f"shell_kmax {kmax:.4g}, {grid}; colour range ±3 × the Abacus map rms",
         fontsize=12,
         y=1.02,
     )
@@ -162,7 +175,7 @@ def plot_polar_maps(t, m, lmax, kmax, cell, fig_path, half_width_deg=25.0):
     print(f"  Saved {fig_path}")
 
 
-def plot_spectra(results, lmax, config_name, cell_size, fig=None):
+def plot_spectra(results, lmax, config_name, grid, tag, fig=None):
     """Spectra, coherence and error power per shell_kmax; dotted: what a model exact on the matter it
     holds would give, since the Abacus map also holds the line of sight the model does not."""
     fine = np.arange(2, lmax + 2, 4)
@@ -207,17 +220,16 @@ def plot_spectra(results, lmax, config_name, cell_size, fig=None):
         ax.legend(fontsize=8)
     fig_.suptitle(
         f"κ from the AbacusSummit HUGE ICs through the forward model vs AbacusLensing — "
-        f"{config_name}, cell {cell_size:.2f} Mpc/h",
+        f"{config_name}, {grid}",
         fontsize=11,
     )
     fig_.tight_layout()
-    cell = f"{cell_size:g}".replace(".", "p")
     fig_path = Path(
         fig
         or Path(__file__).resolve().parents[1]
         / "figures"
         / "spectra_diagnostic"
-        / f"kappa_from_abacus_ic_cell{cell}.png"
+        / f"kappa_from_abacus_ic_{tag}.png"
     )
     fig_path.parent.mkdir(parents=True, exist_ok=True)
     fig_.savefig(fig_path, dpi=130)
@@ -276,8 +288,8 @@ def main():
             c: {k.split("_", 1)[0]: d[k] for k in d.files if k.endswith(f"_{c}")} for c in kmaxs
         }
         lmax = results[kmaxs[0]]["tt"].size - 1
-        cell = float(args.cell_size or cfg["model"]["cell_size"])
-        print(f"Saved {plot_spectra(results, lmax, Path(args.config).name, cell, args.fig)}")
+        grid, tag = grid_label(cfg, args.cell_size)
+        print(f"Saved {plot_spectra(results, lmax, Path(args.config).name, grid, tag, args.fig)}")
         return
     repo = Path(__file__).resolve().parents[1]
     cache = repo / "data" / "cache"  # git-ignored
@@ -308,12 +320,12 @@ def main():
         )
         m_map = np.asarray(pred["kappa_pred"], dtype=float)
         if args.maps and t_map.size == m_map.size:
-            cell = f"{float(model.cell_shape[0]):g}".replace(".", "p")
-            poles_fig = repo / "figures" / "maps" / f"kappa_from_abacus_ic_poles_cell{cell}_kmax{kmax:.4g}.png"
+            grid, tag = grid_label(cfg, args.cell_size)
+            poles_fig = repo / "figures" / "maps" / f"kappa_from_abacus_ic_poles_{tag}_kmax{kmax:.4g}.png"
             np.save(poles_fig.with_suffix(".npy"), m_map)  # the model map, next to its figure
             polar_report(t_map, m_map, "projection sphere")
             polar_report(band_limit(t_map, lmax), band_limit(m_map, lmax), f"ℓ ≤ {lmax}")
-            plot_polar_maps(t_map, m_map, lmax, kmax, cell, poles_fig)
+            plot_polar_maps(t_map, m_map, lmax, kmax, grid, poles_fig)
 
         mask_m = np.asarray(model.cmb_proj_mask, dtype=float)
         mask_t = mask_m if t_map.size == m_map.size else np.asarray(model.cmb_mask, dtype=float)
@@ -345,9 +357,8 @@ def main():
         print("  error / N_ell          ", np.round(b["err"] / b["nell"], 3))
         print("  LOS / N_ell            ", np.round(b["los"] / b["nell"], 3))
         print("  (error - LOS) / N_ell  ", np.round((b["err"] - b["los"]) / b["nell"], 3))
-    fig_path = plot_spectra(
-        results, lmax, Path(args.config).name, float(model.cell_shape[0]), args.fig
-    )
+    grid, tag = grid_label(cfg, args.cell_size)
+    fig_path = plot_spectra(results, lmax, Path(args.config).name, grid, tag, args.fig)
     # The spectra behind the figure, next to it; --replot redraws from them.
     npz_path = fig_path.with_suffix(".npz")
     np.savez(npz_path, **{f"{k}_{c}": v for c, cl in results.items() for k, v in cl.items()})
