@@ -1,0 +1,44 @@
+{
+ "grid": "/tmp/claude-109372/-global-u1-j-jhawla-thesis-desi-cmb-fli/6eb87b74-400d-4a3c-a58c-a2d9c245e74d/scratchpad/box5000_ptcl200_grid_SO.npz",
+ "box": 5000.0,
+ "particle_spacing": 25.0,
+ "fiducial_point": [
+  0.3152,
+  0.8114
+ ],
+ "S/N": {
+  "l<=64": 1.5417110579017324,
+  "l<=47": 0.8080845652228976
+ },
+ "template/undisplaced": 0.5237255935144453,
+ "projection": {
+  "/pscratch/sd/j/jhawla/outputs/run_20261014_024443_59769860": [
+   -0.08912726536664474,
+   0.5662425621589686
+  ]
+ },
+ "posterior": {
+  "/pscratch/sd/j/jhawla/outputs/run_20261014_024443_59769860": {
+   "with template": {
+    "Omega_m": [
+     0.32105245911052827,
+     0.028979202997638828
+    ],
+    "sigma8": [
+     0.7849868293233929,
+     0.02062115872598446
+    ]
+   },
+   "without template": {
+    "Omega_m": [
+     0.3263710761946437,
+     0.029251884690805714
+    ],
+    "sigma8": [
+     0.7893244348945933,
+     0.023192661721092155
+    ]
+   }
+  }
+ }
+}
