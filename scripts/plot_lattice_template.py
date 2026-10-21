@@ -122,7 +122,7 @@ def fig_contours(g, runs):
             "run": Path(run).name,
             "mcmc": {"Omega_m": [om.mean(), om.std()], "sigma8": [s8.mean(), s8.std()]},
         }
-        y = data_vector(run, g["u_half"])
+        y, _ = data_vector(run, g, 0)
         Om, S8 = np.meshgrid(omf, s8f, indexing="ij")
         for with_t, color, ls, key in (
             (True, ORANGE, "--", "with template"),

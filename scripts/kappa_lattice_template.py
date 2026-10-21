@@ -11,14 +11,20 @@ the field, in the packed a_ℓm of the likelihood divided by `cmb_u_half`.
     # another geometry: --box 5000 --mesh 54 --particles 200 (central cube, same cell)
     # S/N, projection of a run's data on it, and the Gaussian κ posterior with and without it
     python scripts/kappa_lattice_template.py analyse --grid 'data/cache/template/CFGSTEM_*.npz' \\
-        --data RUN_DIR [--data RUN_DIR2] --json figures/kappa_lattice_template/CFGSTEM.json
+        --data RUN_DIR RUN_DIR:noiseless --condition_om 0.3079 --json figures/kappa_lattice_template/CFGSTEM.json
 
 `measure` saves, per point, the pair means (n_pairs, n_u), the mean field power ⟨u²⟩, the κ of the
-undisplaced lattice (zero field) and the likelihood's N_ℓ and line-of-sight term. `analyse` reports
+undisplaced lattice (zero field), the likelihood's N_ℓ and its out-of-model term at that point's cosmology
+(as the run computes it, `cl_out_mode`). `analyse` reports
 S/N = (Σ T²/C)^½ with C = S_ℓ + N_ℓ + LOS_ℓ (estimation noise subtracted in quadrature), the ratio of T
 to the undisplaced lattice, the projection α = Σ yT/C / Σ T²/C of each data set, and, when the points
 form a grid, the posterior of −2 ln L = Σ (y − T)²/C + ln C (diagonal, the run's priors) with T as mean
-and without it.
+and without it. `RUN:noiseless` replaces the run's data by its noiseless map (`truth['kappa_pred']`)
+averaged over the noise draws, y² → m² + N_ℓ (+ the out-of-model term at the truth for a closure, whose
+data draw it too): the posterior the sky alone gives, without the run's noise realisation. With
+`--condition_om`, σ8 conditioned on each Omega_m given. `--noise_draws K` adds, per RUN:noiseless, K
+draws of that averaged variance on its noiseless map: the scatter of the posterior means the noise alone
+causes, its mean shift, and the fraction of draws at or below the run's own (RUN given in --data too).
 """
 
 import argparse
@@ -82,7 +88,22 @@ def measure(args):
             p["init_mesh"]
         )
 
-    points, pairs, power, zero = [], [], [], []
+    from desi_cmb_fli.bricks import get_cosmology
+    from desi_cmb_fli.cmb_lensing import compute_cl_out
+
+    def out_of_model(om, s8):
+        cl = compute_cl_out(
+            get_cosmology(Omega_m=om, sigma8=s8),
+            model.ell_1d,
+            model.chi_high_z_max,
+            model.cmb_shells,
+            mode=model.cl_out_mode,
+            cl_cached=model.cl_out_cached,
+            window2=model.cmb_los_window2 * model.cmb_los_limber,
+        )
+        return np.asarray(model.cmb_M_ll @ cl)[: lmax + 1]
+
+    points, pairs, power, zero, los = [], [], [], [], []
     for om in args.om:
         for s8 in args.s8:
             T, P = [], []
@@ -95,6 +116,7 @@ def measure(args):
             pairs.append(np.array(T, np.float32))
             power.append(np.mean(P, 0))
             zero.append(kappa(om, s8, init_mesh=np.zeros_like(z))[0])
+            los.append(out_of_model(om, s8))
             print(f"({om:.4f}, {s8:.4f}) done", flush=True)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     np.savez(
@@ -105,7 +127,7 @@ def measure(args):
         zero=np.array(zero),
         l_of_u=np.asarray(model.cmb_l_of_u),
         N=np.asarray(model.cmb_M_ll @ jnp.asarray(model.nell_1d))[: lmax + 1],
-        LOS=np.asarray(model.cmb_M_ll @ jnp.asarray(model.cl_out_cached))[: lmax + 1],
+        LOS=np.array(los),
         u_half=u_half,
         spacing=spacing,
         box=float(model.box_shape[0]),
@@ -118,13 +140,15 @@ def load_grid(pattern):
     if not files:
         raise FileNotFoundError(pattern)
     d0 = np.load(files[0])
-    pts, pairs, power, zero = [], [], [], []
+    pts, pairs, power, zero, los = [], [], [], [], []
     for f in files:
         d = np.load(f)
         pts += [tuple(np.round(p, 6)) for p in d["points"]]
         pairs += list(d["pairs"])
         power += list(d["power"])
         zero += list(d["zero"])
+        # one term per point; files before it was recomputed per point hold the fiducial one
+        los += list(d["LOS"]) if d["LOS"].ndim == 2 else [d["LOS"]] * len(d["points"])
     return {
         "points": pts,
         "pairs": pairs,
@@ -132,7 +156,7 @@ def load_grid(pattern):
         "zero": zero,
         "l": d0["l_of_u"],
         "N": d0["N"],
-        "LOS": d0["LOS"],
+        "LOS": los,
         "u_half": d0["u_half"],
         "spacing": float(d0["spacing"]),
         "box": float(d0["box"]),
@@ -146,12 +170,24 @@ def covariance(g, i):
     T = g["pairs"][i].mean(0)
     S = np.array([g["power"][i][ell_u == e].mean() - (T[ell_u == e] ** 2).mean() for e in ells])
     S = np.exp(np.polyval(np.polyfit(np.log(ells), np.log(S), 6), np.log(ells)))
-    return np.concatenate([[np.inf, np.inf], S + (g["N"] + g["LOS"])[2:]])[ell_u]
+    return np.concatenate([[np.inf, np.inf], S + (g["N"] + g["LOS"][i])[2:]])[ell_u]
 
 
-def data_vector(run_dir, u_half):
-    t = np.load(Path(run_dir) / "config" / "truth.npz")
-    return np.asarray(t["kappa_obs_packed"]) / u_half
+def data_vector(spec, g, fid):
+    """(y, extra): the run's data, or for RUN:noiseless its noiseless map and the variance it lacks."""
+    run, _, kind = spec.partition(":")
+    t = np.load(Path(run) / "config" / "truth.npz")
+    if kind != "noiseless":
+        return np.asarray(t["kappa_obs_packed"]) / g["u_half"], 0.0
+    import jax
+
+    jax.config.update("jax_enable_x64", True)  # the run's precision: its truth maps are float64
+    import jax.numpy as jnp
+
+    model, cfg = build_model(Path(run) / "config" / "config.yaml")
+    y = np.asarray(model.pack_kappa_map(jnp.asarray(t["kappa_pred"]))) / g["u_half"]
+    lacks = g["N"] + (g["LOS"][fid] if cfg.get("observation_mode") == "closure" else 0.0)
+    return y, lacks[g["l"]]
 
 
 def analyse(args):
@@ -183,8 +219,8 @@ def analyse(args):
     )
     F = np.sum(T[sel] ** 2 / C[sel])
     out["projection"] = {}
-    for run in args.data or []:
-        y = data_vector(run, g["u_half"])
+    data = {run: data_vector(run, g, fid) for run in args.data or []}
+    for run, (y, _) in data.items():
         out["projection"][run] = [float(np.sum(y[sel] * T[sel] / C[sel]) / F), float(F**-0.5)]
     print(json.dumps({k: v for k, v in out.items() if k != "grid"}, indent=1))
 
@@ -200,36 +236,75 @@ def analyse(args):
         )
         Om, S8 = np.meshgrid(omf, s8f, indexing="ij")
         lp = ((Om - OM_FID) / args.prior_scale) ** 2 + ((S8 - S8_FID) / args.prior_scale) ** 2
+
+        def posterior(y, extra, with_t):
+            L = np.array(
+                [
+                    [
+                        np.sum(
+                            (((y - Ts[(o, s)]) if with_t else y) ** 2 + extra)[sel]
+                            / Cs[(o, s)][sel]
+                            + np.log(Cs[(o, s)][sel])
+                        )
+                        for s in s8_g
+                    ]
+                    for o in om_g
+                ]
+            )
+            M = RectBivariateSpline(om_g, s8_g, L)(omf, s8f) + lp
+            w = np.exp(-0.5 * (M - M.min()))
+            w /= w.sum()
+            mo, ms = float((w * Om).sum()), float((w * S8).sum())
+            res = {
+                "Omega_m": [mo, float(np.sqrt((w * (Om - mo) ** 2).sum()))],
+                "sigma8": [ms, float(np.sqrt((w * (S8 - ms) ** 2).sum()))],
+            }
+            for om0 in args.condition_om or []:
+                wc = np.exp(-0.5 * (M[np.argmin(abs(omf - om0))] - M.min()))
+                wc /= wc.sum()
+                mc = float((wc * s8f).sum())
+                res[f"sigma8 | Omega_m={om0}"] = [mc, float(np.sqrt((wc * (s8f - mc) ** 2).sum()))]
+            return res
+
         out["posterior"] = {}
-        for run in args.data:
-            y = data_vector(run, g["u_half"])
+        for run, (y, extra) in data.items():
             out["posterior"][run] = {}
             for with_t in (True, False):
-                L = np.array(
-                    [
-                        [
-                            np.sum(
-                                ((y - Ts[(o, s)]) if with_t else y)[sel] ** 2 / Cs[(o, s)][sel]
-                                + np.log(Cs[(o, s)][sel])
-                            )
-                            for s in s8_g
-                        ]
-                        for o in om_g
-                    ]
-                )
-                M = RectBivariateSpline(om_g, s8_g, L)(omf, s8f) + lp
-                w = np.exp(-0.5 * (M - M.min()))
-                w /= w.sum()
-                mo, ms = float((w * Om).sum()), float((w * S8).sum())
                 key = "with template" if with_t else "without template"
-                out["posterior"][run][key] = {
-                    "Omega_m": [mo, float(np.sqrt((w * (Om - mo) ** 2).sum()))],
-                    "sigma8": [ms, float(np.sqrt((w * (S8 - ms) ** 2).sum()))],
-                }
+                out["posterior"][run][key] = posterior(y, extra, with_t)
                 print(
-                    f"{Path(run).name} {key:16s}: Omega_m {mo:.3f} ± {out['posterior'][run][key]['Omega_m'][1]:.3f}, "
-                    f"sigma8 {ms:.3f} ± {out['posterior'][run][key]['sigma8'][1]:.3f}"
+                    f"{Path(run).name} {key:16s}: "
+                    + ", ".join(
+                        f"{n} {v[0]:.3f} ± {v[1]:.3f}"
+                        for n, v in out["posterior"][run][key].items()
+                    )
                 )
+        rng = np.random.default_rng(args.draw_seed)
+        for run, (y0, lacks) in data.items():
+            if not run.endswith(":noiseless") or not args.noise_draws:
+                continue
+            draws = [
+                posterior(y0 + np.sqrt(lacks) * rng.standard_normal(y0.shape), 0.0, True)
+                for _ in range(args.noise_draws)
+            ]
+            stats = {}
+            for name in draws[0]:
+                v = np.array([d[name][0] for d in draws])
+                stats[name] = {"mean": float(v.mean()), "std": float(v.std(ddof=1))}
+                own = out["posterior"].get(run.rpartition(":")[0], {}).get("with template")
+                if own is not None:
+                    stats[name]["run"] = own[name][0]
+                    stats[name]["fraction below run"] = float(np.mean(v <= own[name][0]))
+                print(
+                    f"{Path(run).name} {args.noise_draws} draws, {name}: "
+                    + ", ".join(f"{k} {x:.4f}" for k, x in stats[name].items())
+                )
+                stats[name]["values"] = [round(float(x), 5) for x in v]
+            out.setdefault("noise_draws", {})[run] = {
+                "n": args.noise_draws,
+                "seed": args.draw_seed,
+                "stats": stats,
+            }
     if args.json:
         Path(args.json).parent.mkdir(parents=True, exist_ok=True)
         Path(args.json).write_text(json.dumps(out, indent=1) + "\n")
@@ -256,9 +331,19 @@ def main():
     )
     a.add_argument("--grid", required=True, help="glob of measure outputs")
     a.add_argument(
-        "--data", nargs="*", help="run directories whose truth.npz holds kappa_obs_packed"
+        "--data",
+        nargs="*",
+        help="run directories (truth.npz kappa_obs_packed), or RUN:noiseless for its noiseless map",
     )
+    a.add_argument("--condition_om", type=float, nargs="*", help="report sigma8 | these Omega_m")
     a.add_argument("--prior_scale", type=float, default=0.15, help="Gaussian prior width on both")
+    a.add_argument(
+        "--noise_draws",
+        type=int,
+        default=0,
+        help="per RUN:noiseless, the posterior (with T) on this many draws of the variance it averages",
+    )
+    a.add_argument("--draw_seed", type=int, default=0)
     a.add_argument("--json", default=None)
     args = ap.parse_args()
     {"measure": measure, "analyse": analyse}[args.cmd](args)

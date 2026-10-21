@@ -88,6 +88,22 @@ python -c "import jax; print(jax.devices())"  # Should show [CudaDevice(id=0), .
 python scripts/run_inference.py --config configs/inference/config.yaml
 ```
 
+### Long batch job (warm-up beyond 4 h)
+
+The warm-up of `run_inference.py` (mesh, then all parameters) runs in one go and is not checkpointed;
+when it does not fit an interactive allocation (the mesh-160 runs), submit the run to the `regular`
+QOS (`gpu_regular`, at most 48 h) with `run.sbatch`, which takes the config path:
+
+```bash
+sbatch --job-name=<name> --account=desi --qos=regular --constraint="gpu&hbm80g" --nodes=1 --gpus=4 \
+  --time=36:00:00 --output=logs/%x-%j.out configs/inference/run.sbatch configs/inference/<config>.yaml
+```
+
+The sampler state is saved right after the warm-up (`sampler_state.pkl`), so the batches can then be
+continued in an interactive allocation or another job with `run_inference.py --resume <run_dir>`.
+`submit.py` does not fit this use: it reads only `configs/inference/config.yaml` and passes `--gpus`
+only when the constraint is exactly `gpu`.
+
 ## Storage
 
 - **DESI DR1 catalogs**: `/global/cfs/cdirs/desi/public/dr1/survey/catalogs/dr1/LSS/iron/LSScats/v1.5`

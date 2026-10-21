@@ -642,24 +642,34 @@ def plot_kappa_maps(model, truth, positions, out_path, fixed=None, truth_has_los
     ax.set_title("Power budget", fontsize=11)
 
     ax = fig.add_subplot(2, 3, 5)
-    if assumed is not None and binned(out).min() > 0:
-        ax.plot(ell_bin, binned(cl_bias) / binned(out), color="C3", lw=2,
-                label=r"truth − posterior mean, over $C_\ell^{\rm out}$")
-        ax.plot(ell_bin, binned(cl_var) / binned(noise), color="C0", lw=2,
-                label=r"posterior variance, over $N_\ell$")
-        if exp_bias is not None:
-            ax.plot(ell_bin, binned(exp_bias) / binned(out), color="C3", ls=":", lw=2,
-                    label="expected (linear Gaussian, κ alone)")
-            ax.plot(ell_bin, binned(exp_var) / binned(noise), color="C0", ls=":", lw=2,
-                    label="expected (linear Gaussian, κ alone)")
-        ax.axhline(1.0, color="k", lw=0.8)
-        ax.legend(fontsize=8, loc="upper right")
-    ax.set_ylim(0, 2)
+    width = np.diff(edges)
+    ax.plot(ell_bin, binned(cl_bias) / width, color="C3", lw=2,
+            label=r"$C_\ell^{\rm truth - post\,mean}$")
+    ax.plot(ell_bin, binned(cl_var) / width, color="C0", lw=2,
+            label=r"$C_\ell^{\rm post\,var}$ (sample − post mean, averaged)")
+    if exp_bias is not None:
+        if truth_has_los:
+            w_def = (r"$W_\ell = (C_\ell^{\rm truth} - C_\ell^{\rm out})"
+                     r"/(C_\ell^{\rm truth} + N_\ell)$")
+            bias_def = r"$(1 - W_\ell)^2 C_\ell^{\rm truth} + W_\ell^2 N_\ell$"
+        else:
+            w_def = (r"$W_\ell = C_\ell^{\rm truth}"
+                     r"/(C_\ell^{\rm truth} + C_\ell^{\rm out} + N_\ell)$")
+            bias_def = (r"$(1 - W_\ell)^2 C_\ell^{\rm truth}"
+                        r" + W_\ell^2 (C_\ell^{\rm out} + N_\ell)$")
+        ax.plot(ell_bin, binned(exp_bias) / width, color="C3", ls=":", lw=2,
+                label="expected: " + bias_def)
+        ax.plot(ell_bin, binned(exp_var) / width, color="C0", ls=":", lw=2,
+                label=r"expected: $W_\ell (C_\ell^{\rm out} + N_\ell)$")
+        ax.plot([], [], " ", label="Wiener filter of κ alone, " + w_def)
+    ax.set_yscale("log")
+    lo, hi = ax.get_ylim()
+    ax.set_ylim(lo / 3, hi)          # room for the legend below the curves
+    ax.legend(fontsize=8, loc="lower left")
     ax.set_xlabel(r"$\ell$")
-    ax.set_ylabel("ratio")
+    ax.set_ylabel(r"$C_\ell$")
     ax.grid(alpha=0.3)
-    ax.set_title("Truth − mean against the out-of-model term, spread against the noise",
-                 fontsize=11)
+    ax.set_title("Error of the posterior mean and posterior spread", fontsize=11)
 
     ax = fig.add_subplot(2, 3, 6)
     band(ax, ell_bin, r_samples, "a posterior sample vs truth (median, 16-84 %)", color="C0")
@@ -706,8 +716,8 @@ def plot_kappa_maps(model, truth, positions, out_path, fixed=None, truth_has_los
     if assumed is not None:
         parts = [("truth - mean / C_out", cl_bias, out), ("posterior variance / N", cl_var, noise)]
         if exp_bias is not None:
-            parts[1:1] = [("expected (linear Gaussian, kappa alone)", exp_bias, out)]
-            parts.append(("expected (linear Gaussian, kappa alone)", exp_var, noise))
+            parts = [("truth - mean / expected", cl_bias, exp_bias),
+                     ("posterior variance / expected", cl_var, exp_var)]
         for name, num, den in parts:
             v = [num[(ell >= a) & (ell < b)].sum() / max(den[(ell >= a) & (ell < b)].sum(), 1e-30)
                  for a, b in bands]

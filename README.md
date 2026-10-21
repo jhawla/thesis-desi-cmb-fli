@@ -4,17 +4,21 @@ Thesis project targeting the **joint analysis of galaxy clustering and CMB lensi
 
 ## Abstract
 
-We present our work towards a field-level inference (FLI) pipeline for the joint analysis of DESI
-galaxy clustering and CMB lensing from Planck, ACT and Simons Observatory (SO). We demonstrate an end-to-end Bayesian
-framework that jointly samples the posterior of the initial density field, galaxy bias, cosmological
-parameters ($\Omega_m$, $\sigma_8$) and local primordial non-Gaussianity ($f_{\mathrm{NL}}$). Our differentiable forward model propagates initial conditions through Lagrangian Perturbation Theory (2LPT), applies a Lagrangian bias expansion, and
-computes the CMB lensing convergence along the line of sight via the Born approximation. The joint
-likelihood combines galaxy number counts with the convergence map observations, incorporating SO
-reconstruction noise and analytically accounting, as a Gaussian variance that follows the cosmology, for
-the convergence the model does not generate (beyond the simulation volume and below its resolution). The high-dimensional posterior is explored efficiently with the MCLMC sampler, the joint problem converging as well as galaxies alone. On the AbacusSummit HUGE light cone (LRG mock and CMB-lensing map of the same simulation), with $\Omega_m$ and $\sigma_8$ free, the joint
-posterior is consistent with the truth and CMB lensing shrinks the uncertainty on $\sigma_8$ by 79 % and
-on $\Omega_m$ by 19 % relative to galaxies alone, in agreement with a Fisher forecast, by breaking the
-degeneracy between the galaxy bias and $\sigma_8$.
+We present our work towards a field-level inference (FLI) pipeline for the joint analysis of galaxy
+clustering and CMB lensing. We demonstrate an end-to-end Bayesian framework that jointly samples the
+posterior of the initial density field, galaxy bias and cosmological parameters ($\Omega_m$,
+$\sigma_8$). Our differentiable forward model propagates initial conditions through Lagrangian
+Perturbation Theory (2LPT), applies a Lagrangian bias expansion, and computes the CMB lensing
+convergence along the line of sight via the Born approximation. The joint likelihood combines galaxy
+number counts with the convergence map, incorporating the lensing reconstruction noise and
+analytically accounting, as a Gaussian variance that follows the cosmology, for the convergence the
+model does not generate (beyond the simulation volume and below its resolution). The
+high-dimensional posterior is explored efficiently with gradient-based sampling. Validated externally on a high-resolution N-body simulation,
+with $\Omega_m$ and $\sigma_8$ free, the joint posterior is consistent with the truth, and CMB
+lensing tightens the cosmological constraints relative to galaxies alone by breaking the degeneracy
+between the galaxy bias and $\sigma_8$, as expected from standard analyses. This work is a step
+towards a field-level analysis of real data, combining DESI galaxies with CMB-lensing maps from
+Planck, ACT and the Simons Observatory.
 
 ## Code Attribution
 
@@ -45,15 +49,20 @@ Git hooks automatically format code on commit. CI runs tests on push.
 
 ## Pipeline Status
 
-**✅ Completed:** Initial conditions, gravitational evolution, galaxy bias (+ PNG / local f_NL) and
-RSD modeling, curved-sky Born CMB-lensing modeling, and field-level inference validated both on
-synthetic **closure** data and on **AbacusSummit** N-body data (galaxy-only, CMB-only, and joint
-galaxy × κ). The current headline configuration is the **joint analysis on the AbacusSummit huge box**
-(both probes), with cosmology fixed to focus the constraint on the primordial non-Gaussianity
-parameters.
+**✅ Completed:** Initial conditions, gravitational evolution, Lagrangian galaxy bias (with its
+redshift evolution) and RSD modeling, curved-sky Born CMB-lensing modeling with an analytic,
+cosmology-dependent term for the convergence beyond the modelled volume, and field-level inference
+validated both on synthetic **closure** data and on an external high-resolution N-body simulation
+(galaxies only, CMB lensing only, and joint). The current headline configuration is the **joint
+galaxy × CMB-lensing analysis with $\Omega_m$ and $\sigma_8$ free**, with Simons Observatory
+reconstruction noise. Local primordial non-Gaussianity ($f_{\mathrm{NL}}$) is implemented in the
+forward model and is work in progress.
 
 **🚧 Next Steps:**
-- Field-level inference on **real data** (DESI LRG × Planck/ACT κ-maps).
+- Comparison with a standard two-point analysis of the CMB-lensing map on the same data.
+- First paper (joint method, convergence, map and field reconstruction, $\Omega_m$–$\sigma_8$).
+- $f_{\mathrm{NL}}$ with the joint analysis; a larger simulation volume covering the full lensing depth.
+- Field-level inference on **real data** (DESI galaxies × Planck/ACT/SO CMB-lensing maps).
 
 See [`pipeline.md`](https://github.com/jhawla/thesis-desi-cmb-fli/blob/main/docs/pipeline.md) for detailed implementation roadmap.
 
