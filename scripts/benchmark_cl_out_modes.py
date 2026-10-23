@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 """The out-of-model term C_l^out under `cl_out_mode: fixed` against `exact`, over a grid of
 (Omega_m, sigma8), at the geometry of a run config (docs/pipeline.md 3.2); and, at the fiducial, what
-the linear spectrum of the term leaves out (halofit against linear, jax_cosmo, same kernel).
+the linear spectrum of the term leaves out (halofit against linear, jax_cosmo, same kernel), and
+what the model's fiducial halofit boost of the term misses at four points around the fiducial.
 
     python scripts/benchmark_cl_out_modes.py --config configs/inference/abacus/abacus_kappaonly_so_cosmo_box5000.yaml
 
@@ -33,7 +34,7 @@ from desi_cmb_fli.bricks import get_cosmology
 from desi_cmb_fli.cmb_lensing import compute_cl_out, lensing_kernel, shell_profiles
 from desi_cmb_fli.model import get_model_from_config
 
-BANDS = [(2, 4), (4, 6), (6, 11), (11, 20), (20, 36), (36, 65)]
+BANDS = [(2, 4), (4, 6), (6, 11), (11, 20), (20, 36), (36, 65), (65, 129), (129, 257)]
 
 
 def jax_cosmo_term(cosmo, ell, shells, chi_max, power, n_per_shell=40, n_beyond=200):
@@ -89,6 +90,7 @@ def main():
         window2=window2))
     fixed = np.asarray(model.cl_out_cached)
     sel = ell >= 2
+    bands = [(a, b) for a, b in BANDS if a <= ell.max()]
 
     def kl(c_exact, c_other):
         r = (noise + c_exact) / (noise + c_other)
@@ -96,7 +98,7 @@ def main():
 
     def band_err(c_exact, c_other):
         return float(max(abs(c_other[(ell >= a) & (ell < b)].sum() / c_exact[(ell >= a) & (ell < b)].sum() - 1)
-                         for a, b in BANDS))
+                         for a, b in bands))
 
     rows, curves, exacts = [], {}, []
     for om in args.omega_m:
@@ -111,19 +113,34 @@ def main():
             print(f"Omega_m {om:.3f} sigma8 {s8:.3f}: C_out/N {row['out_over_noise']:.2f}; "
                   f"fixed: band {row['fixed_band_err']:.3f}, KL {row['fixed_kl']:.3f} nats", flush=True)
 
-    # what the linear spectrum leaves out: halofit against linear at the fiducial
-    fid = get_cosmology(**{k: float(model.loc_fid[k]) for k in ("Omega_m", "sigma8")})
-    nl, lin = (jax_cosmo_term(fid, ell, model.cmb_shells, chi_max, pw) * np.asarray(window2)
-               for pw in (jc.power.nonlinear_matter_power, jc.power.linear_matter_power))
-    nonlinear = {"kl": kl(nl, lin), "max_rel": float(np.max(np.abs(lin[sel] / nl[sel] - 1)))}
+    # what the linear spectrum leaves out (halofit against linear at the fiducial), and what the
+    # model's fiducial halofit boost misses away from it (halofit against linear times that boost)
+    def terms(om, s8):
+        c = get_cosmology(Omega_m=om, sigma8=s8)
+        return [jax_cosmo_term(c, ell, model.cmb_shells, chi_max, pw) * np.asarray(window2)
+                for pw in (jc.power.nonlinear_matter_power, jc.power.linear_matter_power)]
+
+    om0, s80 = (float(model.loc_fid[k]) for k in ("Omega_m", "sigma8"))
+    nl, lin = terms(om0, s80)
+    boost = nl / lin
+    nonlinear = {"kl": kl(nl, lin), "max_rel": float(np.max(np.abs(lin[sel] / nl[sel] - 1))),
+                 "fiducial_boost_off_fiducial": []}
     print(f"fiducial, halofit against linear: KL {nonlinear['kl']:.4f} nats, "
           f"max |lin/halofit - 1| {nonlinear['max_rel']:.4f}")
+    for om, s8 in ((om0 - 0.035, s80 - 0.04), (om0 - 0.035, s80 + 0.04),
+                   (om0 + 0.035, s80 - 0.04), (om0 + 0.035, s80 + 0.04)):
+        nl_c, lin_c = terms(om, s8)
+        row = {"Omega_m": om, "sigma8": s8, "kl": kl(nl_c, lin_c * boost),
+               "max_rel": float(np.max(np.abs((lin_c * boost)[sel] / nl_c[sel] - 1)))}
+        nonlinear["fiducial_boost_off_fiducial"].append(row)
+        print(f"Omega_m {om:.3f} sigma8 {s8:.3f}: halofit against linear x fiducial boost: "
+              f"KL {row['kl']:.4f} nats, max rel {row['max_rel']:.4f}", flush=True)
 
     out = Path(args.out) if args.out else Path("figures/cl_out_modes") / Path(args.config).stem
     out.parent.mkdir(parents=True, exist_ok=True)
     out.with_suffix(".json").write_text(json.dumps(
         {"config": args.config, "fiducial": {k: float(model.loc_fid[k]) for k in ("Omega_m", "sigma8")},
-         "f_sky": f_sky, "bands": BANDS, "nonlinear_at_fiducial": nonlinear, "points": rows},
+         "f_sky": f_sky, "bands": bands, "nonlinear_at_fiducial": nonlinear, "points": rows},
         indent=1))
     np.savez(out.with_suffix(".npz"), ell=ell, noise=noise, fixed=fixed, exact=np.array(exacts),
              omega_m=np.repeat(args.omega_m, len(args.sigma8)),

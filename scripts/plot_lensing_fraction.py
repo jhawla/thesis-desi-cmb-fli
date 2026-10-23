@@ -33,7 +33,7 @@ import yaml
 
 from desi_cmb_fli import utils
 from desi_cmb_fli.bricks import get_cosmology
-from desi_cmb_fli.cmb_lensing import compute_theoretical_cl_kappa, lensing_kernel
+from desi_cmb_fli.cmb_lensing import compute_theoretical_cl_kappa, lensing_kernel, nonlinear_power
 from desi_cmb_fli.model import get_model_from_config
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,10 +44,11 @@ def limber_integrand(cosmo, ell, chi, chi_s):
     """(W^2 / chi^2) P_NL((l + 1/2)/chi, a(chi)), shape (n_ell, n_chi)."""
     a = jc.background.a_of_chi(cosmo, chi)
     w2 = (lensing_kernel(cosmo, chi, a, chi_s) / chi) ** 2
+    pk_fn = nonlinear_power(cosmo)
 
     def one(ell_val):
         k = (ell_val + 0.5) / chi
-        pk = jax.vmap(lambda ki, ai: jnp.squeeze(jc.power.nonlinear_matter_power(cosmo, ki, ai)))(k, a)
+        pk = jax.vmap(pk_fn)(k, a)
         return w2 * pk
 
     return np.asarray(jax.lax.map(one, jnp.asarray(ell, dtype=float)))

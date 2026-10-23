@@ -7,7 +7,8 @@ a simulation using the same config.yaml as run_inference.py.
 
 This allows fast visual verification of spectra without running full inference.
 Generates N realizations via model.predict(), accumulates the measured spectra,
-and produces one figure with mean ± std bands.
+and produces one figure with mean ± std bands. The binned spectra are saved next to the
+figure (same name, .npz); --replot redraws the figure from them with the current theory.
 
 Usage:
     python scripts/quick_cl_spectra.py --config configs/inference/config.yaml --cell_size 5.0 --n_realizations 20
@@ -29,6 +30,7 @@ if "--xla_gpu_enable_command_buffer=" not in os.environ.get("XLA_FLAGS", ""):
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 
 from desi_cmb_fli import utils
 from desi_cmb_fli.cmb_lensing import (
@@ -84,14 +86,44 @@ def parse_args():
         help="Show plot interactively"
     )
     parser.add_argument(
+        "--replot", action="store_true",
+        help="Redraw --fig from the spectra saved next to it (<fig>.npz) instead of measuring them"
+    )
+    parser.add_argument(
         "--no-smooth", action="store_true",
         help="Skip HEALPix alm cut in abacus mode (diagnostic only — exposes gnomview aliasing)"
     )
 
     return parser.parse_args()
 
+BINNED = ("cl_kk_pred_b", "cl_gg_b", "cl_kg_b")
+
+
+def save_spectra(path, spectra_list):
+    """The binned spectra of every realisation and what the theory needs (ell, galaxy kernel)."""
+    sp0 = spectra_list[0]
+    data = {"ell": sp0["ell"], "ell_b": sp0["ell_b"]}
+    for key in BINNED:
+        if sp0.get(key) is not None:
+            data[key] = np.array([sp[key] for sp in spectra_list])
+    if sp0.get("gxy_kernel") is not None:
+        data["gxy_kernel_r"], data["gxy_kernel_nz"] = sp0["gxy_kernel"]
+    np.savez(path, **data)
+    print(f"  ✓ Saved: {path}")
+
+
+def load_spectra(path):
+    d = np.load(path)
+    kernel = (d["gxy_kernel_r"], d["gxy_kernel_nz"]) if "gxy_kernel_r" in d else None
+    n = next(d[key].shape[0] for key in BINNED if key in d)
+    return [{"ell": d["ell"], "ell_b": d["ell_b"], "gxy_kernel": kernel,
+             **{key: d[key][i] for key in BINNED if key in d}} for i in range(n)]
+
+
 def main():
     args = parse_args()
+    if args.replot and args.fig is None:
+        raise ValueError("--replot needs --fig, the figure whose spectra (<fig>.npz) to redraw")
 
     print("=" * 80)
     print("QUICK C_l SPECTRA DIAGNOSTIC")
@@ -121,8 +153,12 @@ def main():
     n_real = args.n_realizations
 
     spectra_list = []
+    fig_path = Path(args.fig or output_dir / f"cl_spectra_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
 
-    if observation_mode == "abacus":
+    if args.replot:
+        spectra_list = load_spectra(fig_path.with_suffix(".npz"))
+        print(f"\n[replot] {len(spectra_list)} realisation(s) from {fig_path.with_suffix('.npz')}")
+    elif observation_mode == "abacus":
         cmb_enabled = model.cmb_enabled
         galaxies_enabled = model.galaxies_enabled
 
@@ -210,9 +246,9 @@ def main():
     if observation_mode == "abacus":
         theory_params.update({k: v for k, v in cfg_dict.get("abacus_truth_params", {}).items()
                               if k in ("Omega_m", "sigma8")})
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    plot_cl_figure(spectra_list, model, theory_params, observation_mode,
-                   Path(args.fig or output_dir / f"cl_spectra_{timestamp}.png"), show=args.show)
+    if not args.replot:
+        save_spectra(fig_path.with_suffix(".npz"), spectra_list)
+    plot_cl_figure(spectra_list, model, theory_params, observation_mode, fig_path, show=args.show)
 
 
 if __name__ == "__main__":

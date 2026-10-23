@@ -1090,8 +1090,9 @@ class FieldLevelModel(Model):
                     "taper": self.cmb_shell_taper, "z_source": self.cmb_z_source,
                 }
 
-                # Limber misses the radial modes of the term's thin kernels at low ell: exact over
-                # Limber in linear theory at the fiducial, applied in every mode (3.2).
+                # What the linear Limber term misses, at the fiducial in every mode (3.2): the radial
+                # modes of its thin kernels at low ell (exact over Limber), the nonlinear power of
+                # what the per-shell cut removes at high ell (halofit over linear).
                 self.cmb_los_limber = jnp.asarray(limber_ratio_outside_model(
                     cosmo_fid, self.ell_1d, **self.cmb_shells, chi_max=chi_high_z_upper))
 

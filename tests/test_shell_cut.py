@@ -188,9 +188,10 @@ def test_forward_and_gradient_run_with_the_cut(oversamp):
 
 
 def test_the_covariance_term_is_the_exact_projection_where_limber_fails():
-    """A slab the shells leave out (one shell removed whole, the map 1000-2000 Mpc/h): exact over
-    Limber equals a direct evaluation on other grids, is well above 1 at the lowest multipoles
-    (Limber misses the radial modes) and goes to 1 at high ell."""
+    """A slab the shells leave out (one shell removed whole, the map 1000-2000 Mpc/h): the ratio is
+    exact over Limber times halofit over linear, each equal to a direct evaluation on other grids; the
+    first is well above 1 at the lowest multipoles (Limber misses the radial modes) and goes to 1 at
+    high ell."""
     import jax_cosmo as jc
     from scipy.special import spherical_jn
 
@@ -207,10 +208,17 @@ def test_the_covariance_term_is_the_exact_projection_where_limber_fails():
                       jc.background.growth_factor(cosmo, a))
     k = np.geomspace(1e-4, 1.0, 20000)
     pk = np.asarray(lin_power_interp(cosmo)(jnp.asarray(k)))  # the model's spectrum
+    boost = jax.vmap(lambda ki, ai: jnp.squeeze(
+        jc.power.nonlinear_matter_power(cosmo, ki, ai) / jc.power.linear_matter_power(cosmo, ki, ai)))
+    projection = []
     for i, ell_val in enumerate(ell):
         proj = np.trapezoid(kern[None] * spherical_jn(ell_val, np.outer(k, chi)), chi, axis=1)
         exact = 2.0 / np.pi * np.trapezoid(k**2 * pk * proj**2, k)
-        limber = np.trapezoid(kern**2 / chi**2 * np.interp((ell_val + 0.5) / chi, k, pk), chi)
-        np.testing.assert_allclose(ratio[i], exact / limber, rtol=0.02)
-    assert ratio[0] > 1.5 and ratio[1] > 1.1
-    assert abs(ratio[-1] - 1.0) < 0.02
+        k_l = (ell_val + 0.5) / chi
+        limber = np.trapezoid(kern**2 / chi**2 * np.interp(k_l, k, pk), chi)
+        halofit = np.trapezoid(kern**2 / chi**2 * np.interp(k_l, k, pk) *
+                               np.asarray(boost(jnp.asarray(k_l), a)), chi) / limber
+        np.testing.assert_allclose(ratio[i], exact / limber * halofit, rtol=0.02)
+        projection.append(ratio[i] / halofit)
+    assert projection[0] > 1.5 and projection[1] > 1.1
+    assert abs(projection[-1] - 1.0) < 0.02

@@ -1,0 +1,190 @@
+# Field-Level Inference Configuration
+# Based on benchmark-field-level paper (arXiv:2504.20130) MCLMC section
+
+# SLURM configuration for NERSC Perlmutter
+slurm:
+  job_name: validation_closure_m160
+  account: desi
+  qos: regular
+  constraint: "gpu&hbm80g"  # 80 GB A100s: the joint does not fit 40 GB (docs/hpc.md)
+  nodes: 1
+  gpus: 4
+  time: '21:00:00'  # joint: warm-up ≈ 10.7 h at mesh 160 (pipeline 7.19); check the NERSC queue table before submitting
+
+# Model configuration
+model:
+  cell_size: 31.25  # 5000 / 160: final k_N 0.10 h/Mpc (pipeline 7.19)
+  box_shape: [5000.0, 5000.0, 5000.0]  # Mpc/h
+  galaxies_enabled: true  # Set to false for cmb-only runs
+  gxy_stoch_noise: false  # false : s_e fixed to 1 (pure Poisson), true : s_e inferred
+  gxy_ngbar_free: false  # Free per-z-shell mean density -> marginalise the integral constraint
+  lightcone: true
+  # a_obs: 0.5556 # snapshot
+  a_obs: null # lightcone
+  curved_sky: true # applies to galaxy LOS and RSD; CMB lensing is always curved-sky (HEALPix)
+  evolution: lpt # lpt or nbody
+  lpt_order: 2
+  precond: kaiser  # kaiser or kaiser_dyn
+  init_oversamp: 1.5   # inferred linear field grid; enlarges the inferred field
+  # Particle count N = evol_oversamp x final cells (even); check before a run (docs/pipeline.md 2.5):
+  #   galaxies: the galaxy profile at the true ICs (scripts/galaxy_likelihood_profile.py) has its minimum in A within 0.02 of 1 (docs/pipeline.md 7.16)
+  #   CMB lensing: box / N <= 25 Mpc/h (the model warns otherwise).
+  evol_oversamp: 1.75  # 280^3 particles, spacing 17.9 Mpc/h: galaxy profile A = 0.999 (pipeline 7.19)
+  ptcl_oversamp: 1.75  # particle cloud density
+  paint_oversamp: 1.75  # CIC paint mesh
+  gxy_density: 8.43318125e-4 # used only in closure mode; overwritten by load_abacus_galaxy_observation in abacus mode
+  # los: null  # Disable RSD (comment out to enable RSD)
+  png_type: fNL  # 'fNL' = universality (b_phi/b_phi_delta derived from b1/b2); 'fNL_bias' = infer fNL, fNL*b_phi, fNL*b_phi_delta as free params. null/omit = Gaussian
+
+# CMB lensing configuration
+cmb_lensing:
+  enabled: true # Set to false for galaxy-only runs
+  z_source: 1089.28   # CMB redshift
+  nside: 128  # l <= 256 (pipeline 7.19)
+  n_shells: 32      # number of radial Born integration shells
+  chi_matter_min: 292.6  # Mpc/h; where the observed map's matter starts and the Born shells start (the Abacus HUGE light cone stops at z = 0.1)
+  shell_weights: linear  # nearest (hard shell bins) | linear (particle split between the two bracketing shells; kappa continuous in the radii)
+  proj_oversamp: 2  # power of two; particles scattered at nside*proj_oversamp so sub-pixel discreteness stays out of the observable band instead of aliasing into it
+  cmb_noise_nell: /global/homes/j/jhawla/thesis-desi-cmb-fli/data/N_L_kk_so_v3_1_1_baseline_mv.txt  # Simons Observatory baseline (pipeline 3.2)
+  cmb_noise_scaling: 1.0  # multiplies N_l, to test the sensitivity to the noise level
+  full_los_correction: true
+  cl_out_mode: exact # exact (follows the cosmology) or fixed (at the fiducial; pixel_exact)
+  likelihood_mode: diagonal # diagonal (fast; exact on full sky; over-confident on cut sky) | pixel_exact (exact cut-sky via signal-eigenmode/KL: diagonalises the observed-pixel covariance once, keeps the supported Slepian subspace; full mask coupling kept exactly; requires fixed cosmo + cl_out_mode=fixed)
+  kl_rcond: 1e-2  # pixel_exact: keep eigenmodes with lambda > kl_rcond*lambda_max (default 1e-6; lower=more complete but more fragile in float32)
+  chi_high_z_max: 3750  # where the map's matter stops (Mpc/h); unset = the CMB (real data). AbacusSummit HUGE: 3750, the half box (full-sky light cone to z = 2.18)
+  observer_mode: center # center, face, or corner. Use 'corner' for AbacusSummit base-box (octant footprint); 'center' for full-sky closure / huge-box.
+  # mask: data/abacus_kappa_mask_00047.npy # External HEALPix footprint mask (npy/FITS). For AbacusSummit base-box abacus runs, set to data/abacus_kappa_mask_00047.npy (built by scripts/make_abacus_kappa_mask.py).
+
+# Truth parameters (closure test only — ignored in abacus/real-data modes)
+truth_params:
+  Omega_m: 0.315192
+  sigma8: 0.811355
+  # Lagrangian biases
+  # The Abacus galaxy profile at the true ICs and cosmology, A = 1 (pipeline.md 7.19),
+  # mesh 160 / 280^3: abacus_gxyonly_cosmo_box5000_amplitudem160p280.json (figures/galaxy_likelihood_profile/)
+  b1: 1.135
+  b1_alpha: 1.13  # 1 + b1(a) = (1 + b1)(D(a_fid)/D(a))^b1_alpha
+  b2: 0.231
+  bs2: -0.206
+  bn2: 0.861
+  fNL: 0.0  # Local non-Gaussianity amplitude (only used when model.png_type is set)
+  bnpar: -12.0  # closure truth must pin every sampled latent, else it is drawn from the prior
+
+# Prior parameters (latents)
+latents:
+  fNL:
+    loc: 0.0
+    scale: 10000.0
+    scale_fid: 2.0  # Use 2.0 for png_type: fNL and 100.0 for png_type: fNL_bias
+    loc_fid: 0.0
+  fNL_bp:
+    loc: 0.0
+    scale: 10000.0
+    scale_fid: 30.0
+    loc_fid: 0.0
+  fNL_bpd:
+    loc: 0.0
+    scale: 10000.0
+    scale_fid: 300.0
+    loc_fid: 0.0
+  Omega_m:
+    loc: 0.315192
+    scale: 0.15
+    scale_fid: 0.05
+    loc_fid: 0.315192
+    low: 0.2
+    high: 0.55
+  sigma8:
+    loc: 0.811355
+    scale: 0.15
+    scale_fid: 0.05
+    loc_fid: 0.811355
+    low: 0.5
+    high: 1.2
+  b1:
+    loc: 1.15
+    scale: 100.0
+    scale_fid: 0.01
+    loc_fid: 1.135
+  b2:
+    loc: 0.0
+    scale: 100.0
+    scale_fid: 0.03
+    loc_fid: 0.231
+  bs2:
+    loc: 0.0
+    scale: 100.0
+    scale_fid: 0.1
+    loc_fid: -0.206
+  bn2:
+    loc: 0.0
+    scale: 1000.0
+    scale_fid: 1.0
+    loc_fid: 0.861
+  bnpar: # keep it in fixed_params for snapshot/no-RSD runs, infer it for lightcone+RSD.
+    loc: 0.0
+    scale: 100.0
+    scale_fid: 1.0
+    loc_fid: -12.0
+
+# MCMC configuration
+mcmc:
+  num_warmup: 8192
+
+  # Fix some scalar latents to their truth/fiducial value (only the rest are inferred).
+  fixed_params: [Omega_m, sigma8]
+
+  # Sampling
+  num_samples: 50
+  num_batches: 60  # resume with --resume if R-hat or ESS ask for more (budget, pipeline 8)
+  num_chains: 4
+
+
+  mesh_desired_energy_var: 0.00001  # STEP 1 (mesh only)
+
+  mclmc:
+    desired_energy_var: 0.0000001 # STEP 2/3
+    diagonal_preconditioning: true
+    thinning: 5
+
+# Observation mode: "closure" or "abacus"
+observation_mode: closure
+
+# Closure on the real survey geometry: the Abacus randoms define selec_mesh /
+# gxy_occ_mask3d, the catalog counts are discarded, and the data is generated from
+# truth_params through that selection. Only the model error then separates this run
+# from the abacus-mode pair of pipeline.md 7.1. Density knob: model.gxy_density.
+closure_geometry_from_abacus: true
+
+# Closure density knob: multiplies the catalog n_bar, so 1.0 reproduces the abacus-mode
+# density exactly. This is what the density scan varies (pipeline.md 7 roadmap item 1).
+closure_gxy_density_scale: 1.0
+
+# AbacusSummit c000 true cosmology (used as corner-plot markers in abacus mode)
+abacus_truth_params:
+  Omega_m: 0.315192
+  sigma8: 0.811355
+  fNL: 0.0
+  # Only used when png_type=fNL_bias :
+  fNL_bp: 0.0
+  fNL_bpd: 0.0
+
+abacus_kappa:
+  # file: "/global/cfs/cdirs/desi/cosmosim/AbacusLensing/v1/AbacusSummit_base_c000_ph000/kappa_00047.asdf" # AbacusSummit base-box kappa map
+  file: "/global/cfs/cdirs/desi/cosmosim/AbacusLensing/v1/AbacusSummit_huge_c000_ph201/kappa_00045.asdf" # AbacusSummit huge-box kappa map
+  noise_seed: 6482  # seed for the random noise realization added to the kappa map
+
+# Abacus galaxy catalog
+abacus_galaxy:
+  file: "/global/cfs/projectdirs/desi/mocks/cai/abacus_HF_lightcones/DR2/mock_catalogs/lrg_huge/LRG_AbacusSummit_huge_c000_ph201_base_cmaes_opt_0_fit_DESI_nz_data.fits"
+  randoms: "/global/cfs/projectdirs/desi/mocks/cai/abacus_HF_lightcones/DR2/mock_catalogs/lrg_huge/LRG_AbacusSummit_huge_c000_ph201_base_cmaes_opt_0_fit_DESI_nz_randoms_100x.fits"
+  z_range: [0.4, 1.1]
+  randoms_chunk_rows: 50000000
+  completeness_min: 0.3
+
+abacus_ic:
+  file: "/global/cfs/cdirs/desi/public/cosmosim/AbacusSummit/ic/AbacusSummit_huge_c000_ph201/ic_dens_N576.asdf"
+
+
+# Random seed
+seed: 77

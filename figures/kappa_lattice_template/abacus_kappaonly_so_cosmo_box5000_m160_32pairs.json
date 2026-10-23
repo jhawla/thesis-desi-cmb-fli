@@ -1,0 +1,18 @@
+{
+ "grid": "data/cache/template/abacus_kappaonly_so_cosmo_box5000_m160_fid32.npz",
+ "box": 5000.0,
+ "particle_spacing": 17.857142857142858,
+ "fiducial_point": [
+  0.315192,
+  0.811355
+ ],
+ "S/N": {
+  "l 2-47": 0.0,
+  "l 2-64": 0.1258211102830844,
+  "l 65-128": 0.3484869165671195,
+  "l 129-256": 0.0,
+  "l 2-256": 0.23329853615517515
+ },
+ "template/undisplaced": 0.040103489652136656,
+ "projection": {}
+}

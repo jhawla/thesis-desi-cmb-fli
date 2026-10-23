@@ -598,6 +598,21 @@ def sample_healpix_gaussian(key, cl_1d, nside, lmax=None, mask=None):
 # =========================================================================
 
 
+def nonlinear_power(cosmo):
+    """``P(k, a)`` of the Limber spectra: the model's linear spectrum (``bricks.lin_power_interp``,
+    grown with its D(a)) times jax_cosmo's halofit boost over its own linear spectrum."""
+    from desi_cmb_fli.bricks import lin_power_interp
+    from desi_cmb_fli.nbody import a2g
+
+    p_lin = lin_power_interp(cosmo)
+
+    def pk(k, a):
+        boost = jc.power.nonlinear_matter_power(cosmo, k, a) / jc.power.linear_matter_power(cosmo, k, a)
+        return jnp.squeeze(boost * p_lin(jnp.asarray(k)) * a2g(cosmo, jnp.asarray(a)) ** 2)
+
+    return jax.jit(pk)
+
+
 def compute_theoretical_cl_kappa(cosmo, ell, chi_min, chi_max, z_source, n_steps=100, n_interp=48):
     """C_ell^{kappa kappa} via Limber approximation."""
     chi_s = jc.background.radial_comoving_distance(cosmo, 1.0 / (1.0 + z_source))[0]
@@ -605,12 +620,11 @@ def compute_theoretical_cl_kappa(cosmo, ell, chi_min, chi_max, z_source, n_steps
     chi = jnp.linspace(chi_min, chi_max, n_steps)
     a = jc.background.a_of_chi(cosmo, chi)
     w_val = lensing_kernel(cosmo, chi, a, chi_s)
+    pk_fn = nonlinear_power(cosmo)
 
     def get_cl_per_ell(ell_val):
         k = (ell_val + 0.5) / chi
-        pk = jax.vmap(
-            lambda ki, ai: jnp.squeeze(jc.power.nonlinear_matter_power(cosmo, ki, ai))
-        )(k, a)
+        pk = jax.vmap(pk_fn)(k, a)
         integrand = (w_val**2 / chi**2) * pk
         return jax.scipy.integrate.trapezoid(integrand, x=chi)
 
@@ -661,12 +675,11 @@ def compute_theoretical_cl_kappa_windowed(
 
     chi_s = jc.background.radial_comoving_distance(cosmo, 1.0 / (1.0 + z_source))[0]
     w_val = lensing_kernel(cosmo, chi, a, chi_s)
+    pk_fn = nonlinear_power(cosmo)
 
     def get_cl_per_ell(ell_val):
         k = (ell_val + 0.5) / chi
-        pk = jax.vmap(
-            lambda ki, ai: jnp.squeeze(jc.power.nonlinear_matter_power(cosmo, ki, ai))
-        )(k, a)
+        pk = jax.vmap(pk_fn)(k, a)
         integrand = shell_weights * (w_val**2 / chi**2) * pk
         if k_nyq is not None:
             integrand = integrand * (k <= k_nyq)
@@ -806,43 +819,83 @@ def _outside_kernel(cosmo, r_shells, a_shells, d_r, shell_weights, z_source, chi
     return chi_j, a, lensing_kernel(cosmo, chi_j, a, chi_s), q
 
 
-def limber_ratio_outside_model(
-    cosmo, ell, r_shells, a_shells, d_r, shell_weights, z_source, chi_max, taper=None,
-    n_per_shell=40, n_beyond=200, k_max=0.5,
-):
-    """Exact over Limber C_ell of the kernel ``compute_cl_outside_model`` leaves out, in linear
-    theory at a concrete cosmology (docs/pipeline.md 3.2). Exact: ``(2/pi) int dk k^2 P(k)
-    [int dchi K(chi) D(chi) j_ell(k chi)]^2``; Limber: ``int dchi K^2 D^2 P((ell+1/2)/chi) / chi^2``.
-    The k grid resolves the radial extent of the kernel; 1 at ell < 2."""
+def exact_over_limber(cosmo, ell, chi, kern_a, kern_b=None, rsd_bias_a=None, rsd_bias_b=None,
+                      k_max=0.5):
+    """Exact over Limber C_ell of the radial kernels ``kern_a`` and ``kern_b`` (``kern_a`` if None)
+    on ``chi``, in linear theory with the model's spectrum and background at a concrete cosmology
+    (docs/pipeline.md 3.2). Exact: ``(2/pi) int dk k^2 P(k) Delta_a(k) Delta_b(k)``, ``Delta = int
+    dchi K D [j_ell(k chi) - (f / b) j_ell''(k chi)]``, the Kaiser term entering for a galaxy kernel
+    in redshift space of Eulerian bias ``b = rsd_bias_*``; Limber: ``int dchi K_a K_b D^2
+    P((ell+1/2)/chi) / chi^2``. Both keep k <= ``k_max``, on a k grid that resolves the radial extent
+    of the kernels. A kernel is (n_chi,) or (n_ell, n_chi), one per multipole; 1 at ell < 2."""
     from scipy.special import spherical_jn
 
     from desi_cmb_fli.bricks import lin_power_interp
-    from desi_cmb_fli.nbody import a2g
+    from desi_cmb_fli.nbody import a2f, a2g, chi2a
 
     ell_idx = np.asarray(ell).astype(int)
+    chi = np.asarray(chi, dtype=float)
     k_tab = np.geomspace(1e-4, 10.0, 4000)  # the support of lin_power_interp
 
     def tables(c):
-        chi, a, w_map, q = _outside_kernel(c, r_shells, a_shells, d_r, shell_weights, z_source,
-                                           chi_max, n_per_shell, n_beyond)
-        return chi, a, w_map, q, a2g(c, a), lin_power_interp(c)(jnp.asarray(k_tab))
+        a = chi2a(c, jnp.asarray(chi))
+        return a2g(c, a), a2f(c, a), lin_power_interp(c)(jnp.asarray(k_tab))
 
-    chi, a, w_map, q, growth, p_tab = (np.asarray(x, dtype=float) for x in jax.jit(tables)(cosmo))
+    growth, rate, p_tab = (np.asarray(x, dtype=float) for x in jax.jit(tables)(cosmo))
+    kerns = [np.broadcast_to(np.asarray(kern, dtype=float), (ell_idx.size, chi.size))
+             for kern in (kern_a, kern_a if kern_b is None else kern_b)]
+    betas = [0.0 if b is None else rate / float(b) for b in (rsd_bias_a, rsd_bias_b)]
     k = np.linspace(0.0, k_max, int(np.ceil(4.0 * k_max * chi[-1] / np.pi)) + 1)[1:]
     p_k = np.exp(np.interp(np.log(k), np.log(k_tab), np.log(p_tab)))
-    held = (np.ones((q.shape[0], ell_idx.size)) if taper is None
-            else np.asarray(taper, dtype=float)[:, ell_idx])
+    x = np.outer(k, chi)
     ratio = np.ones(ell_idx.size)
     for i, ell_val in enumerate(ell_idx):
         if ell_val < 2:
             continue
-        kern = w_map - held[:, i] @ q
         k_l = (ell_val + 0.5) / chi
-        p_l = np.exp(np.interp(np.log(k_l), np.log(k_tab), np.log(p_tab)))
-        limber = np.trapezoid(kern**2 * growth**2 * p_l / chi**2, chi)
-        proj = np.trapezoid((kern * growth)[None] * spherical_jn(ell_val, np.outer(k, chi)), chi, axis=1)
-        ratio[i] = 2.0 / np.pi * np.trapezoid(k**2 * p_k * proj**2, k) / limber
+        p_l = np.exp(np.interp(np.log(k_l), np.log(k_tab), np.log(p_tab))) * (k_l <= k_max)
+        limber = np.trapezoid(kerns[0][i] * kerns[1][i] * growth**2 * p_l / chi**2, chi)
+        j = spherical_jn(ell_val, x)
+        if rsd_bias_a is not None or rsd_bias_b is not None:
+            jpp = (-2.0 / x * spherical_jn(ell_val, x, derivative=True)
+                   - (1.0 - ell_val * (ell_val + 1) / x**2) * j)
+        proj = [np.trapezoid((kern[i] * growth)[None] * (j if np.ndim(beta) == 0 else j - beta * jpp),
+                             chi, axis=1) for kern, beta in zip(kerns, betas, strict=True)]
+        ratio[i] = 2.0 / np.pi * np.trapezoid(k**2 * p_k * proj[0] * proj[1], k) / limber
     return ratio
+
+
+def limber_ratio_outside_model(
+    cosmo, ell, r_shells, a_shells, d_r, shell_weights, z_source, chi_max, taper=None,
+    n_per_shell=40, n_beyond=200, k_max=0.5,
+):
+    """What the linear Limber C_ell of ``compute_cl_outside_model`` misses, at a concrete cosmology
+    (docs/pipeline.md 3.2): the exact over Limber C_ell of its kernel (``exact_over_limber``) times
+    its halofit over linear Limber C_ell (``nonlinear_power`` against the model's linear spectrum)."""
+    from desi_cmb_fli.bricks import lin_power_interp
+    from desi_cmb_fli.nbody import a2g
+
+    ell_idx = np.asarray(ell).astype(int)
+    chi, a, w_map, q = (np.asarray(x, dtype=float) for x in jax.jit(
+        lambda c: _outside_kernel(c, r_shells, a_shells, d_r, shell_weights, z_source, chi_max,
+                                  n_per_shell, n_beyond))(cosmo))
+    held = (np.ones((q.shape[0], ell_idx.size)) if taper is None
+            else np.asarray(taper, dtype=float)[:, ell_idx])
+    kern = w_map[None] - held.T @ q
+
+    growth2 = a2g(cosmo, jnp.asarray(a)) ** 2
+    p_lin, p_nl = lin_power_interp(cosmo), nonlinear_power(cosmo)
+
+    def halofit_over_linear(args):
+        ell_val, kern_l = args
+        k = (ell_val + 0.5) / chi
+        weight = kern_l**2 / chi**2
+        return (jnp.trapezoid(weight * jax.vmap(p_nl)(k, a), chi)
+                / jnp.trapezoid(weight * p_lin(k) * growth2, chi))
+
+    boost = np.asarray(jax.lax.map(halofit_over_linear, (jnp.asarray(ell_idx, dtype=float),
+                                                         jnp.asarray(kern))))
+    return exact_over_limber(cosmo, ell_idx, chi, kern, k_max=k_max) * boost
 
 
 def _galaxy_kernel(chi, chi_min, chi_max, nz):
@@ -862,12 +915,11 @@ def compute_theoretical_cl_gg(
     a = jc.background.a_of_chi(cosmo, chi)
     bias = jnp.ones_like(a) * b1 if bias_of_a is None else bias_of_a(a)
     w_g = bias * _galaxy_kernel(chi, chi_min, chi_max, nz)
+    pk_fn = nonlinear_power(cosmo)
 
     def get_cl_per_ell(ell_val):
         k = (ell_val + 0.5) / chi
-        pk = jax.vmap(
-            lambda ki, ai: jnp.squeeze(jc.power.nonlinear_matter_power(cosmo, ki, ai))
-        )(k, a)
+        pk = jax.vmap(pk_fn)(k, a)
         integrand = (w_g**2 / chi**2) * pk
         if k_nyq is not None:
             integrand = integrand * (chi >= (ell_val + 0.5) / k_nyq)
@@ -896,12 +948,11 @@ def compute_theoretical_cl_kg(
                                        jnp.asarray(kappa_window[1]), left=0.0, right=0.0)
     bias = jnp.ones_like(a) * b1 if bias_of_a is None else bias_of_a(a)
     w_g = bias * _galaxy_kernel(chi, chi_min, chi_max, nz)
+    pk_fn = nonlinear_power(cosmo)
 
     def get_cl_per_ell(ell_val):
         k = (ell_val + 0.5) / chi
-        pk = jax.vmap(
-            lambda ki, ai: jnp.squeeze(jc.power.nonlinear_matter_power(cosmo, ki, ai))
-        )(k, a)
+        pk = jax.vmap(pk_fn)(k, a)
         integrand = (w_kappa * w_g / chi**2) * pk
         if k_nyq is not None:
             integrand = integrand * (chi >= (ell_val + 0.5) / k_nyq)

@@ -16,10 +16,13 @@ from desi_cmb_fli.cmb_lensing import (
     compute_theoretical_cl_kappa,
     compute_theoretical_cl_kappa_windowed,
     compute_theoretical_cl_kg,
+    exact_over_limber,
     kappa_radial_window,
+    lensing_kernel,
     project_mesh_to_healpix,
 )
 from desi_cmb_fli.metrics import bin_cl_log, get_cl_healpix, masked_healpix_to_full
+from desi_cmb_fli.nbody import a2g
 from desi_cmb_fli.utils import chreshape, r2chshape
 
 
@@ -714,9 +717,62 @@ def conditioning_params(model, *param_dicts):
     return samples
 
 
+def _exact_over_limber_curves(model, cosmo_val, ell_theory, bE, gxy_kernel, support, k_cut,
+                              observation_mode):
+    """Exact-over-Limber ratio (``cmb_lensing.exact_over_limber``) of the kernels of each spectrum
+    of ``compute_cl_theory`` on ``ell_theory``: the Born shells (closure: their kernels times their
+    support and multipole taper) or the map's line of sight (Abacus); the galaxies' dN/dchi with
+    their Kaiser term when the model has RSD."""
+    from desi_cmb_fli.cmb_lensing import _outside_kernel
+    from desi_cmb_fli.nbody import a2chi, chi2a
+
+    ell_int = np.unique(np.round(np.geomspace(2.0, np.max(ell_theory), 24)).astype(int))
+    k_max = 0.5 if k_cut is None else k_cut
+    kernels = {}
+    if model.cmb_enabled and observation_mode == "closure":
+        chi_k, _, _, q = (np.asarray(x, dtype=float) for x in _outside_kernel(
+            cosmo_val, model.cmb_r_shells, model.cmb_a_shells, model.cmb_d_r,
+            model.cmb_shell_weights, model.cmb_z_source, float(model.chi_boundary), 40, 1))
+        taper = getattr(model, "cmb_shell_taper", None)
+        held = np.asarray(support, dtype=float)[:, None] * (
+            1.0 if taper is None else np.asarray(taper, dtype=float)[:, ell_int])
+        kernels["k"] = (chi_k, held.T @ q)
+    elif model.cmb_enabled:
+        chi_s = a2chi(cosmo_val, jnp.asarray(1.0 / (1.0 + model.cmb_z_source)))
+        chi_k = np.linspace(float(model.low_z_matter_start), float(model.chi_high_z_max), 2000)
+        w = lensing_kernel(cosmo_val, jnp.asarray(chi_k), chi2a(cosmo_val, jnp.asarray(chi_k)), chi_s)
+        kernels["k"] = (chi_k, np.asarray(w, dtype=float)[None])
+    if gxy_kernel is not None:
+        r, nz = (np.asarray(a, dtype=float) for a in gxy_kernel)
+        kernels["g"] = (r, nz[None])
+    if not kernels:
+        return {}
+
+    lo = max(min(float(c[f.max(0) > 0].min()) for c, f in kernels.values()), 1.0)
+    hi = max(float(c[f.max(0) > 0].max()) for c, f in kernels.values())
+    chi = np.linspace(lo, hi, int(np.ceil((hi - lo) / min(2.0, np.pi / (8.0 * k_max)))) + 1)
+    on = {key: np.stack([np.interp(chi, c, row, left=0.0, right=0.0) for row in f])
+          for key, (c, f) in kernels.items()}
+    b_rsd = None if model.los is None else float(bE)
+
+    def ratio(kern_a, kern_b=None, **rsd):
+        return np.interp(ell_theory, ell_int, exact_over_limber(
+            cosmo_val, ell_int, chi, kern_a, kern_b, k_max=k_max, **rsd))
+
+    out = {}
+    if "k" in on:
+        out["cl_kk"] = ratio(on["k"])
+    if "g" in on:
+        out["cl_gg"] = ratio(on["g"], rsd_bias_a=b_rsd, rsd_bias_b=b_rsd)
+    if "k" in on and "g" in on:
+        out["cl_kg"] = ratio(on["k"], on["g"], rsd_bias_b=b_rsd)
+    return out
+
+
 def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
-                      has_galaxies=True, observation_mode="closure"):
-    """The one Limber curve per spectrum that the C_ell diagnostic compares with.
+                      has_galaxies=True, observation_mode="closure", b1_alpha=0.0):
+    """The one curve per spectrum that the C_ell diagnostic compares with: Limber times the
+    exact-over-Limber ratio of its kernels.
 
     ``measure_spectra`` returns noiseless maps with the galaxy pixel window removed and the galaxy
     shot noise subtracted, so no noise term enters here:
@@ -729,11 +785,15 @@ def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
     * Both kappa-kappa curves carry the squared bilinear window of the projection sphere
       (``bilinear_window``): the model map gets it from the Born scatter, the Abacus map from the
       loader's ``bilinear_resample_healpix``.
-    * gg and kappa-g: the survey's dN/dchi (``gxy_kernel``), constant Eulerian bias ``bE``,
-      nonlinear P(k); the same k cut in closure, none on data. In closure kappa-g also carries the
+    * gg and kappa-g: the survey's dN/dchi (``gxy_kernel``), Eulerian bias ``bE`` at the model's
+      ``a_fid`` evolving as ``bE (D(a_fid)/D(a))**b1_alpha`` (the model's linear bias), nonlinear
+      P(k); the same k cut in closure, none on data. In closure kappa-g also carries the
       radial window of the Born shells (``kappa_radial_window``): where the shells start or stop
       inside the galaxies, the model map does not hold their matter. It leaves out the per-shell
       multipole cut, which acts on shells mostly nearer than the galaxies.
+    * Every curve times the exact-over-Limber ratio of its kernels in linear theory
+      (``_exact_over_limber_curves``, the computation of the out-of-model term's ratio): Limber
+      misses the radial modes of kernels not wide against chi/ell, and the galaxies' Kaiser term.
     """
 
     ell_j = jnp.asarray(ell_theory, dtype=float)
@@ -743,7 +803,7 @@ def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
         k_cut = float(np.pi / np.max(init_cell))
     out = {"cl_kk": None, "cl_gg": None, "cl_kg": None, "k_cut": k_cut}
 
-    kappa_window, w_kappa = None, None
+    kappa_window, w_kappa, support = None, None, None
     if model.cmb_enabled:
         z_source = model.cmb_z_source
         # Model and (since the loader resamples it through the same kernel) Abacus kappa both
@@ -771,17 +831,27 @@ def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
         r, nz = (np.asarray(a, dtype=float) for a in gxy_kernel)
         occupied = r[nz > 0]
         chi0, chi1 = float(occupied.min()), float(occupied.max())
+        g_fid = a2g(cosmo_val, jnp.asarray(model.a_fid))
+        bias_of_a = lambda a: bE * (g_fid / a2g(cosmo_val, a)) ** b1_alpha  # noqa: E731
         out["cl_gg"] = np.asarray(compute_theoretical_cl_gg(
-            cosmo_val, ell_j, chi0, chi1, bE, n_steps=400, k_nyq=k_cut, nz=(r, nz)))
+            cosmo_val, ell_j, chi0, chi1, bE, n_steps=400, bias_of_a=bias_of_a, k_nyq=k_cut,
+            nz=(r, nz)))
         if model.cmb_enabled:
             out["cl_kg"] = np.asarray(compute_theoretical_cl_kg(
                 cosmo_val, ell_j, chi0, chi1, model.cmb_z_source, bE, n_steps=400,
-                k_nyq=k_cut, nz=(r, nz), kappa_window=kappa_window)) * w_kappa
+                bias_of_a=bias_of_a, k_nyq=k_cut, nz=(r, nz), kappa_window=kappa_window)) * w_kappa
+    ratios = _exact_over_limber_curves(
+        model, cosmo_val, ell_theory, bE, gxy_kernel if out["cl_gg"] is not None else None,
+        support, k_cut, observation_mode)
+    for key, ratio in ratios.items():
+        if out[key] is not None:
+            out[key] = out[key] * ratio
     return out
 
 
 def plot_cl_figure(spectra_list, model, cosmo_params, observation_mode, outfile, show=False):
-    """Binned C_ell of one or several realisations against the Limber curve of each spectrum.
+    """Binned C_ell of one or several realisations against the theory curve of each spectrum
+    (``compute_cl_theory``).
 
     Points are the mean over realisations with the error of that mean (none for a single
     realisation). Also prints measured/theory per bin. Returns the theory dict.
@@ -790,11 +860,12 @@ def plot_cl_figure(spectra_list, model, cosmo_params, observation_mode, outfile,
     ell_b = np.asarray(sp0["ell_b"])
     ell_theory = np.geomspace(2.0, float(np.max(sp0["ell"])), 100)
     b1 = (cosmo_params or {}).get("b1", model.loc_fid.get("b1", 1.0))
+    b1_alpha = (cosmo_params or {}).get("b1_alpha", model.loc_fid.get("b1_alpha", 0.0))
     cosmo = {k: v for k, v in (cosmo_params or model.loc_fid).items() if k in ("Omega_m", "sigma8")}
     theory = compute_cl_theory(
         model, get_cosmology(**cosmo), ell_theory, bE=1.0 + float(b1),
-        gxy_kernel=sp0.get("gxy_kernel"), has_galaxies=sp0.get("cl_gg") is not None,
-        observation_mode=observation_mode,
+        gxy_kernel=sp0.get("gxy_kernel"), has_galaxies=sp0.get("cl_gg_b") is not None,
+        observation_mode=observation_mode, b1_alpha=float(b1_alpha),
     )
 
     n = len(spectra_list)
@@ -822,7 +893,7 @@ def plot_cl_figure(spectra_list, model, cosmo_params, observation_mode, outfile,
     ax_of = dict(zip(panels, axes[0], strict=True))
     vb = (ell_b >= 2) & (ell_b <= ell_theory.max())
 
-    print(f"  measured / Limber per bin ({n} realisation(s), {src}):")
+    print(f"  measured / theory per bin ({n} realisation(s), {src}):")
     for pan, key, tkey, color, label in series:
         mean, err = stack(key)
         if mean is None or theory[tkey] is None:
@@ -835,7 +906,7 @@ def plot_cl_figure(spectra_list, model, cosmo_params, observation_mode, outfile,
         print(f"    {tkey[3:]:>3s}: " + " ".join(f"{x:.2f}" for x in mean[vb] / th_b))
 
     for pan, ax in ax_of.items():
-        ax.plot([], [], color="k", lw=1.5, label="Limber")
+        ax.plot([], [], color="k", lw=1.5, label=r"Limber $\times$ exact/Limber")
         ax.set(xscale="log", yscale="log", xlabel=r"$\ell$", ylabel=r"$C_\ell$",
                title=r"$\kappa\kappa$" if pan == "kk" else r"galaxies: $gg$ and $\kappa g$")
         ax.legend(fontsize=9)

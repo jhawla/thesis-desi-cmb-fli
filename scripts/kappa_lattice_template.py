@@ -201,7 +201,7 @@ def analyse(args):
     )
     T = g["pairs"][fid].mean(0)
     C = covariance(g, fid)
-    e2 = g["pairs"][fid].std(0) ** 2 / len(g["pairs"][fid])
+    e2 = g["pairs"][fid].std(0, ddof=1) ** 2 / len(g["pairs"][fid])
     out = {
         "grid": args.grid,
         "box": g["box"],
@@ -212,7 +212,10 @@ def analyse(args):
     def sn(m):
         return float(np.sqrt(max(np.sum(T[m] ** 2 / C[m]) - np.sum(e2[m] / C[m]), 0.0)))
 
-    out["S/N"] = {"l<=64": sn(sel), "l<=47": sn(sel & (ell_u <= 47))}
+    lmax = int(ell_u.max())
+    bands = [(2, 47), (2, 64), (65, 128), (129, 256), (2, lmax)]
+    out["S/N"] = {f"l {a}-{min(b, lmax)}": sn(sel & (ell_u >= a) & (ell_u <= b))
+                  for a, b in bands if a <= lmax}
     z = g["zero"][fid]
     out["template/undisplaced"] = float(
         np.sum(T[sel] * z[sel] / C[sel]) / np.sum(z[sel] ** 2 / C[sel])

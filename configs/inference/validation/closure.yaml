@@ -60,15 +60,15 @@ truth_params:
   Omega_m: 0.315192
   sigma8: 0.811355
   # Lagrangian biases
-  # Abacus HUGE posterior means (pipeline.md 7.1), so the closure bias structure
-  # matches the run this scan is anchored to instead of a vanishing one.
-  b1: 1.19
-  b1_alpha: 0.0  # no redshift evolution of the linear bias in the closure truth
-  b2: 0.68
-  bs2: -0.48
-  bn2: 78.0
+  # The Abacus galaxy profile at the true ICs and cosmology, A = 1 (pipeline.md 7.19),
+  # mesh 54 / 200^3: abacus_gxyonly_cosmo_box5000_amplitude_box5000_p200.json (figures/galaxy_likelihood_profile/)
+  b1: 1.13
+  b1_alpha: 1.089  # 1 + b1(a) = (1 + b1)(D(a_fid)/D(a))^b1_alpha
+  b2: 0.233
+  bs2: -0.14
+  bn2: -4.03
   fNL: 0.0  # Local non-Gaussianity amplitude (only used when model.png_type is set)
-  bnpar: -45.0  # closure truth must pin every sampled latent, else it is drawn from the prior
+  bnpar: -26.7  # closure truth must pin every sampled latent, else it is drawn from the prior
 
 # Prior parameters (latents)
 latents:
@@ -105,27 +105,27 @@ latents:
     loc: 1.15
     scale: 100.0
     scale_fid: 0.01
-    loc_fid: 1.19
+    loc_fid: 1.13
   b2:
     loc: 0.0
     scale: 100.0
     scale_fid: 0.03
-    loc_fid: 0.68
+    loc_fid: 0.233
   bs2:
     loc: 0.0
     scale: 100.0
     scale_fid: 0.1
-    loc_fid: -0.48
+    loc_fid: -0.14
   bn2:
     loc: 0.0
     scale: 1000.0
     scale_fid: 1.0
-    loc_fid: 78.0
+    loc_fid: -4.03
   bnpar: # keep it in fixed_params for snapshot/no-RSD runs, infer it for lightcone+RSD.
     loc: 0.0
     scale: 100.0
     scale_fid: 1.0
-    loc_fid: -45.0
+    loc_fid: -26.7
 
 # MCMC configuration
 mcmc:

@@ -35,10 +35,10 @@ python scripts/run_inference.py --config configs/inference/config.yaml --resume 
 
 - **Never run inference (or any heavy JAX job) on a login node.** Runs go in a 4-hour interactive
   `salloc` (see [docs/hpc.md](docs/hpc.md) for the exact incantation) launching `run_inference.py`
-  directly — not `configs/inference/submit.py`. Exception: runs whose warm-up does not fit 4 h (the
-  mesh-160 runs, pipeline §8) go through `sbatch configs/inference/run.sbatch <config>` in the
-  `regular` QOS (up to 48 h), as in docs/hpc.md, and resume their batches with `--resume`. If a run
-  is needed, hand the user the command rather than starting it.
+  directly. Runs whose warm-up does not fit 4 h (the mesh-160 runs, pipeline §8) go through
+  `./configs/inference/submit.py <config>`, which submits `run.sbatch` with the config's `slurm` block
+  (`regular` QOS up to 48 h, `gpu&hbm80g`), as in docs/hpc.md, and resume their batches with
+  `--resume`. If a run is needed, hand the user the command rather than starting it.
 - Outputs land in `$SCRATCH/outputs/run_<timestamp>_<jobid>/` with `config/` (copied
   `config.yaml`, `model.yaml`, `truth.npz`, `samples_batch_*.npz`, `sampler_state.pkl`) and
   `figures/`. `analyze_run.py` runs automatically at the end of a job.

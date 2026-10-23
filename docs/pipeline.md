@@ -65,8 +65,9 @@ wider bounds is an error. Everything built on the linear spectrum takes it: the 
 preconditioner (`lin_power_mesh`), the φ→δ transfer of `add_png` and of the scale-dependent bias
 (`trans_phi2delta_interp`), the Kaiser model, the Wiener start, the out-of-model term of the κ
 covariance and its exact-over-Limber ratio (§3.2) and `desi_cmb_fli.fisher`. Closures use the same
-spectrum as the Abacus runs. The diagnostic Limber C_ℓ (`compute_theoretical_cl_*`) keep jax_cosmo's
-Eisenstein–Hu halofit. Measured accuracy in §7.11.
+spectrum as the Abacus runs. The diagnostic Limber C_ℓ (`compute_theoretical_cl_*`) take it too,
+times jax_cosmo's halofit boost over its own Eisenstein–Hu spectrum (`cmb_lensing.nonlinear_power`).
+Measured accuracy in §7.11.
 
 ### 2.2 Primordial non-Gaussianity
 
@@ -398,9 +399,10 @@ keep an uncomputable part of those multipoles (the corners of the Fourier cube, 
 upward) and the covariance would have to hold the rest. On a real map, whose matter reaches the
 observer, the near shells' multipoles are also where LPT fails, so a cut is needed at any particle
 count. Putting the removed power in the variance makes three approximations, measured in §7.12 and
-§7.18: linear theory, though the near shells reach mildly non-linear k (halofit changes the term
-little, and the model at the Abacus ICs keeps its error against the non-linear AbacusLensing map
-inside the covariance where the cut holds a large share of the power); independence from the kept
+§7.18: its power spectrum, linear theory times the halofit boost at the fiducial (§3.2; at nside 32
+halofit changes the term by ≤ 0.4 %, at nside 128, where the cut removes k up to ≈ 1 h/Mpc, by up to
+4.7 %, §7.19), and the model at the Abacus ICs keeps its error against the non-linear AbacusLensing map
+inside the covariance where the cut holds a large share of the power; independence from the kept
 field (the map's transfer on the model at the true ICs is one, so data − model is uncorrelated with
 the model at two-point level); and the taper's roll-off (above). Its weight is not small because the
 lensing kernel is small near the observer: the cut holds 17–25 % of the map's power at ℓ ≥ 48 (§3.2).
@@ -638,8 +640,9 @@ holds what the cut removes (17–25 % of it at ℓ ≥ 48, §7.12). Modes:
 The term is computed in linear theory with the model's own spectrum and background: the ACE
 spectrum (`lin_power_interp`, §2.1) grown with the emulator's D(a), and χ(a), a(χ), χ_s from the
 background emulator (§2.3), the same χ_s as the projector's. Nothing in it calls jax_cosmo, so it
-follows a sampled cosmology without host callbacks, and its gradient is the emulators'. Halofit
-would change it by at most 0.4 % (0.006 nats) at the fiducial at box 5000 (§7.18). No expansion
+follows a sampled cosmology without host callbacks, and its gradient is the emulators'. Its
+non-linear part enters as a fixed ratio at the fiducial (below): 0.4 % and 0.006 nats at nside 32,
+4.7 % and 1.28 nats at nside 128 (§7.18, §7.19). No expansion
 around the fiducial stands in for it: to first order the error reaches 16 nats within the κ-only
 posterior at box 5000 (§7.18). Any other `cl_out_mode` is an error.
 
@@ -655,8 +658,16 @@ Limber misses the radial modes of a kernel whose radial extent is not large agai
 is the Limber C_ℓ times the exact-over-Limber ratio of the same kernel in linear theory at the
 fiducial cosmology (`cmb_lensing.limber_ratio_outside_model`, `model.cmb_los_limber`), exact being
 `(2/π) ∫ dk k² P(k) [∫ dχ B_ℓ(χ) D(χ) j_ℓ(kχ)]²` on a k grid that resolves the kernel's radial
-extent. It enters both modes as the window does; under `exact` the Limber part follows the
-cosmology and the ratio stays at the fiducial (from Eisenstein–Hu to the ACE spectrum it moved by
+extent, both sides up to k = 0.5 h/Mpc (`cmb_lensing.exact_over_limber`). The ratio corrects the
+projection only: cut at the same k on both sides, it leaves the kernel's power above k = 0.5, where
+Limber holds, in the term at its Limber value. The same function multiplies it by the term's halofit
+over linear Limber C_ℓ (`cmb_lensing.nonlinear_power`, jax_cosmo's halofit boost on the model's
+spectrum): what the per-shell cut removes is matter at k up to ≈ 1 h/Mpc, non-linear, and the term is
+its variance. The additive Gaussian term itself assumes only that this matter is independent of the
+field the model holds (checked by the IC test, §7.19), not that it is linear. That power enters only where `(ℓ + 1/2)/χ > 0.5`
+within the kernel, which starts with the shells' first ramp: none at ℓ ≤ 64 (nside 32), the
+low-χ end of the per-shell cut at ℓ ≤ 256 (nside 128). It enters both modes as the window does; under `exact` the linear Limber part follows the
+cosmology and both ratios stay at the fiducial (from Eisenstein–Hu to the ACE spectrum it moved by
 ≤ 0.3 %, at ℓ = 2, box-5000 geometry). It matters when the box is smaller than the map's
 depth: at box 5000 the 2500–3750 slab is twice its Limber power at ℓ = 2 (§7.15). The term is
 computed and cached at init, so a κ run started before the ratio does not resume.
@@ -675,11 +686,11 @@ Abacus range. The matter below 292.6 and beyond 3750 Mpc/h is therefore in neith
 covariance: data and likelihood agree, but the map is that of an experiment without that matter. Limber (non-linear P, Abacus cosmology, `scripts/plot_lensing_fraction.py`), fraction
 of the power from the observer to `χ_s`, ℓ bins 2–4 / 5–10 / 11–20 / 21–36 / 37–64 weighted by
 2ℓ+1, before the per-shell cut: model shells and data map (292.6 → 3750) 0.76 / 0.82 / 0.81 / 0.76 /
-0.69; in neither 0.24 / 0.18 / 0.19 / 0.24 / 0.31. The κ constraints and gains are those of a map
+0.68; in neither 0.24 / 0.18 / 0.19 / 0.24 / 0.32. The κ constraints and gains are those of a map
 without that matter, i.e. with a smaller variance than a real map at the same `N_ℓ`: at box 5000 with
 SO noise (`abacus/abacus_joint_so_cosmo_box5000.yaml`) the likelihood's `N_ℓ + w_ℓ² C_ℓ^out` (the
-model's term, `model.cl_out_cached`; 0.22 / 0.19 / 0.22 / 0.28 / 0.33 of the total power) is 0.70 /
-0.68 / 0.66 / 0.65 / 0.63 of what it would be with the matter in neither added through the same
+model's term, `model.cl_out_cached`; 0.21 / 0.19 / 0.21 / 0.27 / 0.32 of the total power) is 0.69 /
+0.68 / 0.66 / 0.64 / 0.63 of what it would be with the matter in neither added through the same
 window. Figures
 `figures/lensing_fraction/lensing_fraction_vs_z.png` and `lensing_spectra_comparison.png`.
 
@@ -887,7 +898,8 @@ initial field (Fourier, a = 1, init grid, `init_mesh`) with its cosmology, and, 
 `kappa_batch_*.npz` its `kappa_obs`. These are the posterior samples of the field-level figures (§6),
 one per batch and chain (≈ 2 MB per chain and batch at the 80³ init grid of box 5000, ≈ 7 MB at
 120³); runs that predate `field_batch` have the field only in `sampler_state.pkl`, the final state. The `slurm` block is read by
-`configs/inference/submit.py` only (runs here go through an interactive `salloc`, `docs/hpc.md`).
+`configs/inference/submit.py` only, the batch submission of runs whose warm-up does not fit a 4 h
+interactive `salloc` (`docs/hpc.md`).
 
 **Warmup steps.** STEP 1 warms the mesh with cosmo/bias fixed (`mcmc.mesh_desired_energy_var`, no
 diagonal preconditioning — the whitened field is already unit-scale); STEP 2 frees the scalar latents
@@ -920,7 +932,7 @@ measures and the conventions that make its output comparable with the model.
 | `compare_runs.py` | GetDist triangle of several runs (per-run burn-in, labels) | `--output` |
 | `compare_reconstruction.py` | correlation of the true and sampled ICs in radial shells, per chain, several runs overlaid (§7.1); adds the fixed latents before `reparam` | `figures/results/` |
 | `quick_pk_spectra.py` | 3-D spectra: closure matter `P(k)` against the light-cone-averaged linear theory (`P_lin(k, a=1)` × ⟨`D²`⟩ over the cells), or the Abacus galaxy `P_gg` against the model's at a run's biases (`--bias_run`), shot noise subtracted; bins out to `√3 k_Nyq`, since the corner modes enter the cell likelihood at full weight | `figures/spectra_diagnostic/pk_*` |
-| `quick_cl_spectra.py` | `C_ℓ^{κκ}`, `C_ℓ^{gg}`, `C_ℓ^{κg}` against Limber, closure (N realisations) or Abacus; conventions below | `figures/spectra_diagnostic/cl_*` |
+| `quick_cl_spectra.py` | `C_ℓ^{κκ}`, `C_ℓ^{gg}`, `C_ℓ^{κg}` against Limber times the exact-over-Limber ratio, closure (N realisations) or Abacus; the binned spectra beside the figure (`.npz`), `--replot` redraws it from them; conventions below | `figures/spectra_diagnostic/cl_*` |
 | `validate_kappa_from_ic.py` | the κ model at the true Abacus ICs against the AbacusLensing map, no sampling: per ℓ bin coherence, transfer, error power against `N_ℓ` and `C_ℓ^LOS`, the coherence `√(1 − C^LOS/C^tt)` of a model exact but for its covariance term, and `(C^mm + C^LOS)/C^tt` (1 for a consistent model); `--shell_kmax` list, `--maps` for the pole maps (§7.9); the nside-16384 map is read once on a compute node and cached in `data/cache/` | `figures/spectra_diagnostic/kappa_from_abacus_ic_*.{png,npz}`, `figures/maps/` |
 | `kappa_stiffness.py` | largest Hessian eigenvalue of −log p in the field (power iteration on reverse-over-reverse Hessian-vector products), its eigenvector's share near the observer, cost and peak memory, per `shell_weights:shell_kmax[:noise]` variant; the MCLMC step size is capped by it | `figures/conditioning/` |
 | `kappa_lattice_template.py` | `measure`: E_z[κ] by antithetic pairs `(κ(z) + κ(−z))/2` on an (`Omega_m`, `sigma8`) list, packed like the likelihood, with the field power, the undisplaced-lattice κ, `N_ℓ` and the out-of-model term at each point's cosmology; `analyse`: S/N, projection of a run's data, Gaussian posterior with and without the template, of the run's data or `RUN:noiseless` (its noiseless map averaged over the noise), `--condition_om` for `sigma8` at given `Omega_m` (§7.15, §8 step 7) | `data/cache/template/`, `figures/kappa_lattice_template/` |
@@ -936,7 +948,7 @@ measures and the conventions that make its output comparable with the model.
 | `plot_cmb_noise_comparison.py` | Planck PR4, ACT DR6, SO baseline `N_ℓ` and their ratio to ACT, likelihood band shaded | `figures/spectra_diagnostic/cmb_noise_comparison.png` |
 | `plot_lensing_fraction.py` | Limber κ power along the line of sight at a config's geometry (default the box-5000 joint): fraction captured against depth, model shells, map, beyond the box, the model's out-of-model term `w_ℓ² C_ℓ^out`, `N_ℓ` of the config; per band, the share of a real map's out-of-model variance the likelihood holds (§3.2) | `figures/lensing_fraction/` |
 | `plot_2D_maps.py` | κ and galaxy-projection maps of one forward realisation (the galaxy panel ray-casts the mesh, display only) | `figures/maps/` |
-| `benchmark_cl_out_modes.py` | the `fixed` out-of-model term against `exact` over an (`Omega_m`, `sigma8`) grid at a config's geometry: band error and expected error on ln L (KL, nats); halofit against linear at the fiducial; per-ℓ curves in the npz (§7.18) | `figures/cl_out_modes/` |
+| `benchmark_cl_out_modes.py` | the `fixed` out-of-model term against `exact` over an (`Omega_m`, `sigma8`) grid at a config's geometry: band error and expected error on ln L (KL, nats); halofit against linear at the fiducial, and against the term's fiducial halofit boost at four points around it; per-ℓ curves in the npz (§7.18) | `figures/cl_out_modes/` |
 | `plot_highz_correction_vs_depth.py` | the beyond-box part of the term against depth | `figures/lensing_fraction/` |
 | `make_abacus_kappa_mask.py`, `plot_linear_vs_nbody.py` | AbacusLensing footprint at the model nside; linear against N-body field from one IC | — |
 
@@ -949,8 +961,15 @@ their priors. `analyze_run.py` and `compare_reconstruction.py` add the `mcmc.fix
 the run conditioned on (`truth_params` in closure, `abacus_truth_params` on Abacus).
 
 **Angular spectra** (`quick_cl_spectra.py` and the startup check of `run_inference.py`, one figure
-`validation.plot_cl_figure`). One Limber curve per spectrum (`validation.compute_cl_theory`); the
-measured maps are made comparable with it rather than the theory decorated with noise terms.
+`validation.plot_cl_figure`). One curve per spectrum (`validation.compute_cl_theory`): Limber times
+the exact-over-Limber ratio of its kernels in linear theory (`cmb_lensing.exact_over_limber`, the
+computation of the out-of-model term's ratio, §3.2), since Limber misses the radial modes of kernels
+not wide against χ/ℓ; for the galaxies the exact side carries the Kaiser term `−(f/b) j_ℓ''` when the
+model has RSD, which Limber drops. The galaxy bias is the model's linear one, `(1 + b₁)(D(a_fid)/D(a))^α`
+(§2.4), at the truth or the Abacus marker values; the higher biases (`b2`, `bs2`, `bn2`, `bnpar`) are
+not in the theory, so the closure truths are the Abacus profile biases (small `bn2`, §7.19), not
+large ones (the ratio keeps a constant bias). The measured maps are made comparable with it rather
+than the theory decorated with noise terms.
 - κ is the noiseless map. Theory in closure: the Born shells from `chi_matter_min` to `chi_boundary`
   with `k_⊥` below the init-grid Nyquist (the inferred field has no power above it), each shell times
   its squared taper under the per-shell cut; on Abacus: the line of sight from `chi_matter_min` to
@@ -1183,6 +1202,19 @@ discreteness: shells at 350–550 Mpc/h give 0.75–1.57 × the Abacus C_ℓ at 
 --bias_run`): 1.01 at k 0.015–0.025 rising to 1.13 at 0.042–0.053 h/Mpc, ≈ 1 `P_shot` of excess
 (`figures/spectra_diagnostic/pk_abacus_vs_model{,_lin_pk_table}.png`); closure matter `P(k)` 0.98 ×
 the light-cone-averaged linear theory (`pk_closure_matter.png`).
+
+**Box 5000, mesh 54, against the current theory** (Limber on the ACE spectrum times the halofit boost,
+times exact over Limber with the Kaiser term, §6; `quick_cl_spectra.py` on `validation/closure.yaml`,
+20 realisations, seed 77, job 60097747, `figures/spectra_diagnostic/cl_closure_box5000_20real.{png,npz}`,
+and the same spectra against Limber alone, on each spectrum): at ℓ = 2, gg
+1.02 and κg 1.10 (Limber alone, Eisenstein–Hu: 1.85 and 1.50), every bin of ℓ ≤ 10 within 1.5 σ of
+the curve. At ℓ 38, 44, 51, 59 (errors of the mean 0.9–1.5 %): κκ 0.99, 1.00, 0.98, 0.99; gg 0.96,
+0.96, 0.94, 0.96; κg 0.94, 0.94, 0.90, 0.93; κg / √(κκ gg) falls from 0.99 at ℓ 24 to 0.94–0.95.
+The ratio is 1.00 within 1 % there; ACE instead of Eisenstein–Hu raises the three curves by 2.5 %; the
+κg deficit is there with the Eisenstein–Hu Limber too (0.97, 0.96, 0.92, 0.94). The galaxy deficit and
+the κ–galaxy decorrelation sit near the init-grid cut (k 0.05 h/Mpc, ℓ 59 at χ ≈ 1190); open, the
+mesh-160 closure tells whether they follow the cut. Abacus (`cl_abacus_box5000.{png,npz}`, one sky):
+κκ ≈ 1 in the top bins, gg and κg within ±15 %.
 
 ### 7.9 Polar caps of the bilinear projector — measured, fixed
 
@@ -1452,9 +1484,9 @@ MCMC, and predicted `ph202` before it ran:
 
 | box / cell / d (Mpc/h) | 7500/93.75/37.5 | 7500/93.75/31.2 | 6000/75/30.0 | 5495/94.7/27.5 | 7500/93.75/26.8 | 5000/92.6/25.0 | 7500/93.75/23.4 | 5000/62.5/20.8 | 5000/62.5/17.9 |
 |---|---|---|---|---|---|---|---|---|---|
-| S/N, ℓ ≤ 64 | 5.46 | 3.59 | 2.72 | 1.84 | 2.27 | 1.31 | 1.64 | 0.99 | 0.74 |
+| S/N, ℓ ≤ 64 | 5.46 | 3.58 | 2.67 | 1.80 | 2.26 | 1.26 | 1.59 | 0.82 | 0.49 |
 
-The S/N falls smoothly with d, whatever the box or cell. These are with the ACT `N_ℓ` in C; with the SO
+The S/N falls smoothly with d, whatever the box or cell (estimation noise of the 8 pairs subtracted with the unbiased variance, `ddof = 1`). These are with the ACT `N_ℓ` in C; with the SO
 baseline substituted (same template grids) they rise by 18 %: 5.46 → 6.47 at d = 37.5, 1.30 → 1.54 at box
 5000 — the band is signal-dominated, so the noise moves the template's weight little. Its ratio to the undisplaced lattice follows
 exp[−(2π/d)²σ²/2] with σ = 4.8 Mpc/h, larger than the linear displacement rms at the shells (1.5–3.7
@@ -1830,7 +1862,91 @@ the script does not enable x64, `run_inference.py` does): nside 32 0.820 s, peak
 s; nside 128 1.306 s, 36.3 GiB, compile 325 s. The per-shell cut acts below r_eff = 424 Mpc/h (1 of 32
 shells) at nside 32 and below 1698 Mpc/h (20 of 32) at nside 128. The production joint
 (`run_20261014_024616_59769882`, float64) costs 0.29 s per gradient (median batch 146 s for 500
-evaluations per chain). The float64 bench (`JAX_ENABLE_X64=1`) is to measure.
+evaluations per chain). In float64 (`JAX_ENABLE_X64=1`, the precision of `run_inference.py`, job
+60097747): nside 32 0.821 s, peak 36.1 GiB, compile 118 s; nside 128 1.309 s, 37.1 GiB, compile 336 s;
+float32 again in the same job, nside 32: 0.819 s, 35.4 GiB. The run's precision costs nothing here:
+one chain per A100 80 GB, 4.5 × the production gradient at nside 128.
+
+**Exact-over-Limber ratio of the out-of-model term with the Limber side cut at k = 0.5** (§3.2; against
+the ratio with an uncut Limber side, same job): identical at nside 32 on
+`abacus/abacus_joint_so_cosmo_box5000.yaml` (largest relative difference 4e-16); at nside 128 / mesh
+160 it changes only at ℓ 129–256, by at most +0.53 %.
+
+**Model checks at mesh 160, no sampling** (job 60097747, configs `*_box5000_m160.yaml`, figures
+`figures/spectra_diagnostic/*_box5000_m160*`):
+- Abacus `P_gg` over the model at the profile biases of A = 1 (`quick_pk_spectra.py --set_bias`, 5
+  realisations): 0.97–1.03 in every bin to k_N = 0.10; mean 0.999 below k_N/2, 0.993 above, 1.02 in the
+  corner modes (mesh 54 / 200³, §7.8: rising to 1.13 near its k_N).
+- Closure matter `P(k)` (20 realisations): within ±5 % of the light-cone-averaged linear theory, a dip
+  to 0.95 at k 0.08–0.09, 1.0–1.1 in the corner modes; no lattice spike.
+- κ from the true Abacus ICs at nside 128 (`validate_kappa_from_ic.py`, shell cut at the init Nyquist
+  0.151): in ℓ 2–64 / 65–128 / 129–192 / 193–256 the model error over the covariance term `C^LOS`
+  0.96 / 1.00 / 1.01 / 1.03, `(C^mm + C^LOS)/C^tt` 1.02 / 0.99 / 0.96 / 0.96, coherence 0.81 / 0.70 /
+  0.64 / 0.53 on the curve of a model exact but for its covariance term. Amplitude of the model κ
+  that best fits the map at the true ICs, `Σ (2ℓ+1) C^tm/V / Σ (2ℓ+1) C^mm/V` with V = `N_ℓ + C^LOS`
+  (from the `.npz`): 1.011 ± 0.015 at ℓ 2–64, **1.026 ± 0.008 at ℓ 65–256**, 1.023 ± 0.007 over
+  2–256 (mesh 54 / 200³, ℓ ≤ 64: 1.011 ± 0.017). Without the per-shell cut (`--shell_kmax 0`, same
+  job layout, 2026-10-22): A 1.011, 0.982, 0.835, 0.578 in ℓ 2–64 / 65–128 / 129–192 / 193–256 and the
+  model error 1.2–1.6 × the covariance term above ℓ 128: the uncut near shells carry power the map does
+  not have, so the cut is needed; with it A stays 1.01–1.04 (to rerun with the corrected term, whose
+  first version weighted the halofit boost by the kernel instead of its square). The model's N-body
+  (`evolution: nbody`, BullFrog, snapshot mode: it has no light cone) on the true ICs against its 2LPT
+  at z = 0.15, 0.3, 0.5 gives the same P_nb/P_lpt at every z (0.88 at k 0.01–0.03, 0.17 at 0.15–0.17)
+  and less with 20 steps than 10: that path does not reproduce linear growth on large scales and
+  cannot test 2LPT here (log of 2026-10-22, not kept). Cause, reproduced on a 32³ toy in the linear
+  regime (modes k ≤ 3/32 of the grid): its PM forces are computed on the particle grid itself (one
+  particle per cell, `pm_forces` with its CIC deconvolution commented out), so their response is not
+  one and each BullFrog kick, which swaps part of the exact initial velocity for the PM force, adds the
+  error: displacement over Zel'dovich 0.958 / 0.942 / 0.924 at 5 / 10 / 20 steps, 1.010 / 1.050 /
+  1.099 with the CIC deconvolution restored (particles on the nodes do not have the CIC response). A
+  force mesh finer than the particle grid is what it lacks. No run or diagnostic uses this path.
+- Angular spectra against the current theory (§6): closure (20 realisations) κκ 0.97–1.01 to ℓ 237;
+  gg and κg 0.96–0.98 to ℓ ≈ 40, then falling with ℓ: gg 0.91 / 0.81 / 0.72 / 0.58 / 0.49 and κg 0.93
+  / 0.87 / 0.80 / 0.67 / 0.54 at ℓ 52 / 96 / 129 / 175 / 237. Abacus (one sky): κκ 0.97–1.01, gg
+  0.89–1.04, κg 0.90–1.04 at ℓ 71–237. The theory has the linear bias only, the closure truth
+  (`validation/closure.yaml`) `bn2` 78, `bnpar` −45, `b2` 0.68, `bs2` −0.48. With those four at zero
+  (figure not kept): gg and κg 0.97–1.02 to ℓ 111; above, gg 1.04,
+  1.04, 1.07, 1.13, 1.24 and κg 0.98, 0.96, 0.93, 0.90, 0.95 at ℓ 129, 151, 175, 204, 237 (errors
+  0.2–0.4 %). Mesh 54 with the Abacus profile biases and `b1_alpha` in the theory
+  (`cl_closure_box5000_20real`): gg 1.00–1.02 at ℓ 21–59, κg 0.98, 0.97, 0.97, 0.93, 0.97 at ℓ 32–59
+  (errors 0.9–1.5 %). Mesh 160 with the Abacus profile biases (`cl_closure_box5000_m160_20real`): gg
+  and κg 0.97–1.02 to ℓ 111; gg 1.03, 1.03, 1.05, 1.10, 1.19 and κg 0.99, 0.97, 0.94, 0.92, 0.96 at ℓ
+  129–237. What remains sits near the init-grid k cut at both grids (k 0.05 → ℓ ≈ 55, k 0.15 → ℓ ≈
+  165 at the galaxies' near edge). Maps `figures/maps/2D_maps_{abacus,closure}_box5000_m160.png`.
+- Fisher, joint config at mesh 160, SO, `b1_alpha` free (`fisher_cosmo.py --b1_alpha`,
+  `figures/fisher_diagnostic/fisher_cosmo_box5000_m160_so_b1alpha.{png,json}`), σ(`Omega_m`) /
+  σ(`sigma8`): galaxies 0.0018 / 0.011; κ alone 0.0147 / 0.0157 (term as noise), 0.0074 / 0.0065
+  (as signal); joint 0.00175 / 0.0058 (noise), 0.00172 / 0.0038 (signal), κ gain 7 % / 66 %. Mesh 54
+  (§7.10): galaxies 0.0109 / 0.0523, joint 0.0094 / 0.0108.
+- Galaxy profile in `Omega_m` at the true ICs (`galaxy_likelihood_profile.py --mode omega_m`, biases
+  profiled, `abacus_gxyonly_cosmo_box5000_m160_omega_mm160p280.json`): χ² − χ²(0.28) = 0, +91, +356,
+  +768, +1554 at 0.28, 0.30, 0.3152, 0.33, 0.35 — the minimum is at or below the grid's lower edge,
+  against a Fisher width of 0.0018. At mesh 54 / 200³ (`abacus_gxyonly_cosmo_box5000_omega_mm54p200.json`)
+  the same shape: 0, +7.1, +14.0, +21.9, +34.3, no minimum above 0.28, though the mesh-54 galaxy run
+  is at 0.3117 ± 0.0109 (§7.17): with the field held at the truth, the profile in `Omega_m` does not
+  predict the run's `Omega_m` at mesh 54; Δχ² at the truth grows 25 × from mesh 54 to 160 (Fisher
+  information 37 ×). Extended at mesh 160 (`…_omega_mm160p280_low.json`, 0.22–0.26): minimum at 0.285,
+  Δχ² = 1 at ± 0.0016.
+- `kappa_stiffness.py` at nside 128 / 280³ (κ alone, reverse-over-reverse Hessian-vector product): out
+  of memory on an A100 80 GB (one 43.8 GiB allocation).
+- Out-of-model term at mesh 160 / nside 128 (`benchmark_cl_out_modes.py`, joint config,
+  `figures/cl_out_modes/abacus_joint_so_cosmo_box5000_m160.{json,npz,png}`): `C^out/N` 0.94 over ℓ
+  2–256 at the fiducial; `fixed` against `exact` 7–61 nats within ±0.035 in `Omega_m` and ±0.04 in
+  `sigma8`; halofit against linear at the fiducial up to 4.7 % per multipole, **1.28 nats** (0.4 %,
+  0.006 nats at ℓ ≤ 64, §7.18). The model's boost of the term agrees with that halofit-over-linear
+  ratio of the benchmark to 0.1 % on a test geometry (ℓ 20, 100, 200: 0.992, 1.017, 1.147). Off the
+  fiducial (`…_m160_halofit.{json,npz,png}`), halofit against linear times the fiducial boost at
+  (`Omega_m`, `sigma8`) = (0.280, 0.771), (0.280, 0.851), (0.350, 0.771), (0.350, 0.851): 0.003, 0.022,
+  0.014, 0.013 nats, at most 0.74 % per multipole: the boost fixed at the fiducial holds across the
+  posterior. From the IC test, `C^LOS` over the map's power 0.35 / 0.51 / 0.59 /
+  0.70 and over `N_ℓ` 1.68 / 1.40 / 0.74 / 0.42 in ℓ 2–64 / 65–128 / 129–192 / 193–256.
+- κ lattice template at 280³, nside 128 (8 pairs at the fiducial, SO): the `analyse` output (S/N 4.06
+  "ℓ ≤ 64") is over every ℓ ≥ 2, i.e. ℓ 2–256 here, and subtracts the estimation noise with the
+  `ddof = 0` variance of 8 pairs (7/8 of it); over 66 045 modes that leaves 15 in S/N². With `ddof = 1`:
+  S/N 0.44 at ℓ ≤ 64, 0.61 at 65–128, 1.14 at 129–256, 1.37 over 2–256, each within the scatter of
+  the noise estimate (Σ T²/C 118.7 against 116.8 of noise); weighted correlation of T with the
+  undisplaced-lattice κ 0.015. With 32 pairs (`…_m160_32pairs.json`): S/N 0.13 at ℓ ≤ 64, 0.35 at
+  65–128, 0 at 129–256, 0.23 over 2–256. No template detected at this grid.
 
 ## 8. Remaining steps before the paper
 
@@ -1838,26 +1954,47 @@ evaluations per chain). The float64 bench (`JAX_ENABLE_X64=1`) is to measure.
 at mesh 160 / ℓ ≤ 256 (§7.19), then the field level against a two-point analysis at the same scales.**
 In order, each step checked before the next:
 
-- **Cost in float64**: `bench_gradient.py` as in §7.19 with `JAX_ENABLE_X64=1`, nside 32 and 128; it
-  sets whether one A100 80 GB per chain still holds (sharding of one chain otherwise, `jaxpm.distributed`).
+- **Cost in float64 — done (§7.19)**: 1.309 s and 37.1 GiB per joint gradient at nside 128, as in
+  float32; one A100 80 GB per chain holds, no sharding.
 - **The warm-up in one batch job**: the two warm-up calls of `run_inference.py` (mesh, then all
   parameters) are monolithic and their step counts are fixed by the config, so their time scales with
-  the cost of a gradient: 142 min at 0.29 s, at least ≈ 4.5 × that at mesh 160 / nside 128 (float32
+  the cost of a gradient: 142 min at 0.29 s, at least ≈ 4.5 × that at mesh 160 / nside 128 (float64
   bench). That does not fit a 4 h allocation but fits the `regular` QOS (48 h): submit with
-  `run.sbatch` (`docs/hpc.md`, "Long batch job"), then continue the batches with `--resume`. A
+  `submit.py <config>` (`docs/hpc.md`, "Long batch job"), then continue the batches with `--resume`. A
   checkpointed warm-up only if long jobs wait too long or fail; whether 2¹³ + 8192 warm-up steps suffice
   for a 240³ field is read from the first run's warm-up figures.
-- **Model checks at the new grid, no sampling** (the usual diagnostics): the Abacus galaxy residual
-  against the true ICs per k bin against shot noise, and `P_gg` Abacus over model (`quick_pk_spectra.py`);
-  the closure matter `P(k)` and the lattice harmonic (§7.16); the closure angular spectra
-  (`quick_cl_spectra.py`); the κ IC test at nside 128 (`validate_kappa_from_ic.py`: error against the
-  covariance, transfer, coherence); halofit against linear on the out-of-model term, now holding ℓ 64–256
-  of the shells below 1700 Mpc/h (`benchmark_cl_out_modes.py`); the κ lattice template S/N at 280³
-  (`kappa_lattice_template.py`); the Fisher at the new grid and band (`fisher_cosmo.py`).
-- **Configs** (box 5000, mesh 160, 280³, nside 128, every key in `configs/inference/config.yaml`), then
-  the runs: closure, then Abacus — galaxies alone, κ alone, joint — with the usual diagnostics (R̂, ESS,
-  step size, warm-up figures, `analyze_run.py`, `compare_runs.py`, `compare_reconstruction.py`,
-  `triplet_numbers.py`, paired gains against the Fisher).
+- **Model checks at the new grid, no sampling** (configs `*_box5000_m160.yaml`, job 60097747, §7.19):
+  - done: `P_gg` Abacus over model at the profile biases (0.97–1.03 to k_N); closure matter `P(k)`
+    (±5 %, no lattice spike); κ IC test at nside 128 (error = covariance term to ℓ 256); closure and
+    Abacus angular spectra (κκ 0.97–1.01 to ℓ 237; Abacus gg, κg on the curve at ℓ 71–237).
+  - done since: the closure deficit was its truth biases (zero higher biases: on the curve to ℓ 111);
+    closure truths are now the Abacus profile biases, `b1_alpha` is in the diagnostic theory, both
+    grids regenerated; Fisher at mesh 160; κ lattice template (S/N 1.37 over ℓ 2–256 with the
+    corrected `analyse`, §7.15 table re-analysed); out-of-model term benchmark (halofit 1.28 nats →
+    the term now carries the fiducial halofit boost, §3.2); galaxy profile in `Omega_m` at both grids
+    (not predictive of the run at mesh 54); maps Abacus and closure.
+  - open: gg, κg near the init-grid cut at both grids (ℓ ≳ 130 at mesh 160); the κ amplitude at the
+    true ICs, 1.01 to ℓ 128 and 1.03–1.04 at ℓ 129–256 (§7.19). Order of magnitude: at the k (0.12–0.15)
+    and z (0.4–0.55) of the shells those multipoles see, halofit over linear is 1.03–1.08 and the 2LPT
+    closure P(k) 0.95–1.0 of linear, so P_true/P_2LPT ≈ 1.03–1.13 and A ≈ r √(P_true/P_2LPT) ≈
+    1.015–1.06: consistent with the growth 2LPT misses, not shown. The tests that separate it (IC test
+    with `lpt_order: 1`, and with `--shell_kmax 0.2`) were lost twice with their allocations; to rerun,
+    ideally after caching the term's fiducial ratio (≈ 20 min per model build at nside 128). If it is
+    the growth, the remedy is the existing knob: a lower `shell_kmax` (0.10–0.12, chosen as the largest
+    with A consistent with 1 at ℓ 129–256 in the IC test), moving those near-shell modes into the
+    covariance term; the fallback is κ at ℓ ≤ 128 (nside 64).
+  - to do: rerun `benchmark_cl_out_modes.py` with the halofit boost (off-fiducial residual);
+    `kappa_stiffness.py` at nside 128 (out of memory in reverse-over-reverse: forward-over-reverse
+    Hessian-vector products, or skip and read the warm-up's step size).
+- **Configs — written**: `validation/closure_box5000_m160.yaml`,
+  `abacus/abacus_{gxyonly,kappaonly_so,joint_so}_cosmo_box5000_m160.yaml` (cell 31.25, 280³, nside 128;
+  `slurm` regular, `gpu&hbm80g`, 11 h for galaxies and κ, 21 h for the two joints (Abacus and closure), whose warm-up
+  of ≈ 10.7 h must fit; 60 batches, κ alone 20 (ESS ≈ 200 per batch at mesh 54, §7.17), more with
+  `--resume` if R̂ or ESS ask: ≈ 40 node-hours for the triplet against ≈ 80 at 140), submitted with
+  `submit.py <config>` after checking the NERSC queue table (`docs/hpc.md`). Galaxies alone submitted
+  2026-10-22 (job 60102854). Then the runs: closure, then Abacus — galaxies alone, κ alone, joint — with the
+  usual diagnostics (R̂, ESS, step size, warm-up figures, `analyze_run.py`, `compare_runs.py`,
+  `compare_reconstruction.py`, `triplet_numbers.py`, paired gains against the Fisher).
 - **Everything downstream redone at the new grid**: the figures of §8's table and of §7, §7.x results
   (new subsections, the mesh-54 ones kept as record), README abstract, the paper plan, the team slides.
 - **Then the comparison**: field level against an EFT two-point analysis (P₀, P₂ and C_ℓ^κκ, C_ℓ^κg) on the

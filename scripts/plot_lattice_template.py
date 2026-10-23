@@ -192,7 +192,7 @@ def fig_template(g, cfg_path, geometries):
             {
                 "box": d["box"],
                 "d": d["particle_spacing"],
-                "sn": d["S/N"]["l<=64"],
+                "sn": d["S/N"]["l 2-64"],
                 "damp": d["template/undisplaced"],
             }
             for d in (json.load(open(f)) for f in sorted(glob.glob(geometries)))

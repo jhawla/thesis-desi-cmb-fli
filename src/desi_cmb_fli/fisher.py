@@ -363,8 +363,9 @@ def kappa_geometry(cfg):
 
 
 def with_los_ratio(kappa, Omega_m, sigma8, z_source=1089.28):
-    """``kappa`` with "los_ratio": the exact-over-Limber ratio of the line-of-sight kernel of its
-    geometry (``cmb_lensing.limber_ratio_outside_model``), as the model computes it at its fiducial."""
+    """``kappa`` with "los_ratio": the exact-over-Limber and halofit-over-linear ratio of the
+    line-of-sight kernel of its geometry (``cmb_lensing.limber_ratio_outside_model``), as the model
+    computes it at its fiducial."""
     import jax
     import jax_cosmo as jc
     from jax import numpy as jnp

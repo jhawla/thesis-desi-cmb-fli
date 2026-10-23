@@ -33,11 +33,13 @@ All scripts are configured via YAML files in `configs/<script_name>/config.yaml`
 ### Submit a job
 
 ```bash
-# Example : CMB lensing joint inference
-./configs/inference/submit.py
+./configs/inference/submit.py                      # configs/inference/config.yaml
+./configs/inference/submit.py configs/inference/abacus/abacus_joint_so_cosmo_box5000_m160.yaml
 ```
 
-The submit script reads the YAML configuration and submits the job with appropriate SLURM parameters.
+`submit.py` copies the config to `configs/inference/submitted/` and submits `run.sbatch` on it with the
+SLURM parameters of its `slurm` block (`job_name`, `account`, `qos`, `constraint`, `nodes`, `gpus`,
+`time`); `--gpus` is passed on any GPU constraint (`gpu`, `gpu&hbm80g`).
 
 ### Check job status
 
@@ -91,18 +93,19 @@ python scripts/run_inference.py --config configs/inference/config.yaml
 ### Long batch job (warm-up beyond 4 h)
 
 The warm-up of `run_inference.py` (mesh, then all parameters) runs in one go and is not checkpointed;
-when it does not fit an interactive allocation (the mesh-160 runs), submit the run to the `regular`
-QOS (`gpu_regular`, at most 48 h) with `run.sbatch`, which takes the config path:
+when it does not fit an interactive allocation (the mesh-160 runs), submit the run with `submit.py`
+and the config, whose `slurm` block sets the `regular` QOS (`gpu_regular`, at most 48 h), the 80 GB
+GPUs (`gpu&hbm80g`) and the time. The queue wait depends strongly on the time and nodes asked: check
+the real-time table at https://www.nersc.gov/users/status before submitting and size `slurm.time` to
+what the job needs (the warm-up must fit; NERSC charges the time used).
 
 ```bash
-sbatch --job-name=<name> --account=desi --qos=regular --constraint="gpu&hbm80g" --nodes=1 --gpus=4 \
-  --time=36:00:00 --output=logs/%x-%j.out configs/inference/run.sbatch configs/inference/<config>.yaml
+./configs/inference/submit.py configs/inference/abacus/abacus_gxyonly_cosmo_box5000_m160.yaml
 ```
 
 The sampler state is saved right after the warm-up (`sampler_state.pkl`), so the batches can then be
-continued in an interactive allocation or another job with `run_inference.py --resume <run_dir>`.
-`submit.py` does not fit this use: it reads only `configs/inference/config.yaml` and passes `--gpus`
-only when the constraint is exactly `gpu`.
+continued in an interactive allocation with `run_inference.py --resume <run_dir>` (`run.sbatch` runs
+`--config` only).
 
 ## Storage
 
