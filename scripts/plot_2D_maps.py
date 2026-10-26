@@ -170,7 +170,7 @@ def main():
             )
             out = {}
             if cmb_enabled:
-                out["kappa_pred"] = res.get("kappa_pred")
+                out["kappa_pred"] = res.get("kappa_mean")  # the noiseless data map, as in truth.npz
                 out["kappa_obs"] = res.get("kappa_obs")
             if galaxies_enabled:
                 out["obs"] = res.get("obs")

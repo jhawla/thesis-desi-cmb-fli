@@ -76,7 +76,20 @@ squeue -u $USER
 ### Interactive job
 
 Runs with galaxies need the 80 GB A100s (`hbm80g`): on a 40 GB node the joint runs out of memory on
-GPU 0 and hangs without an error (job 59687440).
+GPU 0 and hangs without an error (job 59687440). `run_inference.py` reserves JAX's default pool at
+start as one block of 95 % of the GPU (`XLA_PYTHON_CLIENT_PREALLOCATE=true`,
+`XLA_PYTHON_CLIENT_MEM_FRACTION=0.95`, each set only if the shell does not; the shell may also set
+`XLA_PYTHON_CLIENT_ALLOCATOR`) and clears each warm-up's executables before the next step. Grown on
+demand instead (preallocation off), the pool adds a region per large request and never returns one,
+so a program whose working buffer exceeds every region already held asks for a new one the GPU no
+longer has: at mesh 160 the warm-ups ran out of memory with most of the pool free (pipeline §7.19).
+The platform allocator (no pool) fits but costs 1.7 × per gradient. A compiled program's
+constants load outside that pool: the Fourier kernels and the particle lattice are built with `jnp`
+inside the traced code, and `run_inference.py` adds `--xla_disable_hlo_passes=constant_folding` to
+`XLA_FLAGS` so that XLA does not fold them back into grid-sized constants (at mesh 160 they made
+2.2 GiB per trace of the log-density, 7–12 GB per warm-up program, and the 95 % pool left no room to
+load them, pipeline §7.19); what loads outside the pool must fit in the remaining 5 %. A memory figure from `bench_gradient.py` is one gradient in a fresh
+process; check a new grid with a short end-to-end `run_inference.py` (few warm-up steps, one batch).
 
 ```bash
 salloc --nodes 1 --qos interactive --time 04:00:00 --constraint "gpu&hbm80g" --gpus 4 --account=desi

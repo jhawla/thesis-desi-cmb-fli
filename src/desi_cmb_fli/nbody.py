@@ -145,11 +145,12 @@ def _is_abacus_background(cosmo):
 
 def rfftk(shape):
     """
-    Return wavevectors in cell units for rfftn.
+    Return wavevectors in cell units for rfftn, as jax arrays: under jit they are computed in the
+    program instead of embedded in it as constants, as are the kernels built from them.
     """
-    kx = np.fft.fftfreq(shape[0]) * 2 * np.pi
-    ky = np.fft.fftfreq(shape[1]) * 2 * np.pi
-    kz = np.fft.rfftfreq(shape[2]) * 2 * np.pi
+    kx = jnp.fft.fftfreq(int(shape[0])) * 2 * jnp.pi
+    ky = jnp.fft.fftfreq(int(shape[1])) * 2 * jnp.pi
+    kz = jnp.fft.rfftfreq(int(shape[2])) * 2 * jnp.pi
 
     kx = kx.reshape([-1, 1, 1])
     ky = ky.reshape([1, -1, 1])
@@ -175,7 +176,7 @@ def invlaplace_kernel(kvec, fd=False):
         Complex kernel values
     """
     if fd:
-        kk = sum((ki * np.sinc(ki / (2 * np.pi))) ** 2 for ki in kvec)
+        kk = sum((ki * jnp.sinc(ki / (2 * jnp.pi))) ** 2 for ki in kvec)
     else:
         kk = sum(ki**2 for ki in kvec)
     return -safe_div(1, kk)
@@ -201,7 +202,7 @@ def gradient_kernel(kvec, direction: int, fd=False):
     """
     ki = kvec[direction]
     if fd:
-        ki = (8.0 * np.sin(ki) - np.sin(2.0 * ki)) / 6.0
+        ki = (8.0 * jnp.sin(ki) - jnp.sin(2.0 * ki)) / 6.0
     return 1j * ki
 
 
@@ -228,7 +229,7 @@ def paint_kernel(kvec, order: int = 2):
     weights: array
         Complex kernel values
     """
-    wts = [np.sinc(kvec[i] / (2 * np.pi)) for i in range(3)]
+    wts = [jnp.sinc(kvec[i] / (2 * jnp.pi)) for i in range(3)]
     wts = (wts[0] * wts[1] * wts[2]) ** order
     return wts
 

@@ -761,6 +761,55 @@ def cut_shells(shells, taper, nside):
     )
 
 
+def add_ell_filtered(kmap, fl, nside):
+    """``kmap`` plus itself filtered by ``fl`` per multipole, l = 0 ... 2 nside (``map2alm``,
+    ``iter=0``): only the filtered part goes through the round trip."""
+    import healpy as hp
+    import jax_healpy as jhp
+
+    lmax = 2 * int(nside)
+    alm = jhp.map2alm(kmap, lmax=lmax, pol=False, iter=0, healpy_ordering=True)
+    fl = jnp.asarray(fl)[jnp.asarray(hp.Alm.getlm(lmax)[0])]
+    return kmap + jnp.real(jhp.alm2map(fl * alm, nside=int(nside), lmax=lmax, pol=False,
+                                       healpy_ordering=True))
+
+
+def _outside_model_spectra(
+    cosmo, ell, r_shells, a_shells, d_r, shell_weights, z_source, chi_max, taper=None,
+    n_per_shell=40, n_beyond=200,
+):
+    """Linear Limber spectra of the kernel left out ``B = W - M`` and of the model's ``M =
+    sum_s w_s(ell) q_s``, per multipole: ``(C^BB, C^BM, C^MM)``, in one pass over the kernels
+    (``compute_cl_outside_model``, ``compute_out_terms``)."""
+    from desi_cmb_fli.bricks import lin_power_interp
+    from desi_cmb_fli.nbody import a2g
+
+    ell_idx = np.asarray(ell).astype(int)
+    chi_j, a, w_map, q = _outside_kernel(cosmo, r_shells, a_shells, d_r, shell_weights, z_source,
+                                         chi_max, n_per_shell, n_beyond)
+    pk_fn = lin_power_interp(cosmo)
+    growth2 = a2g(cosmo, a) ** 2
+
+    def per_ell(ell_val, held):
+        m = (held[:, None] * q).sum(0)
+        kern = w_map - m
+        weight = pk_fn((ell_val + 0.5) / chi_j) * growth2 / chi_j**2
+        return tuple(jax.scipy.integrate.trapezoid(x * weight, x=chi_j)
+                     for x in (kern**2, kern * m, m**2))
+
+    held = (np.ones((q.shape[0], ell_idx.size)) if taper is None
+            else np.asarray(taper, dtype=float)[:, ell_idx])
+    return jax.vmap(per_ell)(jnp.asarray(ell_idx, dtype=float), jnp.asarray(held.T))
+
+
+def _gain(cross, auto):
+    """``1 + C^BM / C^MM`` per multipole: the data map's kappa expected given the model's
+    (docs/pipeline.md 3.2). The kernel left out ``B`` and the model's ``M`` overlap in chi (the
+    tapers of the per-shell cut, the end ramps of the tents), so the matter left out is correlated
+    with the model's; this is its regression on it."""
+    return 1.0 + jnp.where(auto > 0, cross / jnp.where(auto > 0, auto, 1.0), 0.0)
+
+
 def compute_cl_outside_model(
     cosmo, ell, r_shells, a_shells, d_r, shell_weights, z_source, chi_max, taper=None,
     n_per_shell=40, n_beyond=200,
@@ -777,23 +826,8 @@ def compute_cl_outside_model(
     box, the end ramps of the tents and what the cut removes; it is one kernel, so their cross
     terms enter. ``ell`` are integers indexing the columns of ``taper``.
     """
-    from desi_cmb_fli.bricks import lin_power_interp
-    from desi_cmb_fli.nbody import a2g
-
-    ell_idx = np.asarray(ell).astype(int)
-    chi_j, a, w_map, q = _outside_kernel(cosmo, r_shells, a_shells, d_r, shell_weights, z_source,
-                                         chi_max, n_per_shell, n_beyond)
-    pk_fn = lin_power_interp(cosmo)
-    growth2 = a2g(cosmo, a) ** 2
-
-    def per_ell(ell_val, held):
-        kern = w_map - (held[:, None] * q).sum(0)
-        pk = pk_fn((ell_val + 0.5) / chi_j) * growth2
-        return jax.scipy.integrate.trapezoid(kern**2 / chi_j**2 * pk, x=chi_j)
-
-    held = (np.ones((q.shape[0], ell_idx.size)) if taper is None
-            else np.asarray(taper, dtype=float)[:, ell_idx])
-    return jax.vmap(per_ell)(jnp.asarray(ell_idx, dtype=float), jnp.asarray(held.T))
+    return _outside_model_spectra(cosmo, ell, r_shells, a_shells, d_r, shell_weights, z_source,
+                                  chi_max, taper, n_per_shell, n_beyond)[0]
 
 
 def _outside_kernel(cosmo, r_shells, a_shells, d_r, shell_weights, z_source, chi_max, n_per_shell,
@@ -967,22 +1001,25 @@ def compute_theoretical_cl_kg(
 # =========================================================================
 
 
-def compute_cl_out(cosmo, ell_1d, chi_max, shells, mode="exact", cl_cached=None, window2=None):
-    """Out-of-model term C_ell^out of the kappa covariance: everything the Born shells leave out of
-    the matter the data map holds up to ``chi_max`` (the CMB if None) -- beyond the box, the end
-    ramps of the tents and the per-shell cut (``compute_cl_outside_model``, whose keyword arguments
-    but ``cosmo``, ``ell`` and ``chi_max`` are ``shells``). Times ``window2`` if given (per
-    multipole: the squared angular window with which that matter reaches the observable, the
-    projection sphere's ``bilinear_window``, times ``limber_ratio_outside_model``).
+def compute_out_terms(cosmo, ell_1d, chi_max, shells, mode="exact", cl_cached=None,
+                      gain_cached=None, window2=None):
+    """Out-of-model term C_ell^out of the kappa covariance and the gain ``1 + beta_ell`` of the
+    likelihood's mean (``_gain``), from one pass over the kernels: everything the Born
+    shells leave out of the matter the data map holds up to ``chi_max`` (the CMB if None) -- beyond
+    the box, the end ramps of the tents and the per-shell cut (``compute_cl_outside_model``, whose
+    keyword arguments but ``cosmo``, ``ell`` and ``chi_max`` are ``shells``). C_ell^out times
+    ``window2`` if given (per multipole: the squared angular window with which that matter reaches
+    the observable, the projection sphere's ``bilinear_window``, times ``limber_ratio_outside_model``);
+    the gain is a ratio of spectra of the same matter, without them.
 
     Modes:
-      'exact' : recomputed at ``cosmo`` (linear, the model's spectrum and background).
-      'fixed' : ``cl_cached``, the windowed term at the fiducial cosmology.
+      'exact' : both recomputed at ``cosmo`` (linear, the model's spectrum and background).
+      'fixed' : ``cl_cached`` and ``gain_cached``, at the fiducial cosmology.
     """
     if mode == "fixed":
         if cl_cached is None:
             raise ValueError("mode='fixed' requires cl_cached")
-        return cl_cached
+        return cl_cached, gain_cached
     if mode != "exact":
         raise ValueError(f"Unknown cl_out_mode '{mode}': 'fixed' or 'exact' ('taylor' and "
                          "'exact_linear' were replaced by 'exact', docs/pipeline.md 3.2)")
@@ -990,8 +1027,13 @@ def compute_cl_out(cosmo, ell_1d, chi_max, shells, mode="exact", cl_cached=None,
 
     if chi_max is None:
         chi_max = a2chi(cosmo, jnp.asarray(1.0 / (1.0 + shells["z_source"])))
-    cl = compute_cl_outside_model(cosmo, ell_1d, **shells, chi_max=chi_max)
-    return cl if window2 is None else cl * window2
+    left, cross, auto = _outside_model_spectra(cosmo, ell_1d, **shells, chi_max=chi_max)
+    return (left if window2 is None else left * window2), _gain(cross, auto)
+
+
+def compute_cl_out(cosmo, ell_1d, chi_max, shells, mode="exact", cl_cached=None, window2=None):
+    """C_ell^out alone (``compute_out_terms``)."""
+    return compute_out_terms(cosmo, ell_1d, chi_max, shells, mode, cl_cached, None, window2)[0]
 
 
 # =========================================================================

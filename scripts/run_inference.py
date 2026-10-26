@@ -17,9 +17,17 @@ import sys
 
 import yaml
 
-# Memory optimization for JAX on GPU
-os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+# JAX's default (BFC) pool, reserved at start as one block of 95 % of the GPU: grown on demand it
+# splits into regions it never returns, and a later program's buffer no longer fits; the shell may
+# override both (e.g. XLA_PYTHON_CLIENT_ALLOCATOR=cuda_async), docs/hpc.md
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "true")
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.95")
+# XLA must not fold the Fourier kernels back into grid-sized constants of the compiled programs,
+# which load outside that pool (docs/hpc.md)
+if "--xla_disable_hlo_passes=constant_folding" not in os.environ.get("XLA_FLAGS", ""):
+    os.environ["XLA_FLAGS"] = (
+        os.environ.get("XLA_FLAGS", "") + " --xla_disable_hlo_passes=constant_folding"
+    ).strip()
 
 from datetime import datetime
 from pathlib import Path
@@ -216,6 +224,8 @@ else:
             rng=jr.key(seed),
         )
         print("[Closure test] kappa_obs generated synthetically from truth_params")
+        if model.cmb_enabled and "kappa_pred" in truth:
+            truth["kappa_pred"] = truth["kappa_mean"]  # the noiseless data map
 
         truth.update(closure_geom_keys)
 
@@ -476,9 +486,10 @@ if not RESUME_MODE:
 
     _t0 = _time.time()
     state_mesh, config_mesh = warmup_mesh_fn(jr.split(jr.key(43), num_chains), init_mesh_)
-    # Force sync to get accurate wall time
-    jnp.array(0.).block_until_ready()
+    jax.block_until_ready((state_mesh, config_mesh))
     print(f"  [mesh warmup call: {_time.time()-_t0:.1f}s]", flush=True)
+    del warmup_mesh_fn
+    jax.clear_caches()  # frees step 1's executables (and their constants) before step 2 compiles
 
     print("✓ Mesh warmup done", flush=True)
     print(f"  Logdens (median): {float(jnp.median(state_mesh.logdensity)):.2f}", flush=True)
@@ -519,7 +530,7 @@ if not RESUME_MODE:
 
     _t0 = _time.time()
     state, config = warmup_all_fn(jr.split(jr.key(43), num_chains), init_params_)
-    jnp.array(0.).block_until_ready()
+    jax.block_until_ready((state, config))
     print(f"  [all-params warmup call: {_time.time()-_t0:.1f}s]", flush=True)
 
     print("✓ Full warmup done")
@@ -575,6 +586,8 @@ if not RESUME_MODE:
     with open(config_dir / "sampler_state.pkl", "wb") as f:
         pickle.dump({"state": state, "config": config}, f)
     print("  ✓ Saved sampler state for resume")
+    del warmup_all_fn
+    jax.clear_caches()  # frees step 2's executables before the sampling ones compile
 
     # ========================
     # WARMUP VALIDATION TESTS

@@ -66,6 +66,8 @@ def _run(model):
     cosmo = {"Omega_m": 0.315192, "sigma8": 0.811355}
     truth = model.predict(samples=cosmo, hide_base=False, hide_samp=False, hide_det=False,
                           frombase=True, rng=3)
+    if "kappa_mean" in truth:
+        truth["kappa_pred"] = truth["kappa_mean"]  # as run_inference.py stores it
     truth = {k: np.asarray(v) for k, v in truth.items() if v is not None}
     model.reset()
     model.condition(cosmo, frombase=True)

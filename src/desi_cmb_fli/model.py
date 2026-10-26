@@ -517,7 +517,21 @@ class Model:
         missing would be drawn from their priors. Traces the unconditioned model, so it can run
         while ``self.model`` is conditioned for sampling."""
         tr = trace(seed(condition(self._model, data=latents), rng_seed=0)).get_trace()
-        return self.pack_kappa_obs(tr["kappa_pred"]["value"])
+        return self.pack_kappa_obs(tr["kappa_mean"]["value"])
+
+    def kappa_mean(self, kappa_pred, gain=None):
+        """The data map's kappa expected given the model's ``kappa_pred``: times the out-of-model
+        gain per multipole (l <= cmb_lmax; the fiducial one if ``gain`` is None, 1 above), on the
+        full projection sphere before any mask (docs/pipeline.md 3.2). The likelihood records it
+        as the deterministic site ``kappa_mean``, at the sampled cosmology under 'exact'."""
+        gain = getattr(self, "cmb_out_gain", None) if gain is None else gain
+        if gain is None:
+            return kappa_pred
+        from desi_cmb_fli.cmb_lensing import add_ell_filtered
+
+        fl = jnp.zeros(2 * int(self.cmb_proj_nside) + 1).at[: len(self.ell_1d)].set(
+            jnp.asarray(gain) - 1.0)
+        return add_ell_filtered(kappa_pred, fl, self.cmb_proj_nside)
 
     ############
     # Wrappers #
@@ -843,7 +857,7 @@ class FieldLevelModel(Model):
             from desi_cmb_fli.cmb_lensing import (
                 _box_ray_intervals,
                 bilinear_window,
-                compute_cl_out,
+                compute_out_terms,
                 compute_sigma_hp,
                 limber_ratio_outside_model,
                 load_healpix_mask,
@@ -1066,6 +1080,7 @@ class FieldLevelModel(Model):
             self.cmb_shells = None
             self.cmb_los_window2 = None
             self.cmb_los_limber = None
+            self.cmb_out_gain = None
 
             if self.cl_out_mode not in ("exact", "fixed"):
                 raise ValueError(f"cl_out_mode must be 'exact' or 'fixed', got {self.cl_out_mode!r} "
@@ -1096,8 +1111,10 @@ class FieldLevelModel(Model):
                 self.cmb_los_limber = jnp.asarray(limber_ratio_outside_model(
                     cosmo_fid, self.ell_1d, **self.cmb_shells, chi_max=chi_high_z_upper))
 
-                # At the fiducial in every mode: the likelihood under 'fixed', the diagnostics.
-                self.cl_out_cached = compute_cl_out(
+                # At the fiducial in every mode: the likelihood under 'fixed', the diagnostics. The
+                # matter left out is correlated with the model's: the data map's expected kappa is
+                # the model's times the gain (3.2).
+                self.cl_out_cached, self.cmb_out_gain = compute_out_terms(
                     cosmo_fid, self.ell_1d, chi_high_z_upper, self.cmb_shells, mode="exact",
                     window2=self.cmb_los_window2 * self.cmb_los_limber,
                 )
@@ -1105,6 +1122,9 @@ class FieldLevelModel(Model):
                     f"  C_l^out at the fiducial (mode={self.cl_out_mode}, "
                     f"chi={self.chi_boundary:.0f}->{chi_high_z_upper:.0f} Mpc/h)"
                 )
+                g = np.asarray(self.cmb_out_gain)[2:]
+                print(f"  Out-of-model gain 1 + C^BM/C^MM: {g.min():.4f} ... {g.max():.4f} "
+                      f"(l 2-{self.cmb_lmax})")
 
             if self.cmb_likelihood_mode == "pixel_exact":
                 self._build_cmb_pixel_cov()
@@ -1593,7 +1613,7 @@ class FieldLevelModel(Model):
             # CMB lensing likelihood (if enabled)
             if self.cmb_enabled and cosmology is not None and bias is not None:
                 from desi_cmb_fli.cmb_lensing import (
-                    compute_cl_out,
+                    compute_out_terms,
                     convergence_Born_spherical,
                     cut_shells,
                 )
@@ -1625,25 +1645,27 @@ class FieldLevelModel(Model):
                     kappa_pred = cut_shells(kappa_pred, self.cmb_shell_taper, self.cmb_proj_nside)
 
                 kappa_pred = deterministic("kappa_pred", kappa_pred)
+                # Out-of-model term of the CMB covariance and the gain of the mean (3.2).
+                cl_out_1d, gain = (None, None)
+                if self.full_los_correction:
+                    cl_out_1d, gain = compute_out_terms(
+                        cosmology, self.ell_1d, self.chi_high_z_max, self.cmb_shells,
+                        mode=self.cl_out_mode, cl_cached=self.cl_out_cached,
+                        gain_cached=self.cmb_out_gain,
+                        window2=self.cmb_los_window2 * self.cmb_los_limber,
+                    )
+                kappa_mean = deterministic("kappa_mean", self.kappa_mean(kappa_pred, gain))
 
                 if self.cmb_likelihood_mode == "pixel_exact":
-                    loc_k = self.cmb_kl_U.T @ kappa_pred[self.cmb_obs_pix]
+                    loc_k = self.cmb_kl_U.T @ kappa_mean[self.cmb_obs_pix]
                     scale_k = jnp.sqrt(self.cmb_kl_var * temp)
                     sample("kappa_obs", dist.Normal(loc_k, scale_k))
                 else:
-                    # Out-of-model term of the CMB covariance.
-                    if self.full_los_correction:
-                        cl_out_1d = compute_cl_out(
-                            cosmology, self.ell_1d, self.chi_high_z_max, self.cmb_shells,
-                            mode=self.cl_out_mode, cl_cached=self.cl_out_cached,
-                            window2=self.cmb_los_window2 * self.cmb_los_limber,
-                        )
-
                     total_cl_1d = jnp.asarray(self.nell_1d)
                     if self.full_los_correction:
                         total_cl_1d = total_cl_1d + cl_out_1d
 
-                    loc_u = self.pack_kappa_map(kappa_pred)
+                    loc_u = self.pack_kappa_map(kappa_mean)
                     var_l = jnp.matmul(self.cmb_M_ll, total_cl_1d * temp)
                     scale_u = jnp.sqrt(jnp.maximum(var_l[self.cmb_l_of_u], 1e-30)) * self.cmb_u_half
                     sample("kappa_obs", dist.Normal(loc_u, scale_u))

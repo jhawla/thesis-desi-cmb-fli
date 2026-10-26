@@ -333,9 +333,10 @@ def regular_pos(mesh_shape: tuple, ptcl_shape: tuple | None = None):
         ptcl_shape = mesh_shape
 
     pos = [
-        np.linspace(0, m, p, endpoint=False) for m, p in zip(mesh_shape, ptcl_shape, strict=False)
+        jnp.linspace(0, float(m), int(p), endpoint=False)
+        for m, p in zip(mesh_shape, ptcl_shape, strict=False)
     ]
-    return jnp.stack(np.meshgrid(*pos, indexing="ij"), axis=-1).reshape(-1, 3)
+    return jnp.stack(jnp.meshgrid(*pos, indexing="ij"), axis=-1).reshape(-1, 3)
 
 
 def cic_paint_2d(mesh, positions, weight):

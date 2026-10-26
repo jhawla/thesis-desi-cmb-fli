@@ -84,7 +84,7 @@ def measure(args):
             frombase=True,
             rng=jr.key(rng),
         )
-        return np.asarray(model.pack_kappa_map(jnp.asarray(p["kappa_pred"]))) / u_half, np.asarray(
+        return np.asarray(model.pack_kappa_map(jnp.asarray(p["kappa_mean"]))) / u_half, np.asarray(
             p["init_mesh"]
         )
 

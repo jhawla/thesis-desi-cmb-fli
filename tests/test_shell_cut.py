@@ -9,12 +9,15 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from numpyro.handlers import seed, trace
 from test_born_shells import _cfg, _limber
 
 from desi_cmb_fli.bricks import get_cosmology, lin_power_interp
 from desi_cmb_fli.cmb_lensing import (
+    add_ell_filtered,
     compute_cl_out,
     compute_cl_outside_model,
+    compute_out_terms,
     convergence_Born_spherical,
     cut_shells,
     lensing_kernel,
@@ -222,3 +225,85 @@ def test_the_covariance_term_is_the_exact_projection_where_limber_fails():
         projection.append(ratio[i] / halofit)
     assert projection[0] > 1.5 and projection[1] > 1.1
     assert abs(projection[-1] - 1.0) < 0.02
+
+
+def test_the_out_of_model_gain_is_the_regression_of_the_left_out_matter_on_the_model():
+    model = FieldLevelModel(**_cfg(cmb_shell_weights="linear", cmb_shell_kmax=0.05))
+    taper = model.cmb_shell_taper
+    cosmo = get_cosmology(**model.loc_fid)
+    ell = model.ell_1d
+
+    def gain(held):
+        return compute_out_terms(cosmo, ell, model.chi_high_z_max,
+                                 model.cmb_shells | {"taper": held}, mode="exact")[1]
+
+    np.testing.assert_allclose(model.cmb_out_gain, gain(taper), rtol=1e-10)
+    # the end ramps alone make the left-out matter overlap the model's
+    full = gain(None)
+    assert np.all(full[2:] > 1.0)
+    # every shell held at F: the model's kernel times F, its overlap with the map's alike, gain / F
+    np.testing.assert_allclose(gain(np.full_like(taper, 0.5))[2:], 2.0 * full[2:], rtol=1e-10)
+    # a shell inside its taper (held at 0.5) raises the gain
+    half = np.ones_like(taper)
+    half[1] = 0.5
+    assert np.all(gain(half)[2:] > full[2:])
+
+
+def test_the_model_mean_applies_the_gain_per_multipole():
+    model = FieldLevelModel(**_cfg(cmb_shell_weights="linear", cmb_shell_kmax=0.05))
+    kappa = np.asarray(_truth(model)["kappa_pred"])
+    mean = np.asarray(model.kappa_mean(jnp.asarray(kappa)))
+    nside, lmax = model.cmb_proj_nside, 2 * model.cmb_proj_nside
+    a_k, a_m = hp.map2alm(kappa, lmax=lmax, iter=3), hp.map2alm(mean, lmax=lmax, iter=3)
+    ratio = (hp.alm2cl(a_m, a_k) / hp.alm2cl(a_k))[2 : nside + 1]
+    np.testing.assert_allclose(ratio, model.cmb_out_gain[2 : nside + 1], rtol=2e-2)
+    # without the gain the map is untouched
+    rng = np.random.default_rng(1)
+    m = jnp.asarray(rng.normal(size=12 * nside**2))
+    np.testing.assert_array_equal(np.asarray(add_ell_filtered(m, np.zeros(lmax + 1), nside)),
+                                  np.asarray(m))
+
+
+def test_under_exact_the_gain_follows_the_cosmology_from_the_same_pass_as_the_term():
+    model = FieldLevelModel(**_cfg(cmb_shell_weights="linear", cmb_shell_kmax=0.05))
+    w2 = model.cmb_los_window2 * model.cmb_los_limber
+
+    def terms(**cosmo):
+        return compute_out_terms(get_cosmology(**(model.loc_fid | cosmo)), model.ell_1d,
+                                 model.chi_high_z_max, model.cmb_shells, mode="exact", window2=w2)
+
+    cl, gain = terms()
+    np.testing.assert_allclose(np.asarray(gain), np.asarray(model.cmb_out_gain), rtol=1e-10)
+    np.testing.assert_allclose(np.asarray(cl), np.asarray(model.cl_out_cached), rtol=1e-8)
+    _, other = terms(Omega_m=0.35)
+    assert np.max(np.abs(np.asarray(other) - np.asarray(gain))[2:]) > 0
+    # under 'fixed' both come from the cache
+    cl_f, gain_f = compute_out_terms(None, model.ell_1d, None, model.cmb_shells, mode="fixed",
+                                     cl_cached=model.cl_out_cached, gain_cached=model.cmb_out_gain)
+    assert cl_f is model.cl_out_cached and gain_f is model.cmb_out_gain
+
+
+def test_pixel_exact_carries_the_gain_and_refuses_what_it_cannot_hold():
+    cfg = {"cmb_shell_weights": "linear", "cmb_shell_kmax": 0.05, "cmb_nside": 8,
+           "cmb_likelihood_mode": "pixel_exact", "cmb_observer_mode": "face"}
+    model = FieldLevelModel(**_cfg(**cfg))
+    truth = _truth(model)
+    model.reset()
+    model.condition({"kappa_obs": truth["kappa_obs"]})
+    model.block(hide_det=False)
+    tr = trace(seed(model.model, 0)).get_trace()
+    # the likelihood's mean is the model map times the gain, on the observed pixels' KL modes
+    mean, pred = np.asarray(tr["kappa_mean"]["value"]), np.asarray(tr["kappa_pred"]["value"])
+    assert not np.allclose(mean, pred)
+    np.testing.assert_allclose(np.asarray(tr["kappa_obs"]["fn"].loc),
+                               np.asarray(model.cmb_kl_U).T @ mean[model.cmb_obs_pix], rtol=1e-10)
+    params = {k: v["value"] for k, v in tr.items()
+              if v["type"] == "sample" and not v.get("is_observed", False)}
+    model.block()
+    lp, grad = jax.value_and_grad(model.logpdf)(params)
+    assert np.isfinite(lp) and all(np.all(np.isfinite(g)) for g in jax.tree.leaves(grad))
+    # a pixel covariance computed once cannot follow the cosmology, nor hold a refined sphere
+    with pytest.raises(ValueError, match="requires cl_out_mode='fixed'"):
+        FieldLevelModel(**_cfg(**cfg, cl_out_mode="exact"))
+    with pytest.raises(ValueError, match="proj_oversamp > 1 is only implemented"):
+        FieldLevelModel(**_cfg(**cfg, cmb_proj_oversamp=2))

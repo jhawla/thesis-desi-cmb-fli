@@ -534,7 +534,7 @@ def plot_kappa_maps(model, truth, positions, out_path, fixed=None, truth_has_los
             pos = {k: jnp.asarray(np.asarray(v)[c]) for k, v in positions.items()} | (fixed or {})
             model.reset()
             k_model = model.predict(samples=pos, hide_det=False, hide_base=True, frombase=False,
-                                    rng=0)["kappa_pred"]
+                                    rng=0)["kappa_mean"]
             post_alm.append(map_alm(k_model))
         post = np.stack([hp.alm2map(a, nside, lmax=lmax) for a in post_alm])
         what = f"the last state of each of {len(post)} chains"

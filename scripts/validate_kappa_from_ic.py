@@ -318,7 +318,7 @@ def main():
             frombase=True,
             rng=jr.key(0),
         )
-        m_map = np.asarray(pred["kappa_pred"], dtype=float)
+        m_map = np.asarray(pred["kappa_mean"], dtype=float)
         if args.maps and t_map.size == m_map.size:
             grid, tag = grid_label(cfg, args.cell_size)
             poles_fig = repo / "figures" / "maps" / f"kappa_from_abacus_ic_poles_{tag}_kmax{kmax:.4g}.png"
@@ -357,6 +357,15 @@ def main():
         print("  error / N_ell          ", np.round(b["err"] / b["nell"], 3))
         print("  LOS / N_ell            ", np.round(b["los"] / b["nell"], 3))
         print("  (error - LOS) / N_ell  ", np.round((b["err"] - b["los"]) / b["nell"], 3))
+        ell = np.arange(lmax + 1)
+        w = (2 * ell + 1) / (cl["nell"] + cl["los"])
+        amp = []
+        for lo, hi in ((2, 64), (65, 128), (129, 192), (193, 256)):
+            s = slice(lo, min(hi, lmax) + 1)
+            if s.start < s.stop:
+                d = np.sum(w[s] * cl["mm"][s])
+                amp.append(f"{lo}-{min(hi, lmax)}: {np.sum(w[s] * cl['tm'][s]) / d:.3f} ± {d**-0.5:.3f}")
+        print("  amplitude A (sum w C^tm / sum w C^mm, w = (2l+1)/(N + LOS)):", " | ".join(amp))
     grid, tag = grid_label(cfg, args.cell_size)
     fig_path = plot_spectra(results, lmax, Path(args.config).name, grid, tag, args.fig)
     # The spectra behind the figure, next to it; --replot redraws from them.

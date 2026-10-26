@@ -16,9 +16,11 @@ echo "Using config: $CONFIG_PATH"
 
 # Use absolute python path to guarantee correct environment
 ${CONDA_PREFIX}/bin/python -u scripts/run_inference.py --config "$CONFIG_PATH"
+status=$?
 
 # Cleanup temporary config file if it's in the submitted directory
 if [[ "$CONFIG_PATH" == *"configs/inference/submitted/"* ]]; then
     echo "Cleaning up temporary config: $CONFIG_PATH"
     rm "$CONFIG_PATH"
 fi
+exit $status
