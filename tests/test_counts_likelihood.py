@@ -231,3 +231,25 @@ def test_selec_paint_crops_onto_selec_mesh():
     np.testing.assert_allclose(
         np.asarray(band_limit(combined, final)), np.asarray(window), rtol=0, atol=1e-10
     )
+
+
+def test_noise_std_follows_the_model_density(model):
+    """std = |s_e + s_ed delta_m| sqrt(n̄S), delta_m = m / n̄S - 1 (montecosmo quad_gauss without its
+    quadratic term): by default the Poisson variance at the mean density, s_e a uniform rescaling,
+    s_ed a noise that grows with the predicted density."""
+    shape = tuple(int(s) for s in model.mesh_shape)
+    model.selec_mesh = _selection(shape, 3)
+    model.gxy_occ_mask3d = jnp.ones(shape, dtype=bool)
+    model.gxy_count = 20.0
+    g = jnp.asarray(1 + 0.3 * np.random.default_rng(5).standard_normal(shape))
+    nbar = model.gxy_count * np.asarray(model.selec_mesh)
+
+    def std(**stoch):
+        with trace() as tr, seed(rng_seed=0):
+            model.likelihood(gxy_mesh=g, stoch=stoch)
+        return np.asarray(tr["obs"]["fn"].variance) ** 0.5
+
+    np.testing.assert_allclose(std(), nbar**0.5, rtol=1e-12)
+    np.testing.assert_allclose(std(s_e=0.9), 0.9 * nbar**0.5, rtol=1e-12)
+    np.testing.assert_allclose(std(s_e=0.9, s_ed=0.25), np.abs(0.9 + 0.25 * (np.asarray(g) - 1)) * nbar**0.5,
+                               rtol=1e-10)

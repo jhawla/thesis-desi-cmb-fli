@@ -563,14 +563,19 @@ construction. This is why the Fourier crop is deferred in `paint_and_deconv` (§
 returns the field on the paint grid, and `gxy_mesh` is exactly `band_limit` of it
 (`tests/test_counts_likelihood.py`).
 
-**Free shot-noise amplitude `s_e` (`model.gxy_stoch_noise`, default on).** An optional positive latent
-(group `stoch`, truncated-normal `loc=1, scale=1, [0,10]`) rescaling the shot-noise std. It
-marginalises non-Poisson model/stochastic scatter (which the 2-LPT + Lagrangian-bias model cannot match
-exactly at the field level) so it does not leak into `f_NL`. It is free by default, where montecosmo keeps
-`s_e = 1`: the Abacus LRG counts scatter less than Poisson about the model at the true ICs, and with
-`s_e = 1` the posterior puts its galaxy residual at the Poisson level, so the true point sits far above the
-chains' log-density and the comparison of the two no longer reads convergence (§7.19). A closure keeps it
-free too: its data have the Poisson variance, and `s_e` must come back at 1.
+**Galaxy noise `s_e`, `s_ed` (`model.gxy_stoch_noise`, default on).** The noise std of a cell is
+`|s_e + s_ed·δ_m|·√(n̄S)`, with `δ_m = m/(n̄S) − 1` the model's count contrast in that cell: the
+form of montecosmo's `quad_gauss` likelihood without its quadratic (skewness) term `s_e2`. `s_e`
+(truncated normal `loc 1, scale 1, [0, 10]`, `scale_fid` 3e-3) sets the level, `s_ed` (normal
+`loc 0, scale 10`, `scale_fid` 1e-2) how the noise grows with the predicted density; `s_e = 1`,
+`s_ed = 0`, the values when the flag is off, is the Poisson variance at the mean density in every
+cell. A Poisson noise has variance `m`, i.e. `s_ed ≈ s_e/2` to first order. Why: at mesh 160 the
+residual of the Abacus LRG counts about the model at the true ICs has a variance that rises with
+`δ_m`, half as fast as Poisson and below it at the mean density, alike in every shell of χ, and the
+form above follows its curvature (§7.19); with a variance fixed per cell, chains started at the true
+point move `b₂`, `b∇²` and `sigma8` (§7.19). Montecosmo's skewness term `s_e2` and PNG term `s_ep`
+(std `+ s_ep·φ`, for `f_NL`, §8) are not implemented. A closure keeps both free: its data have the
+Poisson variance at the mean density, and `s_e`, `s_ed` must come back at 1 and 0.
 
 **Survey mask & radial selection from randoms.** For the AbacusLensing LRG mocks (equal-weight
 galaxies and ~20× randoms), `S` is the **painted random density**, normalised to unit mean over the
@@ -2168,6 +2173,35 @@ at each `a`, 2 chains per setting, 250 steps per batch).
   adapted step 2.8, the scalars other than `s_e` within 0.01 of their start; `s_e` 0.947 → 0.97
   (adaptation) → 1.06, 1.04, 1.025.
 
+**Noise level and density dependence of the galaxy residual (2026-11-04, job 60799506).**
+- Init grid 160³, as above but `s_e` fixed at √1.079 = 1.039 (the χ²/N at the truth on that grid):
+  after the adaptation `sigma8` 0.793 / 0.795, `b2` 0.64 / 0.62, `b1` 1.19 / 1.18, `bn2` 1.9 / 1.6;
+  after one batch `sigma8` 0.788 / 0.788, `b2` 0.76 / 0.75: the trajectory of `s_e = 1`.
+- Init grid 240³, bias relation, true ICs, biases refitted globally under the n̄S variance (χ²/N
+  0.890; `b1` 1.130, `b2` 0.346, `b_{s²}` −0.246, `bn2` 0.47, `bnpar` −13.8, `b1_alpha` 1.07);
+  residual e = d − m binned in 16 quantiles of x = m/(n̄S) and fitted cell by cell as
+  `e²/(n̄S) = A + B(x − 1)` (provisional script): all cells A 0.890, B 0.442 (B/A 0.50); shells χ
+  1060–1512 / 1512–1964 / 1964–2416 Mpc/h: A 0.894 / 0.845 / 0.921, B/A 0.55 / 0.51 / 0.47. Gaussian
+  draws through the same estimator: variance n̄S gives B/A 0.000, variance m 0.94 (0.93–0.96 by
+  shell). The binned variance is convex in x, 0.53 at x = −0.26 (the lowest bin: model counts
+  below zero) to 1.87 at x = 2.84; `(s_e + s_ed(x − 1))²` with s_e = 0.94, s_ed = 0.23 (from A and B)
+  gives 0.50 at x = 0 and 1.87 at x = 2.85. Skewness of e per bin: median 0.11 (0.17, 0.04, 0.13
+  by shell), 0.3–0.47 in the lowest bin of the outer shells.
+
+**The density-dependent noise `s_ed` at the true ICs (2026-11-04, job 60800038).** Init grid 240³,
+bias relation, the biases of the global refit above (provisional scripts).
+- Maximum likelihood of the noise over the 1 659 875 survey cells, prediction held: std `|s_e|√(n̄S)`
+  gives `s_e` 0.9435; `|s_e + s_ed δ_m|√(n̄S)` gives `s_e` 0.9270, `s_ed` 0.1894 and +49 463 in
+  log-likelihood. Montecosmo's QuadGaussian with `s_e2` (start 0.02, fit 0.014): log-likelihood −∞,
+  at least one cell outside its one-sided support at every point the optimiser tried.
+- Chains from the true point with `s_e`, `s_ed` free (start 0.943, 0.23; `scale_fid` 3e-3, 1e-2),
+  400 adaptation steps then 4 batches, 2 chains: adapted step 113; `sigma8` 0.811 → 0.809 / 0.811
+  (adaptation) → 0.809, 0.808, 0.809, 0.810 (chain means, batches 0–3); `b2` 0.35 → 0.50 → 0.56,
+  0.60, 0.63, 0.66; `bn2` 0.47 → 1.65 → 1.07, 0.91, 0.86, 0.46; `b1` 1.13 → 1.16 → 1.16–1.17;
+  `s_e` 0.910 → 0.897, 0.878, 0.868, 0.861; `s_ed` 0.20–0.21 throughout; log-density (first chain)
+  −42.505 M after the adaptation, −42.489, −42.429, −42.381, −42.352 M, of which likelihood −4.212,
+  −4.182, −4.163, −4.149 M and field prior −38.276, −38.247, −38.219, −38.203 M.
+
 **GPU memory outside the pool at mesh 160 (2026-11-03).** The four mesh-160 runs of 2026-10-26: the
 galaxies alone timed out at 58 of 60 batches (above); κ alone (60318172), the joint (60318173) and the
 κ-only closure (60318174) failed at the start of the all-parameter warm-up, cuFFT unable to create a
@@ -2243,7 +2277,7 @@ In order, each step checked before the next:
   `submit.py <config>` after checking the NERSC queue table (`docs/hpc.md`). Galaxies alone submitted
   2026-10-22 (job 60102854): out of memory at the start of the all-parameter warm-up, nothing saved
   (§7.19). Submitted 2026-10-26 once the memory was fixed (commit ad3753f): galaxies alone 60318169,
-  κ alone 60318172, joint 60318173, κ-only closure on the ph201 ICs 60318174. Then the runs: Abacus — galaxies alone, κ alone, joint — and the κ-only closure on the ph201 ICs
+  κ alone 60318172, joint 60318173, κ-only closure on the ph201 ICs 60318174 (all but the galaxies failed: GPU memory, §7.19). Resubmitted 2026-11-04 at 24 h (commit 2b61a5a): κ alone 60800105, κ-only closure 60800106; galaxies alone and the joint wait for the galaxy noise model (§3.1, §7.19). Then the runs: Abacus — galaxies alone, κ alone, joint — and the κ-only closure on the ph201 ICs
   (`validation/closure_kappaonly_abacus_ic_box5000_m160.yaml`, step 3). The joint closure at mesh 160 is dropped (2026-10-26): its data come from the model, so it
   tests the sampler and the likelihood, not the model, and the Abacus runs' diagnostics read the
   sampler at this grid. With the
@@ -2292,7 +2326,7 @@ noise (§3.2).
    the galaxy profile (`--paint_oversamp`), the closure matter `P(k)` and the gradient's memory before
    any config change. A glass Lagrangian start removes the in-band harmonic at mesh 58, with changed
    reads; it does not remove the κ template (§7.15).
-2. **Other configs to box 5000 and SO noise.** If the paper treats `f_NL`: the `f_NL` pair
+2. **Other configs to box 5000 and SO noise.** If the paper treats `f_NL`: montecosmo's PNG noise term `s_ep` (std `|s_e + s_ed·δ_m + s_ep·φ|·√(n̄S)`, §3.1) to port with the `f_NL` latents; the `f_NL` pair
    (`abacus/abacus_gxyonly.yaml`, `abacus/abacus_joint_Nl1p0.yaml`) and its field reconstruction
    (§7.1), the density-scan closures (`scan/`, §7.3). The closure triplet (§7.13) is not moved: the
    Abacus triplet tests the model on a real sky, and the κ-only Abacus posterior already follows the

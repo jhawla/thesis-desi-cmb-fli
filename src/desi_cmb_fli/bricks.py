@@ -309,7 +309,7 @@ def get_cosmology(**cosmo) -> Cosmology:
     ref_cosmo = AbacusSummit0
     kwargs = ref_cosmo.keywords.copy()
     valid_keys = set(kwargs) | {"Omega_m"}
-    nuisance_keys = {"b1", "b1_alpha", "b2", "bs2", "bn2", "bnpar", "fNL", "fNL_bp", "fNL_bpd", "s_e"}
+    nuisance_keys = {"b1", "b1_alpha", "b2", "bs2", "bn2", "bnpar", "fNL", "fNL_bp", "fNL_bpd", "s_e", "s_ed"}
     unknown = set(cosmo) - valid_keys - nuisance_keys
     unknown = {k for k in unknown if not str(k).startswith("ngbar")}  # per-shell ngbars
     if unknown:

@@ -81,7 +81,7 @@ default_config = {
     "los": (0.0, 0.0, 1.0),
     "poles": (0, 2, 4),
     "galaxies_enabled": True,  # Enable galaxy likelihood (set False for CMB-only runs)
-    "gxy_stoch_noise": True,  # Free galaxy shot-noise amplitude s_e; False fixes s_e=1 (pure Poisson)
+    "gxy_stoch_noise": True,  # Free galaxy noise s_e, s_ed (std |s_e + s_ed delta_m| sqrt(n̄S)); False: 1, 0
     "bias_evolution": "redshift",  # 'redshift': on the light cone b1 evolves with b1_alpha and b2, bs2
     # follow b1 through the quenched-galaxy relations (bricks.quenched_bias_relation); 'none': constant
     # biases, b1_alpha not sampled (docs/pipeline.md 2.4)
@@ -205,15 +205,23 @@ default_config = {
             "scale_fid": 3e2,
         },
         "s_e": {
-            # Galaxy shot-noise amplitude (montecosmo convention): noise std = s_e * sqrt(1/n̄),
-            # variance = s_e**2 / n̄. s_e=1 => pure Poisson. Only sampled when gxy_stoch_noise=True.
+            # Galaxy noise (montecosmo quad_gauss): std = |s_e + s_ed delta_m| sqrt(n̄S), delta_m the
+            # model's count contrast; s_e=1, s_ed=0 => Poisson variance at the mean density.
+            # Sampled with s_ed when gxy_stoch_noise=True (docs/pipeline.md 3.1).
             "group": "stoch",
             "label": "{s}_\\epsilon",
             "loc": 1.0,
             "scale": 1.0,
-            "scale_fid": 0.3,
+            "scale_fid": 3e-3,
             "low": 0.0,
             "high": 10.0,
+        },
+        "s_ed": {
+            "group": "stoch",
+            "label": "{s}_{\\epsilon\\delta}",
+            "loc": 0.0,
+            "scale": 10.0,
+            "scale_fid": 1e-2,
         },
         "init_mesh": {
             "group": "init",
@@ -1223,13 +1231,13 @@ class FieldLevelModel(Model):
         return out
 
     def _model(self, temp_prior=1.0, temp_lik=1.0):
-        cosmo, bias, init, png, s_e, ngbars = self.prior(temp=temp_prior)
+        cosmo, bias, init, png, stoch, ngbars = self.prior(temp=temp_prior)
         fields = self.evolve((cosmo, bias, init, png))
         return self.likelihood(
             cosmology=cosmo,
             bias=bias,
             temp=temp_lik,
-            s_e=s_e,
+            stoch=stoch,
             ngbars=ngbars,
             **fields,
         )
@@ -1265,15 +1273,14 @@ class FieldLevelModel(Model):
         else:
             png = {}
 
-        # Stochastic noise nuisance: free galaxy shot-noise amplitude s_e.
-        # s_e=1 => pure Poisson. Only sampled when enabled and galaxies are present.
+        # Galaxy noise nuisances s_e, s_ed; s_e=1, s_ed=0 (Poisson variance at the mean density)
+        # unless sampled, when enabled and galaxies are present.
         if self.gxy_stoch_noise and self.galaxies_enabled:
             stoch_ = self._sample(self.groups["stoch"])
             stoch_ = samp2base(stoch_, self.latents, inv=False, temp=temp)
             stoch = {k: deterministic(k, v) for k, v in stoch_.items()}
-            s_e = stoch["s_e"]
         else:
-            s_e = 1.0
+            stoch = {}
 
         # Free per-shell mean-density nuisance (montecosmo ngbars). Vector of relative amplitudes
         # ngbar_<b> (1 = fiducial), one per radial z-shell; applied per radial bin in the likelihood.
@@ -1298,7 +1305,7 @@ class FieldLevelModel(Model):
         )  # reparametrize
         init = {k: deterministic(k, v) for k, v in init.items()}  # register base params
 
-        return cosmology, bias, init, png, s_e, ngbars
+        return cosmology, bias, init, png, stoch, ngbars
 
     def _ngbar_alpha_field(self, ngbars):
         """Per-cell relative density amplitude from the per-shell ``ngbars`` vector.
@@ -1578,14 +1585,15 @@ class FieldLevelModel(Model):
             "pos_real": pos_real,
         }
 
-    def likelihood(self, gxy_mesh, gxy_paint=None, matter_mesh=None, pos_real=None, cosmology=None, bias=None, temp=1.0, s_e=1.0, ngbars=None):
+    def likelihood(self, gxy_mesh, gxy_paint=None, matter_mesh=None, pos_real=None, cosmology=None, bias=None, temp=1.0, stoch=None, ngbars=None):
         """
         Gaussian field-level likelihood on galaxy *counts* per cell.
 
         The observable is the painted count mesh; the survey selection multiplies the
         predicted intensity instead of dividing the data, so partially covered cells stay
-        finite. Mean = n̄·alpha·<(1+delta_g)·S> and variance = s_e**2·n̄·alpha·S, both per
-        cell (s_e=1 => pure Poisson). Cells outside the survey mask are excluded via
+        finite. Mean m = n̄·alpha·<(1+delta_g)·S> and std = |s_e + s_ed·(m/(n̄·alpha·S) − 1)|
+        ·sqrt(n̄·alpha·S), both per cell (``stoch``; s_e=1, s_ed=0 by default: the Poisson variance
+        at the mean density). Cells outside the survey mask are excluded via
         ``dist.mask``. See docs/pipeline.md 3.1 "Galaxy likelihood".
         """
 
@@ -1609,8 +1617,15 @@ class FieldLevelModel(Model):
                     intens = alpha * intens
                     nbar = jnp.maximum(alpha, 1e-6) * nbar
 
-                variance = temp * s_e**2 * jnp.maximum(nbar, 1e-10)
-                gxy_dist = dist.Normal(self.gxy_count * intens, variance**0.5)
+                # Noise std |s_e + s_ed delta_m| sqrt(n̄S), delta_m = mean / n̄S - 1 (montecosmo
+                # quad_gauss without its quadratic term)
+                stoch = stoch or {}
+                s_e, s_ed = stoch.get("s_e", 1.0), stoch.get("s_ed", 0.0)
+                mean = self.gxy_count * intens
+                nbar = jnp.maximum(nbar, 1e-10)
+                delta_m = jnp.where(nbar > 1e-9, mean / nbar - 1, 0.0)
+                amp = jnp.maximum(jnp.abs(s_e + s_ed * delta_m), 1e-6)
+                gxy_dist = dist.Normal(mean, amp * (temp * nbar) ** 0.5)
 
                 if getattr(self, "gxy_occ_mask3d", None) is not None:
                     gxy_dist = gxy_dist.mask(jnp.asarray(self.gxy_occ_mask3d))
