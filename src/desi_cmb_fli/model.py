@@ -81,7 +81,10 @@ default_config = {
     "los": (0.0, 0.0, 1.0),
     "poles": (0, 2, 4),
     "galaxies_enabled": True,  # Enable galaxy likelihood (set False for CMB-only runs)
-    "gxy_stoch_noise": False,  # Free galaxy shot-noise amplitude s_e (montecosmo); s_e=1 => pure Poisson
+    "gxy_stoch_noise": True,  # Free galaxy shot-noise amplitude s_e; False fixes s_e=1 (pure Poisson)
+    "bias_evolution": "redshift",  # 'redshift': on the light cone b1 evolves with b1_alpha and b2, bs2
+    # follow b1 through the quenched-galaxy relations (bricks.quenched_bias_relation); 'none': constant
+    # biases, b1_alpha not sampled (docs/pipeline.md 2.4)
     "gxy_ngbar_free": False,  # Free per-radial-shell mean density (montecosmo ngbars); marginalises the
     # integral constraint on the lightcone. Off => n̄ fixed (snapshot). One latent ngbar_<b> per z-shell.
     # CMB lensing parameters
@@ -225,7 +228,7 @@ default_config = {
 MODEL_CONFIG_KEYS = {
     "box_shape", "cell_size", "evolution", "lpt_order", "gxy_density", "lightcone", "a_obs",
     "precond", "init_oversamp", "evol_oversamp", "ptcl_oversamp", "paint_oversamp", "curved_sky",
-    "los", "galaxies_enabled", "gxy_stoch_noise", "gxy_ngbar_free", "png_type",
+    "los", "galaxies_enabled", "gxy_stoch_noise", "gxy_ngbar_free", "png_type", "bias_evolution",
 }
 CMB_CONFIG_KEYS = {
     "enabled", "observer_mode", "observer_position", "nside", "n_shells", "chi_matter_min",
@@ -312,6 +315,8 @@ def get_model_from_config(config_or_path):
         model_config["gxy_stoch_noise"] = bool(cfg["model"]["gxy_stoch_noise"])
     if "gxy_ngbar_free" in cfg["model"]:
         model_config["gxy_ngbar_free"] = bool(cfg["model"]["gxy_ngbar_free"])
+    if "bias_evolution" in cfg["model"]:
+        model_config["bias_evolution"] = str(cfg["model"]["bias_evolution"])
     if "png_type" in cfg["model"]:
         png_type = cfg["model"]["png_type"]
         model_config["png_type"] = None if png_type in (None, "None", "none") else str(png_type)
@@ -698,6 +703,7 @@ class FieldLevelModel(Model):
     galaxies_enabled: bool = field(default=default_config["galaxies_enabled"])
     gxy_stoch_noise: bool = field(default=default_config["gxy_stoch_noise"])
     gxy_ngbar_free: bool = field(default=default_config["gxy_ngbar_free"])
+    bias_evolution: str = field(default=default_config["bias_evolution"])
     n_gxy_shells: int = field(default=0)
     curved_sky: bool = field(default=default_config["curved_sky"])
     los: tuple | None = field(default=default_config["los"])
@@ -730,6 +736,10 @@ class FieldLevelModel(Model):
     latents: dict = field(default_factory=lambda: default_config["latents"])
 
     def __post_init__(self):
+        if self.bias_evolution not in ("redshift", "none"):
+            raise ValueError(f"bias_evolution must be 'redshift' or 'none', got {self.bias_evolution!r}")
+        # The bias evolves on the light cone only (a snapshot has a single a)
+        self.bias_evolves = self.bias_evolution == "redshift" and self.a_obs is None
         self.latents = self._validate_latents()
         self.groups = self._groups(base=True)
         self.groups_ = self._groups(base=False)
@@ -1516,7 +1526,7 @@ class FieldLevelModel(Model):
             lbe_weights = lagrangian_weights(
                 cosmology, a_initial, pos_initial, _bshape, **bias_w, init_mesh=init_mesh_evol_grid,
                 fNL_bp=fNL_bp, fNL_bpd=fNL_bpd, png_type=self.png_type,
-                a_b1=self.a_fid if self.lightcone else None,
+                a_b1=self.a_fid if self.bias_evolves else None,
             )
             # Exposed with rsd_pos for the particle-level galaxy map of the diagnostics; like
             # matter_mesh it only materialises under predict().
@@ -1930,13 +1940,7 @@ class FieldLevelModel(Model):
         groups = {}
         for name, val in self.latents.items():
             group = val["group"]
-            if group == "png" and self.png_type is None:
-                continue
-            if name in ("fNL_bp", "fNL_bpd") and self.png_type != "fNL_bias":
-                continue
-            if group == "stoch" and not self.gxy_stoch_noise:
-                continue
-            if group == "syst" and not self.gxy_ngbar_free:
+            if not self._latent_active(name, val):
                 continue
             group = group if base else group + "_"
             if group not in groups:
@@ -1950,11 +1954,7 @@ class FieldLevelModel(Model):
         """
         labs = {}
         for name, val in self.latents.items():
-            if val["group"] == "png" and self.png_type is None:
-                continue
-            if name in ("fNL_bp", "fNL_bpd") and self.png_type != "fNL_bias":
-                continue
-            if val["group"] == "stoch" and not self.gxy_stoch_noise:
+            if not self._latent_active(name, val):
                 continue
             lab = val["label"]
             labs[name] = lab
@@ -1968,11 +1968,19 @@ class FieldLevelModel(Model):
         return {
             k: v["loc_fid"]
             for k, v in self.latents.items()
-            if "loc_fid" in v
-            and not (v["group"] == "png" and self.png_type is None)
-            and not (k in ("fNL_bp", "fNL_bpd") and self.png_type != "fNL_bias")
-            and not (v["group"] == "stoch" and not self.gxy_stoch_noise)
+            if "loc_fid" in v and self._latent_active(k, v)
         }
+
+    def _latent_active(self, name, val):
+        """Whether a configured latent is part of this model (sampled or conditioned)."""
+        group = val["group"]
+        return not (
+            (group == "png" and self.png_type is None)
+            or (name in ("fNL_bp", "fNL_bpd") and self.png_type != "fNL_bias")
+            or (group == "stoch" and not self.gxy_stoch_noise)
+            or (group == "syst" and not self.gxy_ngbar_free)
+            or (name == "b1_alpha" and not self.bias_evolves)
+        )
 
     ###########
     # Metrics #

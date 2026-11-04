@@ -307,7 +307,8 @@ def test_logpdf_gradient_finite_difference():
     model.condition({"obs": truth["obs"]})
 
     # logpdf traces the model without a seed, so every sampling latent must be
-    # supplied. The bias group includes bnpar (Finger-of-God) and b1_alpha by default.
+    # supplied. The bias group includes bnpar (Finger-of-God) and b1_alpha by default, and the
+    # shot-noise amplitude s_e is sampled by default.
     init_mesh = jr.normal(jr.key(123), (16, 16, 16))
     test_params = {
         "Omega_m_": jnp.array(0.0),
@@ -318,6 +319,7 @@ def test_logpdf_gradient_finite_difference():
         "bs2_": jnp.array(0.0),
         "bn2_": jnp.array(0.0),
         "bnpar_": jnp.array(0.0),
+        "s_e_": jnp.array(0.0),
         "init_mesh_": init_mesh,
     }
 

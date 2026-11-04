@@ -540,6 +540,14 @@ def samp2base_mesh(init: dict, precond=False, transfer=None, inv=False, temp=1.0
     return {}
 
 
+def quenched_bias_relation(b1):
+    """Lagrangian ``b2`` and ``bs2`` of quenched galaxies against their Lagrangian ``b1``: Table 1 of
+    Shiferaw, Kokron & Wechsler (arXiv:2412.06886), ``b2 = 0.40 b1² − 0.06 b1 − 0.09`` and
+    ``bs2 = −0.12 b1² + 0.04 b1 + 0.03``. Their ``b2`` multiplies ``δ² − σ²``, ours ``(δ² − ⟨δ²⟩)/2``:
+    the ``b2`` returned is twice theirs; ``bs2`` has the same convention (docs/pipeline.md 2.4)."""
+    return 2 * (0.40 * b1**2 - 0.06 * b1 - 0.09), -0.12 * b1**2 + 0.04 * b1 + 0.03
+
+
 def lagrangian_weights(
     cosmo: Cosmology, a, pos, box_shape, b1, b2, bs2, bn2, init_mesh,
     fNL_bp=0.0, fNL_bpd=0.0, png_type=None, b1_alpha=0.0, a_b1=None,
@@ -554,7 +562,9 @@ def lagrangian_weights(
     (before ``add_png``), so the primordial potential phi is recovered correctly.
 
     With ``a_b1`` set, the linear Eulerian bias evolves as
-    ``1 + b1(a) = (1 + b1) (D(a_b1) / D(a))**b1_alpha``: ``b1`` is the bias at ``a_b1``.
+    ``1 + b1(a) = (1 + b1) (D(a_b1) / D(a))**b1_alpha``, and ``b2``, ``bs2`` follow it through the
+    quenched-galaxy relations (``quenched_bias_relation``): ``b_X(a) = b_X + f_X(b1(a)) − f_X(b1)``.
+    ``b1``, ``b2``, ``bs2`` are the biases at ``a_b1`` (docs/pipeline.md 2.4).
     """
     delta_k = init_mesh
     delta = jnp.fft.irfftn(delta_k)
@@ -575,10 +585,15 @@ def lagrangian_weights(
     # Init weights
     weights = 1.0
 
-    # Apply b1, punctual term
-    delta_part = cic_read(delta, pos) * growths
+    # Apply b1, punctual term. The operators are taken at each particle's a; their means are
+    # subtracted at that a (D(a)^n times the mean of the a = 1 operator), so that no term moves the
+    # mean density across the light cone (docs/pipeline.md 2.4)
+    delta_read = cic_read(delta, pos)
+    delta_part = delta_read * growths
     if a_b1 is not None:
-        b1 = (1 + b1) * (a2g(cosmo, jnp.asarray(a_b1)) / growths) ** b1_alpha - 1
+        b1_a = (1 + b1) * (a2g(cosmo, jnp.asarray(a_b1)) / growths) ** b1_alpha - 1
+        (b2_a, bs2_a), (b2_ref, bs2_ref) = quenched_bias_relation(b1_a), quenched_bias_relation(b1)
+        b1, b2, bs2 = b1_a, b2 + b2_a - b2_ref, bs2 + bs2_a - bs2_ref
     weights = weights + b1 * delta_part
 
     # Apply primordial non-Gaussianity scale-dependent bias terms
@@ -591,12 +606,12 @@ def lagrangian_weights(
         weights = weights + fNL_bp * phi_part
 
         # Apply bphidelta, primordial-density cross term
-        phi_delta_part = phi_part * delta_part
-        weights = weights + fNL_bpd * (phi_delta_part - phi_delta_part.mean())
+        phi_delta_read = phi_part * delta_read
+        weights = weights + fNL_bpd * (phi_delta_read - phi_delta_read.mean()) * growths
 
     # Apply b2, punctual term (montecosmo convention: b2/2 * (delta^2 - <delta^2>))
-    delta2_part = delta_part**2
-    weights = weights + b2 * (delta2_part - delta2_part.mean()) / 2
+    delta2_read = delta_read**2
+    weights = weights + b2 * (delta2_read - delta2_read.mean()) * growths**2 / 2
 
     # Apply bshear2, non-punctual term. Use physical wavevectors so the ratios
     # k_i k_j / k^2 stay correct even for anisotropic cells.
@@ -613,8 +628,8 @@ def lagrangian_weights(
             # Add strict-up-triangle terms (counted twice)
             shear2 = shear2 + 2 * jnp.fft.irfftn(-ki * kj * pot_k) ** 2
 
-    shear2_part = cic_read(shear2, pos) * growths**2
-    weights = weights + bs2 * (shear2_part - shear2_part.mean())
+    shear2_read = cic_read(shear2, pos)
+    weights = weights + bs2 * (shear2_read - shear2_read.mean()) * growths**2
 
     # Apply bnabla2, non-punctual term
     delta_nl = jnp.fft.irfftn(-kk_box * delta_k)

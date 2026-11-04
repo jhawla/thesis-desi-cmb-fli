@@ -16,7 +16,8 @@ model:
   cell_size: 31.25  # 5000 / 160: final k_N 0.10 h/Mpc (pipeline 7.19)
   box_shape: [5000.0, 5000.0, 5000.0]  # Mpc/h
   galaxies_enabled: true  # Set to false for cmb-only runs
-  gxy_stoch_noise: false  # false : s_e fixed to 1 (pure Poisson), true : s_e inferred
+  gxy_stoch_noise: true  # s_e inferred (true) or fixed to 1, pure Poisson (false): the Abacus LRGs scatter less than Poisson (pipeline 3.1)
+  bias_evolution: redshift  # redshift: on the light cone b1 evolves with b1_alpha, b2 and bs2 follow b1 (quenched-galaxy relations, arXiv:2412.06886); none: constant biases (pipeline 2.4)
   gxy_ngbar_free: false  # Free per-z-shell mean density -> marginalise the integral constraint
   lightcone: true
   # a_obs: 0.5556 # snapshot

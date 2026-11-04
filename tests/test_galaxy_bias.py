@@ -14,6 +14,7 @@ from desi_cmb_fli.bricks import (
     kaiser_model,
     kaiser_posterior,
     lagrangian_weights,
+    quenched_bias_relation,
     rsd,
 )
 from desi_cmb_fli.nbody import a2g
@@ -230,7 +231,8 @@ def test_lagrangian_weights_b1_only():
 
 
 def test_lagrangian_weights_b1_evolution():
-    """b1_alpha = 0 is the z-independent bias; b1_alpha = 1 keeps (1 + b1(a)) D(a) constant."""
+    """b1_alpha = 0 is the z-independent bias; b1_alpha = 1 keeps (1 + b1(a)) D(a) constant, read off
+    the part of the weights odd in the field (b2 and bs2, which follow b1, are even)."""
     cosmo = planck18()
     mesh_shape = np.array([4, 4, 4])
     box_shape = np.array([100.0, 100.0, 100.0])
@@ -238,14 +240,28 @@ def test_lagrangian_weights_b1_evolution():
     a = jnp.linspace(0.45, 0.75, pos.shape[0])  # one scale factor per particle, as on the light cone
     init_mesh = jnp.fft.rfftn(jr.normal(jr.PRNGKey(0), shape=mesh_shape))
     delta = jnp.fft.irfftn(init_mesh).reshape(-1)  # particles on the grid nodes: cic_read is exact
-    b1, a_b1 = 1.2, 0.56
+    b1, b2, bs2, a_b1 = 1.2, 0.3, -0.2, 0.56
 
-    def weights(**kw):
-        return lagrangian_weights(cosmo, a, pos, box_shape, b1, 0.0, 0.0, 0.0, init_mesh, **kw)
+    def weights(mesh=init_mesh, **kw):
+        return lagrangian_weights(cosmo, a, pos, box_shape, b1, b2, bs2, 0.0, mesh, **kw)
 
     assert jnp.allclose(weights(b1_alpha=0.0, a_b1=a_b1), weights(), rtol=1e-6, atol=1e-6)
-    b1_of_a = (weights(b1_alpha=1.0, a_b1=a_b1) - 1) / (delta * a2g(cosmo, a))
+    odd = (weights(b1_alpha=1.0, a_b1=a_b1) - weights(-init_mesh, b1_alpha=1.0, a_b1=a_b1)) / 2
+    b1_of_a = odd / (delta * a2g(cosmo, a))
     assert jnp.allclose((1 + b1_of_a) * a2g(cosmo, a), (1 + b1) * a2g(cosmo, a_b1), rtol=1e-4)
+
+
+def test_quenched_bias_relation():
+    """Table 1 of arXiv:2412.06886 at b1 = 1, with our b2 twice theirs; the shift vanishes at a_b1."""
+    b2, bs2 = quenched_bias_relation(1.0)
+    assert np.isclose(b2, 2 * (0.40 - 0.06 - 0.09)) and np.isclose(bs2, -0.12 + 0.04 + 0.03)
+    cosmo = planck18()
+    mesh_shape = np.array([4, 4, 4])
+    pos = jnp.indices(mesh_shape, dtype=float).reshape(3, -1).T
+    init_mesh = jnp.fft.rfftn(jr.normal(jr.PRNGKey(1), shape=mesh_shape))
+    args = (cosmo, 0.56, pos, np.array([100.0, 100.0, 100.0]), 1.2, 0.3, -0.2, 0.1, init_mesh)
+    assert jnp.allclose(lagrangian_weights(*args, b1_alpha=1.0, a_b1=0.56), lagrangian_weights(*args),
+                        rtol=1e-6, atol=1e-6)
 
 
 def test_lagrangian_weights_higher_order():
@@ -325,3 +341,22 @@ def test_kaiser_posterior_with_rsd():
     # Results should differ when RSD is included
     assert not jnp.allclose(means_no_rsd, means_rsd)
     assert not jnp.allclose(stds_no_rsd, stds_rsd)
+
+
+def test_lagrangian_weights_means_at_each_a():
+    """On the light cone the b2 term is D(a)^2 (delta^2 - <delta^2>)/2: its mean is subtracted at each
+    particle's a, not over particles of every a; at a single a it is the usual (D delta)^2 - mean."""
+    cosmo = planck18()
+    mesh_shape = np.array([4, 4, 4])
+    box_shape = np.array([100.0, 100.0, 100.0])
+    pos = jnp.indices(mesh_shape, dtype=float).reshape(3, -1).T
+    init_mesh = jnp.fft.rfftn(jr.normal(jr.PRNGKey(2), shape=mesh_shape))
+    delta = jnp.fft.irfftn(init_mesh).reshape(-1)
+    b2 = 0.6
+    a = jnp.linspace(0.45, 0.75, pos.shape[0])
+    w = lagrangian_weights(cosmo, a, pos, box_shape, 0.0, b2, 0.0, 0.0, init_mesh)
+    expected = 1 + b2 / 2 * a2g(cosmo, a) ** 2 * (delta**2 - jnp.mean(delta**2))
+    assert jnp.allclose(w, expected, rtol=1e-6, atol=1e-8)
+    w1 = lagrangian_weights(cosmo, 0.6, pos, box_shape, 0.0, b2, 0.0, 0.0, init_mesh)
+    d = delta * a2g(cosmo, 0.6)
+    assert jnp.allclose(w1, 1 + b2 / 2 * (d**2 - jnp.mean(d**2)), rtol=1e-6, atol=1e-8)

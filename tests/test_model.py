@@ -265,3 +265,18 @@ def test_forward_model_with_png_and_its_gradient_run():
     model.block()
     g = jax.grad(model.logpdf)({"init_mesh_": jnp.asarray(truth["init_mesh_"])})["init_mesh_"]
     assert np.all(np.isfinite(np.asarray(g))) and float(jnp.abs(g).max()) > 0
+
+
+def test_bias_evolution_samples_b1_alpha_on_the_light_cone_only():
+    """bias_evolution 'redshift' samples b1_alpha on the light cone only; 'none' never does."""
+    from desi_cmb_fli.model import FieldLevelModel, default_config
+
+    def bias_group(**kw):
+        cfg = default_config.copy()
+        cfg.update({"mesh_shape": (8, 8, 8), "box_shape": (400.0, 400.0, 400.0), "evolution": "kaiser",
+                    "cmb_enabled": False, **kw})
+        return FieldLevelModel(**cfg).groups["bias"]
+
+    assert "b1_alpha" in bias_group(a_obs=None)
+    assert "b1_alpha" not in bias_group(a_obs=None, bias_evolution="none")
+    assert "b1_alpha" not in bias_group(a_obs=1.0)

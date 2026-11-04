@@ -17,16 +17,21 @@ import sys
 
 import yaml
 
-# JAX's default (BFC) pool, reserved at start as one block of 95 % of the GPU: grown on demand it
+# JAX's default (BFC) pool, reserved at start as one block of 90 % of the GPU: grown on demand it
 # splits into regions it never returns, and a later program's buffer no longer fits; the shell may
 # override both (e.g. XLA_PYTHON_CLIENT_ALLOCATOR=cuda_async), docs/hpc.md
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "true")
-os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.95")
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.90")
 # XLA must not fold the Fourier kernels back into grid-sized constants of the compiled programs,
-# which load outside that pool (docs/hpc.md)
+# and must not build CUDA graphs, which accumulate over a warm-up's steps; both load outside that
+# pool (docs/hpc.md)
 if "--xla_disable_hlo_passes=constant_folding" not in os.environ.get("XLA_FLAGS", ""):
     os.environ["XLA_FLAGS"] = (
         os.environ.get("XLA_FLAGS", "") + " --xla_disable_hlo_passes=constant_folding"
+    ).strip()
+if "--xla_gpu_enable_command_buffer=" not in os.environ.get("XLA_FLAGS", ""):
+    os.environ["XLA_FLAGS"] = (
+        os.environ.get("XLA_FLAGS", "") + " --xla_gpu_enable_command_buffer="
     ).strip()
 
 from datetime import datetime
@@ -87,6 +92,10 @@ if RESUME_MODE:
     start_batch = len(existing_batches)
     print(f"🔄 RESUME MODE: Loading from {run_dir}")
     print(f"🔄 Found {start_batch} existing batches, will resume from batch {start_batch}")
+    # A run stopped during the all-parameter warm-up resumes it from the saved mesh warm-up
+    RESUME_STEP2 = not (config_dir / "sampler_state.pkl").exists()
+    if RESUME_STEP2 and not (config_dir / "mesh_warmup_state.npz").exists():
+        raise ValueError(f"{config_dir} has neither sampler_state.pkl nor mesh_warmup_state.npz")
 else:
     timestamp = start_time.strftime("%Y%m%d_%H%M%S")
     job_id = os.environ.get("SLURM_JOB_ID", "local")
@@ -98,6 +107,7 @@ else:
     cfg = utils.yload(args.config)
     shutil.copy(args.config, config_dir / "config.yaml")
     start_batch = 0
+    RESUME_STEP2 = False
 
 print(f"JAX version: {jax.__version__}")
 print(f"NumPyro version: {numpyro.__version__}")
@@ -160,13 +170,15 @@ if RESUME_MODE:
     truth = {k: truth_data[k] for k in truth_data.files}
     print(f"  Loaded keys: {list(truth.keys())}")
 
-    # Load sampler state
-    print("\nLoading sampler_state.pkl...")
-    with open(config_dir / "sampler_state.pkl", "rb") as f:
-        saved_state = pickle.load(f)
-    state = saved_state["state"]
-    config = saved_state["config"]
-    print("  ✓ State loaded")
+    if RESUME_STEP2:
+        print("\nNo sampler_state.pkl: the warm-up resumes at step 2 from mesh_warmup_state.npz")
+    else:
+        print("\nLoading sampler_state.pkl...")
+        with open(config_dir / "sampler_state.pkl", "rb") as f:
+            saved_state = pickle.load(f)
+        state = saved_state["state"]
+        config = saved_state["config"]
+        print("  ✓ State loaded")
 
 # =============================================================================
 # NORMAL MODE: Generate truth and run warmup
@@ -499,6 +511,19 @@ if not RESUME_MODE:
     # Update only init_mesh_ from mesh warmup, keep cosmo/bias from initial params
     init_params_["init_mesh_"] = state_mesh.position["init_mesh_"]
     init_params_ = {k: v for k, v in init_params_.items() if k not in fixed_latent_keys}
+
+    # Saved so that --resume restarts at step 2 if the run stops before the sampler state is saved
+    jnp.savez(config_dir / "mesh_warmup_state.npz", **init_params_,
+              **{"start_" + k: v for k, v in params_start.items()})
+
+if RESUME_STEP2:
+    _saved = jnp.load(config_dir / "mesh_warmup_state.npz")
+    init_params_ = {k: _saved[k] for k in _saved.files if not k.startswith("start_")}
+    params_start = {k[len("start_"):]: _saved[k] for k in _saved.files if k.startswith("start_")}
+    print(f"\n🔄 Mesh warm-up state loaded ({len(init_params_)} latents)", flush=True)
+
+if not RESUME_MODE or RESUME_STEP2:
+    import time as _time
 
     # STEP 2: Warmup all params
     print("\n" + "=" * 80, flush=True)

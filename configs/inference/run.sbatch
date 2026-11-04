@@ -10,7 +10,12 @@ export LD_LIBRARY_PATH=$(echo ${CONDA_PREFIX}/lib/python3.11/site-packages/nvidi
 # Add env bin to path
 export PATH=${CONDA_PREFIX}/bin:$PATH
 
-# Run script with config path (argument 1, default to standard config)
+# Run script with config path (argument 1, default to standard config), or `--resume <run_dir>`
+if [[ "$1" == "--resume" ]]; then
+    echo "Resuming: $2"
+    ${CONDA_PREFIX}/bin/python -u scripts/run_inference.py --resume "$2"
+    exit $?
+fi
 CONFIG_PATH=${1:-configs/inference/config.yaml}
 echo "Using config: $CONFIG_PATH"
 

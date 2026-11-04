@@ -77,9 +77,11 @@ squeue -u $USER
 
 Runs with galaxies need the 80 GB A100s (`hbm80g`): on a 40 GB node the joint runs out of memory on
 GPU 0 and hangs without an error (job 59687440). `run_inference.py` reserves JAX's default pool at
-start as one block of 95 % of the GPU (`XLA_PYTHON_CLIENT_PREALLOCATE=true`,
-`XLA_PYTHON_CLIENT_MEM_FRACTION=0.95`, each set only if the shell does not; the shell may also set
-`XLA_PYTHON_CLIENT_ALLOCATOR`) and clears each warm-up's executables before the next step. Grown on
+start as one block of 90 % of the GPU (`XLA_PYTHON_CLIENT_PREALLOCATE=true`,
+`XLA_PYTHON_CLIENT_MEM_FRACTION=0.90`, each set only if the shell does not; the shell may also set
+`XLA_PYTHON_CLIENT_ALLOCATOR`), turns XLA's command buffers off (`--xla_gpu_enable_command_buffer=`:
+their CUDA graphs accumulate over a warm-up's steps outside the pool, 29 228 of them at the start of
+a mesh-160 joint's step 2) and clears each warm-up's executables before the next step. Grown on
 demand instead (preallocation off), the pool adds a region per large request and never returns one,
 so a program whose working buffer exceeds every region already held asks for a new one the GPU no
 longer has: at mesh 160 the warm-ups ran out of memory with most of the pool free (pipeline §7.19).
@@ -88,7 +90,11 @@ constants load outside that pool: the Fourier kernels and the particle lattice a
 inside the traced code, and `run_inference.py` adds `--xla_disable_hlo_passes=constant_folding` to
 `XLA_FLAGS` so that XLA does not fold them back into grid-sized constants (at mesh 160 they made
 2.2 GiB per trace of the log-density, 7–12 GB per warm-up program, and the 95 % pool left no room to
-load them, pipeline §7.19); what loads outside the pool must fit in the remaining 5 %. A memory figure from `bench_gradient.py` is one gradient in a fresh
+load them, pipeline §7.19); what loads outside the pool must fit in the remaining 10 %. A one-off
+table built with jax_cosmo's halofit (the out-of-model term's fiducial boost,
+`cmb_lensing.limber_ratio_outside_model`) is computed on the CPU: on a GPU it held 7.4 GB outside
+the pool on GPU 0 for the rest of the process, and the first cross-GPU reduction (NCCL) then hung
+(pipeline §7.19). A memory figure from `bench_gradient.py` is one gradient in a fresh
 process; check a new grid with a short end-to-end `run_inference.py` (few warm-up steps, one batch).
 
 ```bash
@@ -117,8 +123,10 @@ what the job needs (the warm-up must fit; NERSC charges the time used).
 ```
 
 The sampler state is saved right after the warm-up (`sampler_state.pkl`), so the batches can then be
-continued in an interactive allocation with `run_inference.py --resume <run_dir>` (`run.sbatch` runs
-`--config` only).
+continued with `run_inference.py --resume <run_dir>` in an interactive allocation, or in a batch job
+with `./configs/inference/submit.py --resume <run_dir>` (the `slurm` block of the run's copied
+config). The state after the mesh warm-up is saved (`mesh_warmup_state.npz`): a run stopped during the
+all-parameter warm-up resumes there instead of redoing the mesh warm-up.
 
 ## Storage
 

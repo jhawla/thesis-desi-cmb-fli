@@ -905,7 +905,16 @@ def limber_ratio_outside_model(
 ):
     """What the linear Limber C_ell of ``compute_cl_outside_model`` misses, at a concrete cosmology
     (docs/pipeline.md 3.2): the exact over Limber C_ell of its kernel (``exact_over_limber``) times
-    its halofit over linear Limber C_ell (``nonlinear_power`` against the model's linear spectrum)."""
+    its halofit over linear Limber C_ell (``nonlinear_power`` against the model's linear spectrum).
+    Computed once, on the CPU: on a GPU its compiled halofit holds memory outside the client's pool
+    for the rest of the process (docs/hpc.md)."""
+    with jax.default_device(jax.devices("cpu")[0]):
+        return _limber_ratio_outside_model(cosmo, ell, r_shells, a_shells, d_r, shell_weights,
+                                           z_source, chi_max, taper, n_per_shell, n_beyond, k_max)
+
+
+def _limber_ratio_outside_model(cosmo, ell, r_shells, a_shells, d_r, shell_weights, z_source,
+                                chi_max, taper, n_per_shell, n_beyond, k_max):
     from desi_cmb_fli.bricks import lin_power_interp
     from desi_cmb_fli.nbody import a2g
 
