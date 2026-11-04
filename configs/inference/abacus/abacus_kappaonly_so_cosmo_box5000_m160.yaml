@@ -5,7 +5,7 @@ slurm:
   constraint: "gpu&hbm80g"  # 80 GB A100s: the joint does not fit 40 GB (docs/hpc.md)
   nodes: 1
   gpus: 4
-  time: '11:00:00'  # warm-up ≈ 5–6 h at mesh 160 (estimated, pipeline 8); check the NERSC queue table before submitting
+  time: '24:00:00'  # warm-up ≈ 15–16 h at mesh 160 (step 1 4.4 h measured, step 2 ≈ 2.2× slower per step, pipeline 7.19); batches beyond with --resume; check the NERSC queue table before submitting
 model:
   cell_size: 31.25  # 5000 / 160: final k_N 0.10 h/Mpc (pipeline 7.19)
   box_shape:
