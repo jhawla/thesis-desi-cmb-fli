@@ -81,7 +81,8 @@ default_config = {
     "los": (0.0, 0.0, 1.0),
     "poles": (0, 2, 4),
     "galaxies_enabled": True,  # Enable galaxy likelihood (set False for CMB-only runs)
-    "gxy_stoch_noise": True,  # Free galaxy noise s_e, s_ed (std |s_e + s_ed delta_m| sqrt(n̄S)); False: 1, 0
+    "gxy_stoch_noise": True,  # Free galaxy noise s_e, s_ed (std s_e (1 + s_ed max(delta_m, -1)) sqrt(n̄S)); False: 1, 0
+    "bias_order": 2,  # 2: b1, b2, bs2, bn2 (+ bnpar, b1_alpha); 3: adds b3, bds2, bs3 (docs/pipeline.md 2.4)
     "bias_evolution": "redshift",  # 'redshift': on the light cone b1 evolves with b1_alpha and b2, bs2
     # follow b1 through the quenched-galaxy relations (bricks.quenched_bias_relation); 'none': constant
     # biases, b1_alpha not sampled (docs/pipeline.md 2.4)
@@ -92,8 +93,8 @@ default_config = {
     "cmb_lensing_obs": None,  # Observed convergence map (set during conditioning)
     "cmb_noise_nell": None,  # Path to N_ell file or dictionary {'ell': ..., 'N_ell': ...}
     "cmb_noise_scaling": 1.0,  # Artificial noise scaling factor (for tests: 0.01 = divide by 100)
-    "cmb_nside": 256,      # HEALPix nside for curved-sky convergence map
-    "cmb_n_shells": 189,   # Number of radial shells for Born integration
+    "cmb_nside": 256,  # HEALPix nside for curved-sky convergence map
+    "cmb_n_shells": 189,  # Number of radial shells for Born integration
     "cmb_chi_matter_min": 0.0,  # where the observed map's matter starts (Mpc/h): the Born shells start here
     "cmb_shell_weights": "nearest",  # 'nearest' or 'linear' radial shell assignment of the particles
     "cmb_shell_kmax": None,  # per-shell multipole cut at ell = shell_kmax * r_eff (h/Mpc); None = init-grid Nyquist, 0 = none
@@ -101,12 +102,10 @@ default_config = {
     "cmb_observer_mode": "face",  # 'face' or 'center'
     "cmb_observer_position": None,  # Optional explicit [x, y, z] in Mpc/h
     "cmb_mask": None,  # Optional external survey mask (npy/FITS or array)
-
     "cmb_z_source": 1100.0,  # CMB last scattering surface
     "cl_out_mode": "exact",  # out-of-model C_l: 'exact' (follows the cosmology) or 'fixed'
     "cmb_likelihood_mode": "diagonal",  # 'diagonal' (fast, exact on full sky) | 'pixel_exact' (exact cut-sky via KL eigenmodes)
     "cmb_kl_rcond": 1e-6,  # pixel_exact: keep eigenmodes with lambda > rcond*lambda_max (supported Slepian subspace; 1e-6 keeps cond~1e6, safe in float32; lower=more complete but more fragile)
-
     # Primordial non-Gaussianity
     "png_type": None,  # None (Gaussian), 'fNL' (derive b_phi/b_phi_delta from bias), 'fNL_bias'
     # Latents
@@ -175,6 +174,31 @@ default_config = {
             "scale_fid": 1.0,
             "loc_fid": 0.0,
         },
+        # Third-order Lagrangian biases (bias_order 3), montecosmo's priors
+        "b3": {
+            "group": "bias",
+            "label": "{b}_{3}",
+            "loc": 0.0,
+            "scale": 1e3,
+            "scale_fid": 1.0,
+            "loc_fid": 0.0,
+        },
+        "bds2": {
+            "group": "bias",
+            "label": "{b}_{\\delta s^2}",
+            "loc": 0.0,
+            "scale": 1e3,
+            "scale_fid": 1.0,
+            "loc_fid": 0.0,
+        },
+        "bs3": {
+            "group": "bias",
+            "label": "{b}_{s^3}",
+            "loc": 0.0,
+            "scale": 1e3,
+            "scale_fid": 1.0,
+            "loc_fid": 0.0,
+        },
         "bnpar": {
             "group": "bias",
             "label": "{b}_{\\nabla_\\parallel}",
@@ -205,9 +229,9 @@ default_config = {
             "scale_fid": 3e2,
         },
         "s_e": {
-            # Galaxy noise (montecosmo quad_gauss): std = |s_e + s_ed delta_m| sqrt(n̄S), delta_m the
-            # model's count contrast; s_e=1, s_ed=0 => Poisson variance at the mean density.
-            # Sampled with s_ed when gxy_stoch_noise=True (docs/pipeline.md 3.1).
+            # Galaxy noise: std = s_e (1 + s_ed max(delta_m, -1)) sqrt(n̄S), delta_m the model's
+            # count contrast; s_e=1, s_ed=0 => Poisson variance at the mean density. Sampled with
+            # s_ed when gxy_stoch_noise=True (docs/pipeline.md 3.1).
             "group": "stoch",
             "label": "{s}_\\epsilon",
             "loc": 1.0,
@@ -217,11 +241,16 @@ default_config = {
             "high": 10.0,
         },
         "s_ed": {
+            # Relative slope of the noise std with delta_m; bounded below 1 so that the std stays
+            # above s_e (1 - s_ed) sqrt(n̄S)
             "group": "stoch",
             "label": "{s}_{\\epsilon\\delta}",
             "loc": 0.0,
-            "scale": 10.0,
+            "scale": 1.0,
+            "loc_fid": 0.2,
             "scale_fid": 1e-2,
+            "low": 0.0,
+            "high": 0.9,
         },
         "init_mesh": {
             "group": "init",
@@ -234,23 +263,57 @@ default_config = {
 # Keys get_model_from_config reads from the two model-defining sections. Anything else there is a
 # typo or a removed option, and would otherwise fall back on the default without a word.
 MODEL_CONFIG_KEYS = {
-    "box_shape", "cell_size", "evolution", "lpt_order", "gxy_density", "lightcone", "a_obs",
-    "precond", "init_oversamp", "evol_oversamp", "ptcl_oversamp", "paint_oversamp", "curved_sky",
-    "los", "galaxies_enabled", "gxy_stoch_noise", "gxy_ngbar_free", "png_type", "bias_evolution",
+    "box_shape",
+    "cell_size",
+    "evolution",
+    "lpt_order",
+    "gxy_density",
+    "lightcone",
+    "a_obs",
+    "precond",
+    "init_oversamp",
+    "evol_oversamp",
+    "ptcl_oversamp",
+    "paint_oversamp",
+    "curved_sky",
+    "los",
+    "galaxies_enabled",
+    "gxy_stoch_noise",
+    "gxy_ngbar_free",
+    "png_type",
+    "bias_evolution",
+    "bias_order",
 }
 CMB_CONFIG_KEYS = {
-    "enabled", "observer_mode", "observer_position", "nside", "n_shells", "chi_matter_min",
-    "shell_weights", "shell_kmax", "proj_oversamp", "likelihood", "likelihood_mode", "kl_rcond", "mask",
-    "full_los_correction", "chi_high_z_max", "z_source", "cl_out_mode", "high_z_mode",
-    "cmb_noise_nell", "cmb_noise_scaling",
+    "enabled",
+    "observer_mode",
+    "observer_position",
+    "nside",
+    "n_shells",
+    "chi_matter_min",
+    "shell_weights",
+    "shell_kmax",
+    "proj_oversamp",
+    "likelihood",
+    "likelihood_mode",
+    "kl_rcond",
+    "mask",
+    "full_los_correction",
+    "chi_high_z_max",
+    "z_source",
+    "cl_out_mode",
+    "high_z_mode",
+    "cmb_noise_nell",
+    "cmb_noise_scaling",
 }
 
 
 def _check_config_keys(section, given, known):
     unknown = sorted(set(given or {}) - known)
     if unknown:
-        raise ValueError(f"Unknown key(s) in config section '{section}': {unknown}. "
-                         f"Known: {sorted(known)}.")
+        raise ValueError(
+            f"Unknown key(s) in config section '{section}': {unknown}. Known: {sorted(known)}."
+        )
 
 
 def get_model_from_config(config_or_path):
@@ -266,6 +329,7 @@ def get_model_from_config(config_or_path):
     """
     if isinstance(config_or_path, str | Path):
         from desi_cmb_fli import utils
+
         cfg = utils.yload(config_or_path)
     else:
         cfg = config_or_path
@@ -280,8 +344,9 @@ def get_model_from_config(config_or_path):
             "per-shell multipole cut (shell_kmax) replaces chi_min (docs/pipeline.md 2.6). Runs made "
             "with chi_min need the code before this change."
         )
-    _check_config_keys("cmb_lensing", {k: v for k, v in cmb_given.items() if k not in removed},
-                       CMB_CONFIG_KEYS)
+    _check_config_keys(
+        "cmb_lensing", {k: v for k, v in cmb_given.items() if k not in removed}, CMB_CONFIG_KEYS
+    )
 
     # Build model config
     model_config = default_config.copy()
@@ -290,7 +355,7 @@ def get_model_from_config(config_or_path):
     # Cell size & Mesh shape
     cell_size = float(cfg["model"]["cell_size"])
     mesh_shape = [int(round(L / cell_size)) for L in model_config["box_shape"]]
-    mesh_shape = [n + 1 if n % 2 != 0 else n for n in mesh_shape] # Ensure even
+    mesh_shape = [n + 1 if n % 2 != 0 else n for n in mesh_shape]  # Ensure even
     model_config["mesh_shape"] = tuple(mesh_shape)
 
     # Evolution params
@@ -325,6 +390,8 @@ def get_model_from_config(config_or_path):
         model_config["gxy_ngbar_free"] = bool(cfg["model"]["gxy_ngbar_free"])
     if "bias_evolution" in cfg["model"]:
         model_config["bias_evolution"] = str(cfg["model"]["bias_evolution"])
+    if "bias_order" in cfg["model"]:
+        model_config["bias_order"] = int(cfg["model"]["bias_order"])
     if "png_type" in cfg["model"]:
         png_type = cfg["model"]["png_type"]
         model_config["png_type"] = None if png_type in (None, "None", "none") else str(png_type)
@@ -351,14 +418,18 @@ def get_model_from_config(config_or_path):
         model_config["cmb_kl_rcond"] = float(cmb_cfg.get("kl_rcond", 1e-6))
         model_config["cmb_mask"] = cmb_cfg.get("mask", None)
         model_config["full_los_correction"] = cmb_cfg.get("full_los_correction", False)
-        model_config["chi_high_z_max"] = cmb_cfg.get("chi_high_z_max", None)  # None = integrate to chi_CMB
+        model_config["chi_high_z_max"] = cmb_cfg.get(
+            "chi_high_z_max", None
+        )  # None = integrate to chi_CMB
         model_config["cmb_z_source"] = float(cmb_cfg.get("z_source", 1100.0))
-        model_config["cmb_lensing_obs"] = None # Will be set via conditioning if needed
+        model_config["cmb_lensing_obs"] = None  # Will be set via conditioning if needed
 
         # Out-of-model term mode; high_z_mode is its former name, in the configs of earlier runs.
         if {"cl_out_mode", "high_z_mode"} <= set(cmb_cfg):
             raise ValueError("cmb_lensing: give cl_out_mode only (high_z_mode is its former name).")
-        model_config["cl_out_mode"] = cmb_cfg.get("cl_out_mode", cmb_cfg.get("high_z_mode", "exact"))
+        model_config["cl_out_mode"] = cmb_cfg.get(
+            "cl_out_mode", cmb_cfg.get("high_z_mode", "exact")
+        )
 
         if "cmb_noise_nell" in cmb_cfg:
             model_config["cmb_noise_nell"] = cmb_cfg["cmb_noise_nell"]
@@ -389,16 +460,25 @@ def get_model_from_config(config_or_path):
         if z_range is None:
             raw = gxy_cfg.get("file")
             paths = raw if isinstance(raw, list | tuple) else [raw]
-            zs = sorted({float(m.group(1)) for p in paths if p
-                         for m in [_re.search(r"/z(\d+\.\d+)/", str(p))] if m})
+            zs = sorted(
+                {
+                    float(m.group(1))
+                    for p in paths
+                    if p
+                    for m in [_re.search(r"/z(\d+\.\d+)/", str(p))]
+                    if m
+                }
+            )
             if len(zs) >= 2:
                 # Effective survey z-range (catalog bands extend ~half a spacing beyond the nominal z's).
                 dz_lo, dz_hi = zs[1] - zs[0], zs[-1] - zs[-2]
                 z_range = (max(zs[0] - 0.5 * dz_lo, 0.0), zs[-1] + 0.5 * dz_hi)
 
         if z_range is None:
-            print("[ngbars] gxy_ngbar_free set but no z-range found "
-                  "(set abacus_galaxy.z_range); disabling.")
+            print(
+                "[ngbars] gxy_ngbar_free set but no z-range found "
+                "(set abacus_galaxy.z_range); disabling."
+            )
             model_config["gxy_ngbar_free"] = False
         else:
             z_lo, z_hi = float(z_range[0]), float(z_range[1])
@@ -407,22 +487,36 @@ def get_model_from_config(config_or_path):
                 c = model_config["latents"].get(name, {})
                 return float(c.get("loc_fid", c.get("loc", dflt)))
 
-            cosmo_fid = _get_cosmology(Omega_m=_fid("Omega_m", 0.315192),
-                                       sigma8=_fid("sigma8", 0.811355))
-            chi_lo = float(_jc.background.radial_comoving_distance(cosmo_fid, 1.0 / (1.0 + z_lo))[0])
-            chi_hi = float(_jc.background.radial_comoving_distance(cosmo_fid, 1.0 / (1.0 + z_hi))[0])
-            dr = 3 ** 0.5 * cell_size
+            cosmo_fid = _get_cosmology(
+                Omega_m=_fid("Omega_m", 0.315192), sigma8=_fid("sigma8", 0.811355)
+            )
+            chi_lo = float(
+                _jc.background.radial_comoving_distance(cosmo_fid, 1.0 / (1.0 + z_lo))[0]
+            )
+            chi_hi = float(
+                _jc.background.radial_comoving_distance(cosmo_fid, 1.0 / (1.0 + z_hi))[0]
+            )
+            dr = 3**0.5 * cell_size
             n_rbins = max(int(round((chi_hi - chi_lo) / dr)), 1)
 
             model_config["n_gxy_shells"] = n_rbins
-            tmpl = {"group": "syst", "loc": 1.0, "scale": 1.0,
-                    "scale_fid": 1e-2, "loc_fid": 1.0, "low": 0.0, "high": float("inf")}
+            tmpl = {
+                "group": "syst",
+                "loc": 1.0,
+                "scale": 1.0,
+                "scale_fid": 1e-2,
+                "loc_fid": 1.0,
+                "low": 0.0,
+                "high": float("inf"),
+            }
             for b in range(n_rbins):
                 lat = tmpl.copy()
                 lat["label"] = r"{\bar{n}}_{g," + str(b) + "}"
                 model_config["latents"][f"ngbar_{b}"] = lat
-            print(f"[ngbars] {n_rbins} free fine radial bins (dr≈{dr:.0f} Mpc/h, "
-                  f"chi≈[{chi_lo:.0f},{chi_hi:.0f}] Mpc/h); ngbar_0..ngbar_{n_rbins - 1}")
+            print(
+                f"[ngbars] {n_rbins} free fine radial bins (dr≈{dr:.0f} Mpc/h, "
+                f"chi≈[{chi_lo:.0f},{chi_hi:.0f}] Mpc/h); ngbar_0..ngbar_{n_rbins - 1}"
+            )
 
     model_instance = FieldLevelModel(**model_config)
 
@@ -542,8 +636,11 @@ class Model:
             return kappa_pred
         from desi_cmb_fli.cmb_lensing import add_ell_filtered
 
-        fl = jnp.zeros(2 * int(self.cmb_proj_nside) + 1).at[: len(self.ell_1d)].set(
-            jnp.asarray(gain) - 1.0)
+        fl = (
+            jnp.zeros(2 * int(self.cmb_proj_nside) + 1)
+            .at[: len(self.ell_1d)]
+            .set(jnp.asarray(gain) - 1.0)
+        )
         return add_ell_filtered(kappa_pred, fl, self.cmb_proj_nside)
 
     ############
@@ -621,10 +718,6 @@ class Model:
     @classmethod
     def load(cls, path):
         return cls(**ysafe_load(path))
-
-
-
-
 
 
 @dataclass
@@ -712,6 +805,7 @@ class FieldLevelModel(Model):
     gxy_stoch_noise: bool = field(default=default_config["gxy_stoch_noise"])
     gxy_ngbar_free: bool = field(default=default_config["gxy_ngbar_free"])
     bias_evolution: str = field(default=default_config["bias_evolution"])
+    bias_order: int = field(default=default_config["bias_order"])
     n_gxy_shells: int = field(default=0)
     curved_sky: bool = field(default=default_config["curved_sky"])
     los: tuple | None = field(default=default_config["los"])
@@ -733,10 +827,16 @@ class FieldLevelModel(Model):
     cmb_enabled: bool = field(default=False)  # Explicit flag to enable CMB lensing
 
     full_los_correction: bool = field(default=False)  # Out-of-model C_l in the kappa covariance
-    chi_high_z_max: float | None = field(default=None)  # Where the map's matter stops (None = chi_CMB)
+    chi_high_z_max: float | None = field(
+        default=None
+    )  # Where the map's matter stops (None = chi_CMB)
     cl_out_mode: str = field(default=default_config["cl_out_mode"])  # 'exact' | 'fixed'
-    cmb_likelihood_mode: str = field(default=default_config["cmb_likelihood_mode"])  # 'diagonal' | 'pixel_exact'
-    cmb_kl_rcond: float = field(default=default_config["cmb_kl_rcond"])  # pixel_exact KL eigenmode cutoff
+    cmb_likelihood_mode: str = field(
+        default=default_config["cmb_likelihood_mode"]
+    )  # 'diagonal' | 'pixel_exact'
+    cmb_kl_rcond: float = field(
+        default=default_config["cmb_kl_rcond"]
+    )  # pixel_exact KL eigenmode cutoff
     # Primordial non-Gaussianity
     png_type: str | None = field(default=default_config["png_type"])
     # Latents (required, from default_config)
@@ -745,7 +845,15 @@ class FieldLevelModel(Model):
 
     def __post_init__(self):
         if self.bias_evolution not in ("redshift", "none"):
-            raise ValueError(f"bias_evolution must be 'redshift' or 'none', got {self.bias_evolution!r}")
+            raise ValueError(
+                f"bias_evolution must be 'redshift' or 'none', got {self.bias_evolution!r}"
+            )
+        if self.bias_order not in (2, 3):
+            raise ValueError(f"bias_order must be 2 or 3, got {self.bias_order!r}")
+        if self.bias_order == 3 and self.evolution == "kaiser":
+            raise ValueError(
+                "bias_order 3 weights particles: use evolution 'lpt' or 'nbody', not 'kaiser'."
+            )
         # The bias evolves on the light cone only (a snapshot has a single a)
         self.bias_evolves = self.bias_evolution == "redshift" and self.a_obs is None
         self.latents = self._validate_latents()
@@ -781,9 +889,15 @@ class FieldLevelModel(Model):
         self._sim_shape = self.sim_box_shape
         self._sim_mesh = self.sim_mesh_shape
 
-        self.init_shape = np.asarray(get_scaled_shape(tuple(self.sim_mesh_shape), self.init_oversamp))
-        self.evol_shape = np.asarray(get_scaled_shape(tuple(self.sim_mesh_shape), self.evol_oversamp))
-        self.ptcl_shape = np.asarray(get_scaled_shape(tuple(self.sim_mesh_shape), self.ptcl_oversamp))
+        self.init_shape = np.asarray(
+            get_scaled_shape(tuple(self.sim_mesh_shape), self.init_oversamp)
+        )
+        self.evol_shape = np.asarray(
+            get_scaled_shape(tuple(self.sim_mesh_shape), self.evol_oversamp)
+        )
+        self.ptcl_shape = np.asarray(
+            get_scaled_shape(tuple(self.sim_mesh_shape), self.ptcl_oversamp)
+        )
 
         if self.evolution == "lpt" and not np.array_equal(self.ptcl_shape, self.evol_shape):
             raise ValueError(
@@ -795,13 +909,24 @@ class FieldLevelModel(Model):
 
         # Oversampled paint shape for CIC deconvolution
         if self.paint_oversamp != 1.0:
-            self.paint_shape = np.asarray(get_scaled_shape(tuple(self.sim_mesh_shape), self.paint_oversamp))
+            self.paint_shape = np.asarray(
+                get_scaled_shape(tuple(self.sim_mesh_shape), self.paint_oversamp)
+            )
         else:
             self.paint_shape = self.sim_mesh_shape
-        if any(s != self.sim_mesh_shape[0] for s in
-               (self.init_shape[0], self.evol_shape[0], self.ptcl_shape[0], self.paint_shape[0])):
-            print(f"  Oversampling: init={tuple(self.init_shape)} evol={tuple(self.evol_shape)} "
-                  f"ptcl={tuple(self.ptcl_shape)} paint={tuple(self.paint_shape)} (final={tuple(self.sim_mesh_shape)})")
+        if any(
+            s != self.sim_mesh_shape[0]
+            for s in (
+                self.init_shape[0],
+                self.evol_shape[0],
+                self.ptcl_shape[0],
+                self.paint_shape[0],
+            )
+        ):
+            print(
+                f"  Oversampling: init={tuple(self.init_shape)} evol={tuple(self.evol_shape)} "
+                f"ptcl={tuple(self.ptcl_shape)} paint={tuple(self.paint_shape)} (final={tuple(self.sim_mesh_shape)})"
+            )
         if self.galaxies_enabled:
             self._check_lattice_aliases()
         spacing = float(np.max(np.asarray(self.box_shape, dtype=float) / self.ptcl_shape))
@@ -838,7 +963,9 @@ class FieldLevelModel(Model):
             self.a_obs = float(self.a_obs)
             self.a_fid = float(self.a_obs)
             self.a_obs_center = float(self.a_obs)
-            a2g(cosmo_fid, self.a_obs)  # build the background emulator eagerly (snapshot skips the lightcone a2g)
+            a2g(
+                cosmo_fid, self.a_obs
+            )  # build the background emulator eagerly (snapshot skips the lightcone a2g)
 
         # Calculate z_max for logging
         if self.cmb_observer_mode == "center":
@@ -848,14 +975,16 @@ class FieldLevelModel(Model):
             self.chi_boundary = self.box_shape[2]
 
         a_max = float(jc.background.a_of_chi(cosmo_fid, self.chi_boundary)[0])
-        z_max_box = 1/a_max - 1
+        z_max_box = 1 / a_max - 1
 
         print(f"  Box size: {self.box_shape} Mpc/h")
         print(f"  Center chi: {self.box_center[2]:.2f} Mpc/h")
         if self.lightcone:
-            print(f"  Lightcone mode: a_obs=None (a_center={self.a_obs_center:.4f}, z_center={1/self.a_obs_center - 1:.4f})")
+            print(
+                f"  Lightcone mode: a_obs=None (a_center={self.a_obs_center:.4f}, z_center={1 / self.a_obs_center - 1:.4f})"
+            )
         else:
-            print(f"  Snapshot mode: a_obs={self.a_obs:.4f} (z_obs={1/self.a_obs - 1:.4f})")
+            print(f"  Snapshot mode: a_obs={self.a_obs:.4f} (z_obs={1 / self.a_obs - 1:.4f})")
         print(f"  Box extends to chi={self.chi_boundary:.2f} Mpc/h (z_max = {z_max_box:.4f})")
 
         self.k_funda = 2 * np.pi / np.min(self.box_shape)
@@ -864,10 +993,13 @@ class FieldLevelModel(Model):
 
         # Validation: at least one observable must be enabled
         if not self.galaxies_enabled and not self.cmb_enabled:
-            raise ValueError("At least one observable must be enabled (galaxies_enabled or cmb_enabled)")
+            raise ValueError(
+                "At least one observable must be enabled (galaxies_enabled or cmb_enabled)"
+            )
         if self.cmb_enabled and self.evolution == "kaiser":
-            raise ValueError("CMB lensing Born-projects particles: use evolution 'lpt' or 'nbody', "
-                             "not 'kaiser'.")
+            raise ValueError(
+                "CMB lensing Born-projects particles: use evolution 'lpt' or 'nbody', not 'kaiser'."
+            )
 
         if self.cmb_enabled:
             import healpy as hp
@@ -901,27 +1033,31 @@ class FieldLevelModel(Model):
             nell_in = np.asarray(nell_in, dtype=float).copy()
             if self.cmb_noise_scaling != 1.0:
                 nell_in *= self.cmb_noise_scaling
-                print(f"\n[CMB] WARNING: ARTIFICIAL NOISE SCALING APPLIED: {self.cmb_noise_scaling:.4f}")
+                print(
+                    f"\n[CMB] WARNING: ARTIFICIAL NOISE SCALING APPLIED: {self.cmb_noise_scaling:.4f}"
+                )
 
             print(f"[CMB] Computing HEALPix deep-field mask (nside={self.cmb_nside}) ...")
 
-            t_enter, t_exit = _box_ray_intervals(self.observer_position, self.box_shape, self.cmb_nside)
+            t_enter, t_exit = _box_ray_intervals(
+                self.observer_position, self.box_shape, self.cmb_nside
+            )
             self.cmb_sim_mask = (t_exit >= self.chi_boundary - 1e-4) & (t_exit > t_enter)
             self.cmb_chi_max_model = self.chi_boundary
 
             self.cmb_external_mask = load_healpix_mask(self.cmb_mask, self.cmb_nside)
             self.cmb_mask = self.cmb_sim_mask & self.cmb_external_mask
             n_pix_mask = int(np.sum(self.cmb_mask))
-            print(f"[CMB] Effective mask: {n_pix_mask} pixels / {len(self.cmb_mask)} ({n_pix_mask / len(self.cmb_mask):.2%})")
+            print(
+                f"[CMB] Effective mask: {n_pix_mask} pixels / {len(self.cmb_mask)} ({n_pix_mask / len(self.cmb_mask):.2%})"
+            )
 
             # Anti-aliasing of the Born projection. The observable stays the a_lm with
             # l <= 2*cmb_nside; only the sphere the particles are scattered onto is refined,
             # so that sub-pixel power is represented instead of folding into that band.
             ov = int(self.cmb_proj_oversamp)
             if ov < 1 or (ov & (ov - 1)):
-                raise ValueError(
-                    f"cmb_lensing.proj_oversamp must be a power of two >= 1, got {ov}"
-                )
+                raise ValueError(f"cmb_lensing.proj_oversamp must be a power of two >= 1, got {ov}")
             self.cmb_proj_nside = self.cmb_nside * ov
             if ov == 1:
                 self.cmb_proj_mask, self.cmb_proj_sim_mask = self.cmb_mask, self.cmb_sim_mask
@@ -972,7 +1108,9 @@ class FieldLevelModel(Model):
                 # default: the Nyquist frequency of the inferred field, when the line-of-sight
                 # covariance that receives the removed power is on
                 init_cell = np.asarray(self.box_shape, dtype=float) / np.asarray(self.init_shape)
-                self.cmb_shell_kmax = float(np.pi / np.max(init_cell)) if self.full_los_correction else 0.0
+                self.cmb_shell_kmax = (
+                    float(np.pi / np.max(init_cell)) if self.full_los_correction else 0.0
+                )
             if self.cmb_shell_kmax > 0:
                 if not self.full_los_correction:
                     raise ValueError(
@@ -980,8 +1118,12 @@ class FieldLevelModel(Model):
                         "removes goes into the line-of-sight covariance (shell_kmax: 0 = no cut)."
                     )
                 self.cmb_shell_taper = shell_ell_taper(
-                    self.cmb_r_shells, self.cmb_d_r, self.cmb_shell_weights, self.cmb_shell_kmax,
-                    ell_max=2 * self.cmb_nside, lmax=2 * self.cmb_proj_nside,
+                    self.cmb_r_shells,
+                    self.cmb_d_r,
+                    self.cmb_shell_weights,
+                    self.cmb_shell_kmax,
+                    ell_max=2 * self.cmb_nside,
+                    lmax=2 * self.cmb_proj_nside,
                 )
                 n_cut = int((self.cmb_shell_taper < 1.0).any(axis=1).sum())
                 print(
@@ -1053,7 +1195,11 @@ class FieldLevelModel(Model):
                 self.cmb_u_dim = int(_idx_re_m0.size + 2 * _idx_mp.size)
                 self.cmb_l_of_u = jnp.asarray(
                     np.concatenate(
-                        [self.cmb_alm_l[_idx_re_m0], self.cmb_alm_l[_idx_mp], self.cmb_alm_l[_idx_mp]]
+                        [
+                            self.cmb_alm_l[_idx_re_m0],
+                            self.cmb_alm_l[_idx_mp],
+                            self.cmb_alm_l[_idx_mp],
+                        ]
                     )
                 )
                 # jax_healpy's map2alm only supports lmax == 2*nside, so a refined projection
@@ -1062,9 +1208,11 @@ class FieldLevelModel(Model):
                 if self.cmb_proj_nside != self.cmb_nside:
                     self.cmb_proj_lmax = 2 * self.cmb_proj_nside
                     _get = lambda idx: hp.Alm.getidx(  # noqa: E731
-                        self.cmb_proj_lmax, self.cmb_alm_l[idx], self.cmb_alm_m[idx])
+                        self.cmb_proj_lmax, self.cmb_alm_l[idx], self.cmb_alm_m[idx]
+                    )
                     self.cmb_proj_pack_re_idx = jnp.asarray(
-                        np.concatenate([_get(_idx_re_m0), _get(_idx_mp)]))
+                        np.concatenate([_get(_idx_re_m0), _get(_idx_mp)])
+                    )
                     self.cmb_proj_pack_im_idx = jnp.asarray(_get(_idx_mp))
                 else:
                     self.cmb_proj_lmax = self.cmb_lmax
@@ -1101,8 +1249,10 @@ class FieldLevelModel(Model):
             self.cmb_out_gain = None
 
             if self.cl_out_mode not in ("exact", "fixed"):
-                raise ValueError(f"cl_out_mode must be 'exact' or 'fixed', got {self.cl_out_mode!r} "
-                                 "('taylor' and 'exact_linear' were replaced by 'exact').")
+                raise ValueError(
+                    f"cl_out_mode must be 'exact' or 'fixed', got {self.cl_out_mode!r} "
+                    "('taylor' and 'exact_linear' were replaced by 'exact')."
+                )
             if self.full_los_correction:
                 # The matter outside the model reaches the data through the projection sphere's
                 # bilinear window, as the model's own map does (docs/pipeline.md 3.2).
@@ -1110,7 +1260,11 @@ class FieldLevelModel(Model):
                     bilinear_window(int(self.cmb_proj_nside), int(self.cmb_lmax)) ** 2
                 )
                 chi_source_fid = float(a2chi(cosmo_fid, 1.0 / (1.0 + self.cmb_z_source)))
-                chi_high_z_upper = float(self.chi_high_z_max) if self.chi_high_z_max is not None else chi_source_fid
+                chi_high_z_upper = (
+                    float(self.chi_high_z_max)
+                    if self.chi_high_z_max is not None
+                    else chi_source_fid
+                )
                 if self.chi_high_z_max is not None:
                     print(
                         f"  [C_l^out] chi_high_z_max={self.chi_high_z_max:.0f} Mpc/h "
@@ -1118,22 +1272,32 @@ class FieldLevelModel(Model):
                     )
                 # The covariance term is everything the shells leave out of the map's matter (3.2).
                 self.cmb_shells = {
-                    "r_shells": self.cmb_r_shells, "a_shells": self.cmb_a_shells,
-                    "d_r": self.cmb_d_r, "shell_weights": self.cmb_shell_weights,
-                    "taper": self.cmb_shell_taper, "z_source": self.cmb_z_source,
+                    "r_shells": self.cmb_r_shells,
+                    "a_shells": self.cmb_a_shells,
+                    "d_r": self.cmb_d_r,
+                    "shell_weights": self.cmb_shell_weights,
+                    "taper": self.cmb_shell_taper,
+                    "z_source": self.cmb_z_source,
                 }
 
                 # What the linear Limber term misses, at the fiducial in every mode (3.2): the radial
                 # modes of its thin kernels at low ell (exact over Limber), the nonlinear power of
                 # what the per-shell cut removes at high ell (halofit over linear).
-                self.cmb_los_limber = jnp.asarray(limber_ratio_outside_model(
-                    cosmo_fid, self.ell_1d, **self.cmb_shells, chi_max=chi_high_z_upper))
+                self.cmb_los_limber = jnp.asarray(
+                    limber_ratio_outside_model(
+                        cosmo_fid, self.ell_1d, **self.cmb_shells, chi_max=chi_high_z_upper
+                    )
+                )
 
                 # At the fiducial in every mode: the likelihood under 'fixed', the diagnostics. The
                 # matter left out is correlated with the model's: the data map's expected kappa is
                 # the model's times the gain (3.2).
                 self.cl_out_cached, self.cmb_out_gain = compute_out_terms(
-                    cosmo_fid, self.ell_1d, chi_high_z_upper, self.cmb_shells, mode="exact",
+                    cosmo_fid,
+                    self.ell_1d,
+                    chi_high_z_upper,
+                    self.cmb_shells,
+                    mode="exact",
                     window2=self.cmb_los_window2 * self.cmb_los_limber,
                 )
                 print(
@@ -1141,12 +1305,13 @@ class FieldLevelModel(Model):
                     f"chi={self.chi_boundary:.0f}->{chi_high_z_upper:.0f} Mpc/h)"
                 )
                 g = np.asarray(self.cmb_out_gain)[2:]
-                print(f"  Out-of-model gain 1 + C^BM/C^MM: {g.min():.4f} ... {g.max():.4f} "
-                      f"(l 2-{self.cmb_lmax})")
+                print(
+                    f"  Out-of-model gain 1 + C^BM/C^MM: {g.min():.4f} ... {g.max():.4f} "
+                    f"(l 2-{self.cmb_lmax})"
+                )
 
             if self.cmb_likelihood_mode == "pixel_exact":
                 self._build_cmb_pixel_cov()
-
 
     def _build_cmb_pixel_cov(self):
         """Build the exact cut-sky CMB-lensing likelihood via signal-eigenmode (KL) compression.
@@ -1174,8 +1339,10 @@ class FieldLevelModel(Model):
         npix = obs_pix.size
         f_sky = npix / float(hp.nside2npix(nside))
         vecs = np.asarray(hp.pix2vec(nside, obs_pix), dtype=np.float64).T  # (npix, 3)
-        print(f"[CMB] pixel_exact (KL): building {npix}x{npix} pixel covariance "
-              f"(~{npix * npix * 8 / 1e9:.1f} GB f64) ...")
+        print(
+            f"[CMB] pixel_exact (KL): building {npix}x{npix} pixel covariance "
+            f"(~{npix * npix * 8 / 1e9:.1f} GB f64) ..."
+        )
 
         # Tabulate xi(mu) = sum_l coef_l P_l(mu) on a fine grid, then interpolate per pair.
         mu_grid = np.linspace(-1.0, 1.0, 200001)
@@ -1200,19 +1367,18 @@ class FieldLevelModel(Model):
             raise np.linalg.LinAlgError(
                 "[CMB] pixel_exact (KL): no eigenmodes above rcond*lambda_max; check the mask/spectrum."
             )
-        U_k = np.ascontiguousarray(evecs[:, keep])          # (npix, k)
-        lam_k = np.ascontiguousarray(evals[keep])           # (k,)
+        U_k = np.ascontiguousarray(evecs[:, keep])  # (npix, k)
+        lam_k = np.ascontiguousarray(evals[keep])  # (k,)
 
         self.cmb_obs_pix = jnp.asarray(obs_pix)
-        self.cmb_kl_U = jnp.asarray(U_k)                    # eigenmode projection
-        self.cmb_kl_var = jnp.asarray(lam_k)                # per-mode noise variance
+        self.cmb_kl_U = jnp.asarray(U_k)  # eigenmode projection
+        self.cmb_kl_var = jnp.asarray(lam_k)  # per-mode noise variance
         self.cmb_u_dim = int(k)
         print(
             f"[CMB] pixel_exact (KL): ready. npix_obs={npix} (f_sky={f_sky:.3f}), "
             f"kept k={k} modes (rcond={rcond:.0e}); supported~{int(f_sky * n_modes)}; "
             f"cond={lam_max / float(lam_k.min()):.1e}; lambda in [{lam_k.min():.2e}, {lam_max:.2e}]."
         )
-
 
     def __str__(self):
         out = ""
@@ -1255,10 +1421,7 @@ class FieldLevelModel(Model):
 
         # Bias parameters: fix to fiducial in CMB-only mode (unconstrained by data)
         if self.cmb_enabled and not self.galaxies_enabled:
-            bias = {
-                k: deterministic(k, jnp.asarray(self.loc_fid[k]))
-                for k in self.groups["bias"]
-            }
+            bias = {k: deterministic(k, jnp.asarray(self.loc_fid[k])) for k in self.groups["bias"]}
         else:
             bias_ = self._sample(self.groups["bias"])
             bias_ = samp2base(bias_, self.latents, inv=False, temp=temp)
@@ -1337,17 +1500,22 @@ class FieldLevelModel(Model):
         do not decide the galaxy likelihood, where the selection multiplies the field before the crop:
         the galaxy profile at the true ICs does (``scripts/galaxy_likelihood_profile.py``, §7.16).
         """
-        plain = (np.array_equal(self.paint_shape, self.sim_mesh_shape)
-                 and np.array_equal(self.evol_shape, self.sim_mesh_shape))
+        plain = np.array_equal(self.paint_shape, self.sim_mesh_shape) and np.array_equal(
+            self.evol_shape, self.sim_mesh_shape
+        )
         order = 1 if plain else INTERLACE_ORDER
-        axes = {(int(p), int(q), int(f)) for p, q, f in
-                zip(self.ptcl_shape, self.paint_shape, self.sim_mesh_shape, strict=True)}
+        axes = {
+            (int(p), int(q), int(f))
+            for p, q, f in zip(self.ptcl_shape, self.paint_shape, self.sim_mesh_shape, strict=True)
+        }
         for ptcl, paint, final in sorted(axes):
             hits = lattice_aliases(ptcl, paint, final, order)
             if hits:
-                print(f"  Lattice harmonics in the unmasked band ({ptcl} particles, paint {paint}, "
-                      f"final {final}; harmonic m, fold n, index): {hits}. Validate the particle "
-                      "count with scripts/galaxy_likelihood_profile.py (docs/pipeline.md 2.5, 7.16).")
+                print(
+                    f"  Lattice harmonics in the unmasked band ({ptcl} particles, paint {paint}, "
+                    f"final {final}; harmonic m, fold n, index): {hits}. Validate the particle "
+                    "count with scripts/galaxy_likelihood_profile.py (docs/pipeline.md 2.5, 7.16)."
+                )
 
     def paint_and_deconv(self, pos, weights=None, from_shape=None, crop=True):
         """CIC paint + interlace + deconvolve, with optional oversampled Fourier crop.
@@ -1418,18 +1586,29 @@ class FieldLevelModel(Model):
             # Gaussian in linear Kaiser: the f_NL matter signal (phi^2 term) is 2nd-order and
             # only captured by the LPT/N-body add_png path.
             fNL_bp, _ = fNL_bias(
-                fNL, bias["b1"], bias["b2"], p=1.0, png_type=self.png_type,
-                fNL_bp=fNL_bp_lat, fNL_bpd=fNL_bpd_lat,
+                fNL,
+                bias["b1"],
+                bias["b2"],
+                p=1.0,
+                png_type=self.png_type,
+                fNL_bp=fNL_bp_lat,
+                fNL_bpd=fNL_bpd_lat,
             )
 
             bE = 1 + bias["b1"]
             if self.lightcone:
-                bE = bE * (a2g(cosmology, jnp.asarray(self.a_fid)) / a2g(cosmology, a_evol)) ** bias.get(
-                    "b1_alpha", 0.0
-                )
+                bE = bE * (
+                    a2g(cosmology, jnp.asarray(self.a_fid)) / a2g(cosmology, a_evol)
+                ) ** bias.get("b1_alpha", 0.0)
             gxy_mesh = kaiser_model(
-                cosmology, a_evol, bE=bE, init_mesh=init_mesh, los=los_evol,
-                fNL_bp=fNL_bp, png_type=self.png_type, box_shape=_bshape,
+                cosmology,
+                a_evol,
+                bE=bE,
+                init_mesh=init_mesh,
+                los=los_evol,
+                fNL_bp=fNL_bp,
+                png_type=self.png_type,
+                box_shape=_bshape,
             )
             gxy_mesh = deterministic("gxy_mesh", gxy_mesh)
 
@@ -1467,8 +1646,13 @@ class FieldLevelModel(Model):
         init_mesh_evol = init_mesh_evol_grid
         if self.png_type is not None:
             fNL_bp, fNL_bpd = fNL_bias(
-                fNL, bias["b1"], bias["b2"], p=1.0, png_type=self.png_type,
-                fNL_bp=fNL_bp_lat, fNL_bpd=fNL_bpd_lat,
+                fNL,
+                bias["b1"],
+                bias["b2"],
+                p=1.0,
+                png_type=self.png_type,
+                fNL_bp=fNL_bp_lat,
+                fNL_bpd=fNL_bpd_lat,
             )
             init_mesh_evol = add_png(cosmology, fNL, init_mesh_evol_grid, _bshape)
             init_mesh_evol = chreshape(
@@ -1531,8 +1715,15 @@ class FieldLevelModel(Model):
             # Lagrangian bias expansion weights, computed from the evol-grid Gaussian field
             # (anti-aliased products) and read at the initial particle positions.
             lbe_weights = lagrangian_weights(
-                cosmology, a_initial, pos_initial, _bshape, **bias_w, init_mesh=init_mesh_evol_grid,
-                fNL_bp=fNL_bp, fNL_bpd=fNL_bpd, png_type=self.png_type,
+                cosmology,
+                a_initial,
+                pos_initial,
+                _bshape,
+                **bias_w,
+                init_mesh=init_mesh_evol_grid,
+                fNL_bp=fNL_bp,
+                fNL_bpd=fNL_bpd,
+                png_type=self.png_type,
                 a_b1=self.a_fid if self.bias_evolves else None,
             )
             # Exposed with rsd_pos for the particle-level galaxy map of the diagnostics; like
@@ -1545,7 +1736,12 @@ class FieldLevelModel(Model):
             fog_dvel = 0.0
             if self.los is not None:
                 fog_dvel = lagrangian_fog_velocity(
-                    cosmology, a_initial, pos_initial, _bshape, bnpar, init_mesh_evol_grid,
+                    cosmology,
+                    a_initial,
+                    pos_initial,
+                    _bshape,
+                    bnpar,
+                    init_mesh_evol_grid,
                 )
 
             # Local LOS and scale factors at displaced positions.
@@ -1569,9 +1765,12 @@ class FieldLevelModel(Model):
             # counts-per-final-cell (mean = ptcl/final cells); divide by that fixed factor to
             # recover the 1 + delta_g overdensity (identity when ptcl_oversamp=1).
             ptcl_per_cell = float(np.prod(self.ptcl_shape) / np.prod(self.paint_shape))
-            gxy_paint = self.paint_and_deconv(
-                pos_rsd, weights=lbe_weights, from_shape=self.evol_shape, crop=False
-            ) / ptcl_per_cell
+            gxy_paint = (
+                self.paint_and_deconv(
+                    pos_rsd, weights=lbe_weights, from_shape=self.evol_shape, crop=False
+                )
+                / ptcl_per_cell
+            )
             gxy_mesh = deterministic("gxy_mesh", band_limit(gxy_paint, self._sim_mesh))
         else:
             # CMB-only: create dummy gxy_mesh for API consistency
@@ -1585,13 +1784,24 @@ class FieldLevelModel(Model):
             "pos_real": pos_real,
         }
 
-    def likelihood(self, gxy_mesh, gxy_paint=None, matter_mesh=None, pos_real=None, cosmology=None, bias=None, temp=1.0, stoch=None, ngbars=None):
+    def likelihood(
+        self,
+        gxy_mesh,
+        gxy_paint=None,
+        matter_mesh=None,
+        pos_real=None,
+        cosmology=None,
+        bias=None,
+        temp=1.0,
+        stoch=None,
+        ngbars=None,
+    ):
         """
         Gaussian field-level likelihood on galaxy *counts* per cell.
 
         The observable is the painted count mesh; the survey selection multiplies the
         predicted intensity instead of dividing the data, so partially covered cells stay
-        finite. Mean m = n̄·alpha·<(1+delta_g)·S> and std = |s_e + s_ed·(m/(n̄·alpha·S) − 1)|
+        finite. Mean m = n̄·alpha·<(1+delta_g)·S> and std = s_e·(1 + s_ed·max(m/(n̄·alpha·S) − 1, −1))
         ·sqrt(n̄·alpha·S), both per cell (``stoch``; s_e=1, s_ed=0 by default: the Poisson variance
         at the mean density). Cells outside the survey mask are excluded via
         ``dist.mask``. See docs/pipeline.md 3.1 "Galaxy likelihood".
@@ -1617,15 +1827,14 @@ class FieldLevelModel(Model):
                     intens = alpha * intens
                     nbar = jnp.maximum(alpha, 1e-6) * nbar
 
-                # Noise std |s_e + s_ed delta_m| sqrt(n̄S), delta_m = mean / n̄S - 1 (montecosmo
-                # quad_gauss without its quadratic term)
+                # Noise std s_e (1 + s_ed max(delta_m, -1)) sqrt(n̄S), delta_m = mean / n̄S - 1:
+                # positive for s_ed in [0, 1) whatever the predicted counts (docs/pipeline.md 3.1)
                 stoch = stoch or {}
                 s_e, s_ed = stoch.get("s_e", 1.0), stoch.get("s_ed", 0.0)
                 mean = self.gxy_count * intens
                 nbar = jnp.maximum(nbar, 1e-10)
-                delta_m = jnp.where(nbar > 1e-9, mean / nbar - 1, 0.0)
-                amp = jnp.maximum(jnp.abs(s_e + s_ed * delta_m), 1e-6)
-                gxy_dist = dist.Normal(mean, amp * (temp * nbar) ** 0.5)
+                delta_m = jnp.maximum(jnp.where(nbar > 1e-9, mean / nbar - 1, 0.0), -1.0)
+                gxy_dist = dist.Normal(mean, s_e * (1 + s_ed * delta_m) * (temp * nbar) ** 0.5)
 
                 if getattr(self, "gxy_occ_mask3d", None) is not None:
                     gxy_dist = gxy_dist.mask(jnp.asarray(self.gxy_occ_mask3d))
@@ -1674,8 +1883,12 @@ class FieldLevelModel(Model):
                 cl_out_1d, gain = (None, None)
                 if self.full_los_correction:
                     cl_out_1d, gain = compute_out_terms(
-                        cosmology, self.ell_1d, self.chi_high_z_max, self.cmb_shells,
-                        mode=self.cl_out_mode, cl_cached=self.cl_out_cached,
+                        cosmology,
+                        self.ell_1d,
+                        self.chi_high_z_max,
+                        self.cmb_shells,
+                        mode=self.cl_out_mode,
+                        cl_cached=self.cl_out_cached,
                         gain_cached=self.cmb_out_gain,
                         window2=self.cmb_los_window2 * self.cmb_los_limber,
                     )
@@ -1711,8 +1924,10 @@ class FieldLevelModel(Model):
         # observable one. Both are packed into the same (l, m) list; the refined one is
         # transformed at its own lmax and the extra modes are simply not selected, which is
         # what keeps its sub-pixel power out of the observable instead of folded into it.
-        fine = (self.cmb_proj_nside != self.cmb_nside
-                and kmap.shape[-1] == np.shape(self.cmb_proj_mask)[-1])
+        fine = (
+            self.cmb_proj_nside != self.cmb_nside
+            and kmap.shape[-1] == np.shape(self.cmb_proj_mask)[-1]
+        )
         mask = self.cmb_proj_mask if fine else self.cmb_mask
         lmax = self.cmb_proj_lmax if fine else self.cmb_lmax
         W = jnp.asarray(mask, dtype=kmap.dtype)
@@ -1759,7 +1974,9 @@ class FieldLevelModel(Model):
 
         alm = self.unpack_u(jnp.asarray(u))
         return jnp.real(
-            jhp.alm2map(alm, nside=self.cmb_nside, lmax=self.cmb_lmax, pol=False, healpy_ordering=True)
+            jhp.alm2map(
+                alm, nside=self.cmb_nside, lmax=self.cmb_lmax, pol=False, healpy_ordering=True
+            )
         )
 
     def sampled_scalar_latents(self):
@@ -1868,9 +2085,11 @@ class FieldLevelModel(Model):
         om = new.get("Omega_m", {})
         lo, hi = ACE_OMEGA_M_RANGE
         if om and not (om.get("low") is not None and lo <= om["low"] and om["high"] <= hi):
-            raise ValueError(f"Omega_m prior bounds must lie within [{lo}, {hi}], the validated range "
-                             f"of the linear power emulator (docs/pipeline.md §2.1); got "
-                             f"[{om.get('low')}, {om.get('high')}]")
+            raise ValueError(
+                f"Omega_m prior bounds must lie within [{lo}, {hi}], the validated range "
+                f"of the linear power emulator (docs/pipeline.md §2.1); got "
+                f"[{om.get('low')}, {om.get('high')}]"
+            )
         return new
 
     def _sample(self, names: str | list):
@@ -1995,6 +2214,7 @@ class FieldLevelModel(Model):
             or (group == "stoch" and not self.gxy_stoch_noise)
             or (group == "syst" and not self.gxy_ngbar_free)
             or (name == "b1_alpha" and not self.bias_evolves)
+            or (name in ("b3", "bds2", "bs3") and self.bias_order < 3)
         )
 
     ###########
@@ -2082,7 +2302,13 @@ class FieldLevelModel(Model):
             gxy_count_eff = self.gxy_count * f_sky
 
         means, stds = kaiser_posterior(
-            delta_obs, cosmo_fid, bE_fid, self.a_fid, self._sim_shape, gxy_count_eff, self.los,
+            delta_obs,
+            cosmo_fid,
+            bE_fid,
+            self.a_fid,
+            self._sim_shape,
+            gxy_count_eff,
+            self.los,
         )
         post_mesh = rg2cgh(jr.normal(rng, ch2rshape(means.shape)))
         post_mesh = temp**0.5 * stds * post_mesh + means

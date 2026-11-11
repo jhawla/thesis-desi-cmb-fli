@@ -27,3 +27,6 @@ data/abacus_kappa_mask_00047.npy
 
 # Caches of the loaders and scripts (regenerable)
 data/cache/
+
+# Animations (large, for talks; kept locally)
+figures/animations/

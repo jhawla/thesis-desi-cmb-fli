@@ -237,7 +237,9 @@ def test_lagrangian_weights_b1_evolution():
     mesh_shape = np.array([4, 4, 4])
     box_shape = np.array([100.0, 100.0, 100.0])
     pos = jnp.indices(mesh_shape, dtype=float).reshape(3, -1).T
-    a = jnp.linspace(0.45, 0.75, pos.shape[0])  # one scale factor per particle, as on the light cone
+    a = jnp.linspace(
+        0.45, 0.75, pos.shape[0]
+    )  # one scale factor per particle, as on the light cone
     init_mesh = jnp.fft.rfftn(jr.normal(jr.PRNGKey(0), shape=mesh_shape))
     delta = jnp.fft.irfftn(init_mesh).reshape(-1)  # particles on the grid nodes: cic_read is exact
     b1, b2, bs2, a_b1 = 1.2, 0.3, -0.2, 0.56
@@ -260,8 +262,12 @@ def test_quenched_bias_relation():
     pos = jnp.indices(mesh_shape, dtype=float).reshape(3, -1).T
     init_mesh = jnp.fft.rfftn(jr.normal(jr.PRNGKey(1), shape=mesh_shape))
     args = (cosmo, 0.56, pos, np.array([100.0, 100.0, 100.0]), 1.2, 0.3, -0.2, 0.1, init_mesh)
-    assert jnp.allclose(lagrangian_weights(*args, b1_alpha=1.0, a_b1=0.56), lagrangian_weights(*args),
-                        rtol=1e-6, atol=1e-6)
+    assert jnp.allclose(
+        lagrangian_weights(*args, b1_alpha=1.0, a_b1=0.56),
+        lagrangian_weights(*args),
+        rtol=1e-6,
+        atol=1e-6,
+    )
 
 
 def test_lagrangian_weights_higher_order():
@@ -360,3 +366,86 @@ def test_lagrangian_weights_means_at_each_a():
     w1 = lagrangian_weights(cosmo, 0.6, pos, box_shape, 0.0, b2, 0.0, 0.0, init_mesh)
     d = delta * a2g(cosmo, 0.6)
     assert jnp.allclose(w1, 1 + b2 / 2 * (d**2 - jnp.mean(d**2)), rtol=1e-6, atol=1e-8)
+
+
+def _third_order_setup():
+    cosmo = planck18()
+    mesh_shape = np.array([8, 8, 8])
+    box_shape = np.array([200.0, 200.0, 200.0])
+    pos = jnp.indices(mesh_shape, dtype=float).reshape(3, -1).T
+    init_mesh = jnp.fft.rfftn(jr.normal(jr.PRNGKey(5), shape=mesh_shape))
+    a = jnp.linspace(0.45, 0.75, pos.shape[0])
+    return cosmo, mesh_shape, box_shape, pos, init_mesh, a
+
+
+def _shear_components(init_mesh, mesh_shape, box_shape):
+    """s_ij = (k_i k_j / k^2 - delta_ij / 3) delta, built independently of lagrangian_weights."""
+    kx, ky = (
+        np.fft.fftfreq(n, d=1.0 / n) * 2 * np.pi / L
+        for n, L in zip(mesh_shape[:2], box_shape[:2], strict=True)
+    )
+    kz = np.fft.rfftfreq(mesh_shape[2], d=1.0 / mesh_shape[2]) * 2 * np.pi / box_shape[2]
+    k = np.meshgrid(kx, ky, kz, indexing="ij")
+    kk = sum(ki**2 for ki in k)
+    kk[0, 0, 0] = 1.0
+    d = np.asarray(init_mesh)
+    return {
+        (i, j): np.fft.irfftn((k[i] * k[j] / kk - (i == j) / 3) * d, s=tuple(mesh_shape))
+        for i in range(3)
+        for j in range(i, 3)
+    }
+
+
+def test_lagrangian_weights_third_order_off_is_second_order():
+    """b3 = bds2 = bs3 = 0 gives the second-order weights; None (bias_order 2) the same."""
+    cosmo, mesh_shape, box_shape, pos, init_mesh, a = _third_order_setup()
+    args = (cosmo, a, pos, box_shape, 1.1, 0.4, -0.2, 0.5, init_mesh)
+    w2 = lagrangian_weights(*args)
+    w3 = lagrangian_weights(*args, b3=0.0, bds2=0.0, bs3=0.0)
+    assert jnp.allclose(w2, w3, rtol=1e-10, atol=1e-12)
+
+
+def test_lagrangian_weights_third_order_terms():
+    """Each third-order term is montecosmo's operator times D(a)^3: b3 (d^3 - 3<d^2>d)/6,
+    bds2 d (s^2 - <s^2>), bs3 3 det(s), with s the traceless tidal tensor of the a = 1 field."""
+    cosmo, mesh_shape, box_shape, pos, init_mesh, a = _third_order_setup()
+    base = (cosmo, a, pos, box_shape, 0.0, 0.0, 0.0, 0.0, init_mesh)
+    w0 = lagrangian_weights(*base)
+    d = jnp.fft.irfftn(init_mesh).reshape(-1)
+    g3 = a2g(cosmo, a) ** 3
+    s = _shear_components(init_mesh, mesh_shape, box_shape)
+    s2 = (
+        s[(0, 0)] ** 2
+        + s[(1, 1)] ** 2
+        + s[(2, 2)] ** 2
+        + 2 * (s[(0, 1)] ** 2 + s[(0, 2)] ** 2 + s[(1, 2)] ** 2)
+    ).reshape(-1)
+    m = np.stack(
+        [np.stack([s[(min(i, j), max(i, j))] for j in range(3)], -1) for i in range(3)], -2
+    )
+    det3 = 3 * np.linalg.det(m).reshape(-1)
+    for name, op in (
+        ("b3", (d**3 - 3 * jnp.mean(d**2) * d) / 6),
+        ("bds2", d * (s2 - s2.mean())),
+        ("bs3", det3),
+    ):
+        w = lagrangian_weights(*base, **{name: 0.7})
+        assert jnp.allclose(w - w0, 0.7 * g3 * op, rtol=1e-4, atol=2e-6), name  # float32 weights around 1
+
+
+def test_model_bias_order_latents_and_guard():
+    """bias_order 3 adds b3, bds2, bs3 to the sampled biases (montecosmo's priors), 2 does not;
+    with the kaiser evolution it is refused."""
+    import pytest
+
+    from desi_cmb_fli.model import FieldLevelModel, default_config
+
+    kw = {"mesh_shape": (8, 8, 8), "box_shape": (100.0, 100.0, 100.0)}
+    m2 = FieldLevelModel(**(default_config | kw))
+    m3 = FieldLevelModel(**(default_config | kw | {"bias_order": 3}))
+    third = {"b3", "bds2", "bs3"}
+    assert not third & set(m2.groups["bias"])
+    assert third <= set(m3.groups["bias"])
+    assert m3.latents["b3"]["scale"] == 1e3 and m3.latents["b3"]["scale_fid"] == 1.0
+    with pytest.raises(ValueError, match="bias_order"):
+        FieldLevelModel(**(default_config | kw | {"bias_order": 3, "evolution": "kaiser"}))

@@ -234,14 +234,15 @@ def test_selec_paint_crops_onto_selec_mesh():
 
 
 def test_noise_std_follows_the_model_density(model):
-    """std = |s_e + s_ed delta_m| sqrt(n̄S), delta_m = m / n̄S - 1 (montecosmo quad_gauss without its
-    quadratic term): by default the Poisson variance at the mean density, s_e a uniform rescaling,
-    s_ed a noise that grows with the predicted density."""
+    """std = s_e (1 + s_ed max(delta_m, -1)) sqrt(n̄S), delta_m = m / n̄S - 1: by default the Poisson
+    variance at the mean density, s_e a uniform rescaling, s_ed a noise that grows with the predicted
+    density; a cell predicted below zero counts is treated as empty, so the std stays above
+    s_e (1 - s_ed) sqrt(n̄S)."""
     shape = tuple(int(s) for s in model.mesh_shape)
     model.selec_mesh = _selection(shape, 3)
     model.gxy_occ_mask3d = jnp.ones(shape, dtype=bool)
     model.gxy_count = 20.0
-    g = jnp.asarray(1 + 0.3 * np.random.default_rng(5).standard_normal(shape))
+    g = jnp.asarray(1 + 0.3 * np.random.default_rng(5).standard_normal(shape)).at[0, 0, 0].set(-4.0)
     nbar = model.gxy_count * np.asarray(model.selec_mesh)
 
     def std(**stoch):
@@ -251,5 +252,6 @@ def test_noise_std_follows_the_model_density(model):
 
     np.testing.assert_allclose(std(), nbar**0.5, rtol=1e-12)
     np.testing.assert_allclose(std(s_e=0.9), 0.9 * nbar**0.5, rtol=1e-12)
-    np.testing.assert_allclose(std(s_e=0.9, s_ed=0.25), np.abs(0.9 + 0.25 * (np.asarray(g) - 1)) * nbar**0.5,
-                               rtol=1e-10)
+    dm = np.maximum(np.asarray(g) - 1, -1.0)
+    np.testing.assert_allclose(std(s_e=0.9, s_ed=0.25), 0.9 * (1 + 0.25 * dm) * nbar**0.5, rtol=1e-10)
+    np.testing.assert_allclose(std(s_e=0.9, s_ed=0.25)[0, 0, 0], 0.9 * 0.75 * nbar[0, 0, 0] ** 0.5, rtol=1e-10)

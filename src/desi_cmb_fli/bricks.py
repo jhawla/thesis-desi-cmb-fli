@@ -85,15 +85,24 @@ def _ace_network():
     setup = json.loads((ACE_DIR / "nn_setup.json").read_text())
     w = np.load(ACE_DIR / "weights.npy")
     sizes = [setup["n_input_features"]]
-    sizes += [setup["layers"][f"layer_{i + 1}"]["n_neurons"] for i in range(setup["n_hidden_layers"])]
+    sizes += [
+        setup["layers"][f"layer_{i + 1}"]["n_neurons"] for i in range(setup["n_hidden_layers"])
+    ]
     sizes += [setup["n_output_features"]]
     layers, i = [], 0
     for n_in, n_out in zip(sizes[:-1], sizes[1:], strict=True):
-        layers.append((w[i:i + n_in * n_out].reshape(n_in, n_out), w[i + n_in * n_out:i + n_in * n_out + n_out]))
+        layers.append(
+            (
+                w[i : i + n_in * n_out].reshape(n_in, n_out),
+                w[i + n_in * n_out : i + n_in * n_out + n_out],
+            )
+        )
         i += n_in * n_out + n_out
     assert i == w.size
-    load = {name: np.load(ACE_DIR / f"{name}.npy")
-            for name in ("k", "inminmax", "outminmax", "pca_mean", "pca_projection")}
+    load = {
+        name: np.load(ACE_DIR / f"{name}.npy")
+        for name in ("k", "inminmax", "outminmax", "pca_mean", "pca_projection")
+    }
     return layers, load
 
 
@@ -101,11 +110,18 @@ def _ace_log_transfer(omega_b, omega_c, omega_nu, k):
     """jaxmapse's analytic transfer baseline (``lcdm_transfer_function``), as ln T; k in 1/Mpc."""
     lk = jnp.log10(k)
     d = omega_c + omega_nu - omega_b
-    inner = jnp.cos(lk / ((1.1964213875807956**-2.3661897652294015) / jnp.cos(lk / -1.8173117588773222)))
+    inner = jnp.cos(
+        lk / ((1.1964213875807956**-2.3661897652294015) / jnp.cos(lk / -1.8173117588773222))
+    )
     t1 = ((0.731102574104348**lk + d) / 0.17522861267519874) ** lk
     t2 = 63.65597287231169 ** (lk + 0.0472474783701488) * (
-        0.9899093975978591 ** (lk / (inner / 0.20037856443385513)) / d**0.7767030041348179)
-    return 0.4971733969600907 - 24.849067935704547 - jnp.log(t1 + t2 + 0.14823981687164764 * (omega_b + omega_c + omega_nu))
+        0.9899093975978591 ** (lk / (inner / 0.20037856443385513)) / d**0.7767030041348179
+    )
+    return (
+        0.4971733969600907
+        - 24.849067935704547
+        - jnp.log(t1 + t2 + 0.14823981687164764 * (omega_b + omega_c + omega_nu))
+    )
 
 
 def _ace_power(cosmo, k):
@@ -117,8 +133,12 @@ def _ace_power(cosmo, k):
     h = cosmo.h
     omega_b, omega_nu = cosmo.Omega_b * h**2, ACE_MNU / 93.14
     omega_c = cosmo.Omega_c * h**2 - omega_nu
-    x = jnp.stack([jnp.asarray(v, dtype=jnp.result_type(float))
-                   for v in (ACE_Z, 100.0 * h, omega_b, omega_c, ACE_MNU, cosmo.w0, cosmo.wa)])
+    x = jnp.stack(
+        [
+            jnp.asarray(v, dtype=jnp.result_type(float))
+            for v in (ACE_Z, 100.0 * h, omega_b, omega_c, ACE_MNU, cosmo.w0, cosmo.wa)
+        ]
+    )
     x = (x - net["inminmax"][:, 0]) / (net["inminmax"][:, 1] - net["inminmax"][:, 0])
     for j, (w, b) in enumerate(layers):
         x = x @ w + b
@@ -128,9 +148,14 @@ def _ace_power(cosmo, k):
     ratio = net["pca_mean"] + net["pca_projection"] @ x
     kg = net["k"]  # 1/Mpc
     # primordial A_s (k/0.05)^(n_s-1) k^-3 (k c)^4 with c in m/s, in logs: (k c)^4 overflows float32
-    logp = (jnp.log(ratio) + 2 * _ace_log_transfer(omega_b, omega_c, omega_nu, kg)
-            + np.log(2.083e-9 * 2.99792458e8**4) + (cosmo.n_s - 1) * np.log(kg / 0.05) + np.log(kg)
-            + 3 * jnp.log(h))
+    logp = (
+        jnp.log(ratio)
+        + 2 * _ace_log_transfer(omega_b, omega_c, omega_nu, kg)
+        + np.log(2.083e-9 * 2.99792458e8**4)
+        + (cosmo.n_s - 1) * np.log(kg / 0.05)
+        + np.log(kg)
+        + 3 * jnp.log(h)
+    )
     return jnp.exp(jnp.interp(jnp.log(k), jnp.log(kg / h), logp))
 
 
@@ -309,7 +334,22 @@ def get_cosmology(**cosmo) -> Cosmology:
     ref_cosmo = AbacusSummit0
     kwargs = ref_cosmo.keywords.copy()
     valid_keys = set(kwargs) | {"Omega_m"}
-    nuisance_keys = {"b1", "b1_alpha", "b2", "bs2", "bn2", "bnpar", "fNL", "fNL_bp", "fNL_bpd", "s_e", "s_ed"}
+    nuisance_keys = {
+        "b1",
+        "b1_alpha",
+        "b2",
+        "bs2",
+        "bn2",
+        "bnpar",
+        "b3",
+        "bds2",
+        "bs3",
+        "fNL",
+        "fNL_bp",
+        "fNL_bpd",
+        "s_e",
+        "s_ed",
+    }
     unknown = set(cosmo) - valid_keys - nuisance_keys
     unknown = {k for k in unknown if not str(k).startswith("ngbar")}  # per-shell ngbars
     if unknown:
@@ -549,8 +589,23 @@ def quenched_bias_relation(b1):
 
 
 def lagrangian_weights(
-    cosmo: Cosmology, a, pos, box_shape, b1, b2, bs2, bn2, init_mesh,
-    fNL_bp=0.0, fNL_bpd=0.0, png_type=None, b1_alpha=0.0, a_b1=None,
+    cosmo: Cosmology,
+    a,
+    pos,
+    box_shape,
+    b1,
+    b2,
+    bs2,
+    bn2,
+    init_mesh,
+    fNL_bp=0.0,
+    fNL_bpd=0.0,
+    png_type=None,
+    b1_alpha=0.0,
+    a_b1=None,
+    b3=None,
+    bds2=None,
+    bs3=None,
 ):
     """
     Return Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
@@ -565,6 +620,10 @@ def lagrangian_weights(
     ``1 + b1(a) = (1 + b1) (D(a_b1) / D(a))**b1_alpha``, and ``b2``, ``bs2`` follow it through the
     quenched-galaxy relations (``quenched_bias_relation``): ``b_X(a) = b_X + f_X(b1(a)) − f_X(b1)``.
     ``b1``, ``b2``, ``bs2`` are the biases at ``a_b1`` (docs/pipeline.md 2.4).
+
+    With ``b3``, ``bds2``, ``bs3`` given (``model.bias_order: 3``), the third-order terms of montecosmo,
+    ``b3 (delta^3 - 3 <delta^2> delta)/6 + bds2 delta (s^2 - <s^2>) + bs3 3 det(s)``, each at its
+    particle's a (``D(a)^3``); left at None they are not computed (docs/pipeline.md 2.4).
     """
     delta_k = init_mesh
     delta = jnp.fft.irfftn(delta_k)
@@ -620,16 +679,42 @@ def lagrangian_weights(
     ]
     pot_k = delta_k * invlaplace_kernel(kvec_phys)
 
-    shear2 = 0
+    third_order = b3 is not None or bds2 is not None or bs3 is not None
+    shear2, s = 0, {}
     for i, ki in enumerate(kvec_phys):
         # Add diagonal terms
-        shear2 = shear2 + jnp.fft.irfftn(-(ki**2) * pot_k - delta_k / 3) ** 2
-        for kj in kvec_phys[i + 1 :]:
+        sij = jnp.fft.irfftn(-(ki**2) * pot_k - delta_k / 3)
+        shear2 = shear2 + sij**2
+        if third_order:
+            s[(i, i)] = sij
+        for j in range(i + 1, 3):
             # Add strict-up-triangle terms (counted twice)
-            shear2 = shear2 + 2 * jnp.fft.irfftn(-ki * kj * pot_k) ** 2
+            sij = jnp.fft.irfftn(-ki * kvec_phys[j] * pot_k)
+            shear2 = shear2 + 2 * sij**2
+            if third_order:
+                s[(i, j)] = sij
 
     shear2_read = cic_read(shear2, pos)
-    weights = weights + bs2 * (shear2_read - shear2_read.mean()) * growths**2
+    shear2_ren = shear2_read - shear2_read.mean()
+    weights = weights + bs2 * shear2_ren * growths**2
+
+    if third_order:
+        # Third order (montecosmo): renormalised cube, delta times the renormalised s^2 (the mean of
+        # bs2's operator), and 3 det(s) by the Sarrus rule; each operator at its particle's a.
+        if b3 is not None:
+            weights = (
+                weights
+                + b3 * (delta_read**3 - 3 * delta2_read.mean() * delta_read) * growths**3 / 6
+            )
+        if bds2 is not None:
+            weights = weights + bds2 * delta_read * shear2_ren * growths**3
+        if bs3 is not None:
+            a_, b_, c_ = s[(0, 0)], s[(1, 1)], s[(2, 2)]
+            d_, e_, f_ = s[(0, 1)], s[(0, 2)], s[(1, 2)]
+            shear3 = 3 * (
+                a_ * (b_ * c_ - f_**2) - d_ * (d_ * c_ - e_ * f_) + e_ * (d_ * f_ - b_ * e_)
+            )
+            weights = weights + bs3 * cic_read(shear3, pos) * growths**3
 
     # Apply bnabla2, non-punctual term
     delta_nl = jnp.fft.irfftn(-kk_box * delta_k)
@@ -716,8 +801,14 @@ def naive_mu2_delta(delta_k, los, mesh_shape):
 
 
 def kaiser_boost(
-    cosmo: Cosmology, a, bE, mesh_shape, los: np.ndarray = None,
-    fNL_bp=0.0, png_type=None, box_shape=None,
+    cosmo: Cosmology,
+    a,
+    bE,
+    mesh_shape,
+    los: np.ndarray = None,
+    fNL_bp=0.0,
+    png_type=None,
+    box_shape=None,
 ):
     """
     Return Eulerian Kaiser boost including linear growth, Eulerian linear bias, RSD,
@@ -744,8 +835,14 @@ def kaiser_boost(
 
 
 def kaiser_model(
-    cosmo: Cosmology, a, bE, init_mesh, los: np.ndarray = None,
-    fNL_bp=0.0, png_type=None, box_shape=None,
+    cosmo: Cosmology,
+    a,
+    bE,
+    init_mesh,
+    los: np.ndarray = None,
+    fNL_bp=0.0,
+    png_type=None,
+    box_shape=None,
 ):
     """
     Kaiser model, with linear growth, Eulerian linear bias, RSD, and (optionally) the
@@ -838,7 +935,9 @@ def lattice_aliases(ptcl, paint, final, interlace_order=INTERLACE_ORDER, m_max=3
     return out
 
 
-KAPPA_LATTICE_MAX_SPACING = 25.0  # Mpc/h: the particle spacing the κ lattice template is debiased at (§7.15)
+KAPPA_LATTICE_MAX_SPACING = (
+    25.0  # Mpc/h: the particle spacing the κ lattice template is debiased at (§7.15)
+)
 
 
 def interlace_accumulate(shifted, pos_paint, weights=None, chunk_size=None):
