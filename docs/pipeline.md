@@ -606,18 +606,21 @@ Gaussian likelihood accepts a negative mean. Montecosmo's skewness term `s_e2` a
 `s_ed = 0` is the edge of its prior, where the density vanishes: a constant-amplitude noise is the
 flag off, not `s_ed` held at 0 (hold it inside the bounds, e.g. 1e-4, if `s_e` alone must be free).
 
-**The noise prior: informative, from the simulation.** With `s_e`, `s_ed` under their broad default prior,
-chains fit the data better than the model at the truth while `s_e`, `s_ed` fall, on the Abacus counts and also
-on data whose mean is the model at the truth and whose noise follows this law exactly (§7.19, the noise model at
-the production step); held at their maximum-likelihood fit to the residual at the true ICs, the chains' fit
-stays the truth's. The field-level literature meets the same drift of the noise amplitude (arXiv:2511.05484,
-2403.03220). The configs at the finer grids (`abacus/abacus_{gxyonly,joint_so}_cosmo_box5000_m{100,160}.yaml`
-on ph201, `…_m100_ph202.yaml` on ph202, each on the fit to its own sky) therefore centre the prior of `s_e`,
-`s_ed` on that fit, with a width set by the spread of the noise level across redshift shells (§7.19); the
-mesh-54 configs keep the broad default prior. The fit is measured on the simulation's true ICs, which real
-data do not have, so for real data the prior has to come from simulations spanning the galaxy–halo
-connections the data allow (every HUGE LRG is a central, §4). Holding the noise at that fit does not stop
-the slide of `sigma8` along `b1`–`sigma8` at order 2 (§7.19).
+**The noise level: held at its fit on the simulation.** With `s_e`, `s_ed` free, chains fit the data better
+than the model at the truth while `s_e`, `s_ed` fall, on the Abacus counts and also on data whose mean is the
+model at the truth and whose noise follows this law exactly (§7.19, the noise model at the production step);
+held at their maximum-likelihood fit to the residual at the true ICs, the chains' fit stays the truth's. An
+informative prior does not stop the fall: the likelihood resolves the noise level to about `s_e/√(2N)` over
+the N survey cells, far narrower than a prior width that reflects how well the level is known, so the
+prior is flat against it and `s_e` follows the chain's χ²/N down (ph202 under a prior of width 0.03, §7.19).
+The field-level literature meets the same collapse of the noise amplitude (arXiv:2511.05484; 2403.03220
+bounds it from below). The production configs therefore hold `s_e`, `s_ed` at that fit
+(`mcmc.fixed_params`, the values in `abacus_truth_params`): `abacus/abacus_gxyonly_cosmo_box5000_m100_ph202_noiseheld.yaml`
+and the ph202 joint. The earlier configs at the finer grids (`…_m{100,160}.yaml` on ph201, `…_m100_ph202.yaml`)
+centre a prior of width 0.03 on the fit to their own sky; the mesh-54 configs keep the broad default prior.
+The fit is measured on the simulation's true ICs, which real data do not have, so for real data the level
+has to come from simulations spanning the galaxy–halo connections the data allow (every HUGE LRG is a
+central, §4). Holding the noise does not stop the slide of `sigma8` along `b1`–`sigma8` at order 2 (§7.19).
 
 **Survey mask & radial selection from randoms.** For the AbacusLensing LRG mocks (equal-weight
 galaxies and ~20× randoms), `S` is the **painted random density**, normalised to unit mean over the
@@ -2623,16 +2626,18 @@ the production step and path length before production runs):
    fields, and the ph201 closure with other noise draws) and the −0.011 key (more keys). Every such test
    is read on pairs of chains of one key over at least 37 batches at the production step (the production
    chains took ≈ 25 batches to reach their level). The production runs that follow are on ph202, the main
-   sky of the paper, chosen before any ph202 result: `abacus/abacus_{gxyonly,joint_so}_cosmo_box5000_m100_ph202.yaml`
-   (`bias_order: 3`, the masses of `b3`, `bds2`, `bs3` at the scale of the adapted second-order ones, the
-   noise under a prior of width 0.03 centred on its fit to the ph202 residual at the true ICs, §7.19) and
-   `abacus/abacus_kappaonly_so_cosmo_box5000_m160_ph202.yaml`; a closure of the same config follows only if
+   sky of the paper, chosen before any ph202 result: `abacus/abacus_gxyonly_cosmo_box5000_m100_ph202_noiseheld.yaml`
+   and `abacus/abacus_joint_so_cosmo_box5000_m100_ph202.yaml` (`bias_order: 3`, the masses of `b3`, `bds2`,
+   `bs3` at the scale of the adapted second-order ones, `b1_sigma8`, the noise held at its fit to the ph202
+   residual at the true ICs: under a prior of width 0.03 it collapses, §3.1, §7.19) and
+   `abacus/abacus_kappaonly_so_cosmo_box5000_m160_ph202.yaml`; the joint only once the galaxies alone have
+   converged unbiased, with the same noise and `b1_sigma8`; a closure of the same config follows only if
    ph202 lands off the truth.
    Not pursued at mesh 100: the noise level in the linear spectrum (a 1 % error moves `sigma8` by −0.0002), the
    one-point shape of the residual (`shuffle` follows the closure). The prior volume of the biases
    (flat priors on `b_n` at fixed `b_n·sigma8ⁿ` weigh `sigma8^{-n}`, a shift −n σ² of ln `sigma8`: −0.5 % for
    the n = 7 of order 2, −1.2 % for the n = 16 of order 3 at the Fisher width) is a fraction of σ; sampling
-   `b_n·sigma8ⁿ` removes it. Beyond mesh 100: the initial modes the 240³ field does not hold
+   `b_n·sigma8ⁿ` with a prior on it removes it (`b1_sigma8` keeps the prior on `b1`, §5). Beyond mesh 100: the initial modes the 240³ field does not hold
    (`T_uv`, the largest gap at mesh 160, §7.19) ask for a larger init grid after a memory bench, and a
    non-Gaussian noise (montecosmo's `quad_gauss` skewness, the noise field of arXiv:2511.05484) for the
    lower counts per cell; the Fisher joint σ(`sigma8`) is 0.0044 at mesh 100 and 0.0038 at mesh 160
@@ -2642,7 +2647,7 @@ the production step and path length before production runs):
    or a lower bound only (Nguyen et al. bound the noise at 0.8 of Poisson) — if `sigma8` does not move, the data
    set the level; otherwise the centre and width from the same fit on mocks with known ICs spanning DESI-LRG
    HODs with satellites (ph201 and ph202, one HOD, differ by 0.047 in `s_e`: 0.9139 / 0.9607). The ph202
-   production configs take their prior from the fit at the true ICs, so they do not make this test. A noise field
+   production configs hold the noise at the fit at the true ICs, so they do not make this test. A noise field
    with density-dependent and quadratic couplings (arXiv:2511.05484) removes the need for an informative prior.
 3. **The runs at the chosen grid** (galaxies alone, κ alone, joint), with the κ anchoring of `sigma8`
    (§7.19) followed over converged chains. Diagnostics of every run: R̂ (split, and the drift the chains

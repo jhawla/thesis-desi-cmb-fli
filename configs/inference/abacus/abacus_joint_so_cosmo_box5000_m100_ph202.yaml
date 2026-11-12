@@ -131,8 +131,10 @@ latents:
     loc_fid: 0.236
 mcmc:
   num_warmup: 8192
-  fixed_params:  # Omega_m and sigma8 inferred, fNL at its truth
+  fixed_params:  # Omega_m and sigma8 inferred; fNL at its truth; the noise held at its ph202 fit (abacus_truth_params), as the galaxies alone (_noiseheld): under its prior s_e collapses (pipeline 3.1, 7.19)
   - fNL
+  - s_e
+  - s_ed
   num_samples: 50
   num_batches: 20  # first look; --resume (submit.py --resume) if the traces are sound
   num_chains: 4
@@ -143,6 +145,8 @@ mcmc:
     thinning: 5
 observation_mode: abacus
 abacus_truth_params:
+  s_e: 0.9607  # ph202 fit at the true ICs (logs/ph202_prep/refit.log), the held noise
+  s_ed: 0.2362
   Omega_m: 0.315192
   sigma8: 0.811355
   fNL: 0.0
