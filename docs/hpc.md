@@ -63,10 +63,12 @@ squeue -u $USER
 - **Kept runs** live on CFS, permanent with 7-day snapshots, in
   `/global/cfs/cdirs/desi/users/$USER/desi-cmb-fli/runs/`. `run_inference.py` copies its run there at
   the end (after the analysis, even if the analysis fails), and `analyze_run.py` run by hand copies
-  the new figures (`desi_cmb_fli.storage.keep_run`, `rsync -a`, so only what changed is sent). A failed
-  copy prints a warning and does not stop the job; then, or for a run interrupted by the time limit:
+  the new figures (`desi_cmb_fli.storage.keep_run`, `rsync -a`, so only what changed is sent). The copy
+  goes to the resolved path: `cdirs/desi` is a link to `cdirs/desicollab`, and rsync through the link can
+  fail ("Too many levels of symbolic links") while `ls` works. A failed copy prints a warning and does not
+  stop the job; then, or for a run interrupted by the time limit:
   ```bash
-  rsync -a $SCRATCH/outputs/run_<timestamp>_<jobid> /global/cfs/cdirs/desi/users/$USER/desi-cmb-fli/runs/
+  rsync -a $SCRATCH/outputs/run_<timestamp>_<jobid> /global/cfs/cdirs/desicollab/users/$USER/desi-cmb-fli/runs/
   ```
   For many runs at once, use a data-transfer node (`ssh dtn01.nersc.gov`). `density_scan.py` looks a
   run up on scratch first, then there; the other scripts take run paths explicitly.

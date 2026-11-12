@@ -2582,10 +2582,10 @@ the production step and path length before production runs):
    `analyse` on each run's data, its noiseless map and 300 noise draws: the share of the noise draw, of
    the ICs and of the map's own matter (the slab beyond the box, the non-linear part the term holds as
    Gaussian). Done (§7.19): `sigma8` at the true `Omega_m` is the truth's in all four; the shift along
-   the degeneracy is partly in the noiseless closure. Still to run: κ alone on a second noise draw fixed before
-   the run (`abacus/abacus_kappaonly_so_cosmo_box5000_m160_noise2.yaml`, `noise_seed` 20261109, both draws
-   reported), and a κ-only closure on random ICs, which tells whether the noiseless shift along the degeneracy
-   is the posterior's shape (systematic) or the ph201 ICs; the noise draws again without the template.
+   the degeneracy is partly in the noiseless closure. Whether the ph201 offset is the realisation is answered
+   by the second sky, ph202 (step 3, its own noise seed 202), not by a second ph201 noise draw
+   (`abacus/abacus_kappaonly_so_cosmo_box5000_m160_noise2.yaml`) or a κ-only closure on random ICs, which are
+   not run.
 2. **The galaxy model at k ≤ 0.1.** Three parts add up in the mesh-100 slide (§7.19, the chains read as
    pairs): the third-order biases the order-2 model lacks (Abacus against the closure of the same key −0.015
    at step 112 and −0.030 at step 375 over 25 batches; +0.0006 ± 0.0026 with them, at step 112); the fall of

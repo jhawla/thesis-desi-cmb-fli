@@ -18,8 +18,8 @@ def run_path(name, kept=None):
 def keep_run(run_dir, kept=None):
     """Copy a run directory to the kept runs (``rsync -a``, so a second call only adds what changed).
     The kept copy itself is left alone, and a failure is reported, not raised: it never ends a job."""
-    run_dir, kept = Path(run_dir).resolve(), (KEPT_RUNS if kept is None else Path(kept))
-    if run_dir.parent == kept.resolve():
+    run_dir, kept = Path(run_dir).resolve(), (KEPT_RUNS if kept is None else Path(kept)).resolve()
+    if run_dir.parent == kept:
         return None
     try:
         kept.mkdir(parents=True, exist_ok=True)
