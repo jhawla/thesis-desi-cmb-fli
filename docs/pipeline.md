@@ -2637,10 +2637,18 @@ the production step and path length before production runs):
    resynthesised at nside 128 with healpy). With C. Payerne in
    `/global/cfs/cdirs/desi/users/jhawla/desi-cmb-fli/twopt/`: the 200 nside-128 closure maps of §7.19 with
    their `N_ℓ` and w_ℓ, the matching theory with its exact-over-Limber column
-   (`theory_cl_kk_nside128_for_payerne.txt`; Limber alone is 12 % low at ℓ 2), and the Abacus ph201 map of
-   the κ-only nside-128 run (`kappa_obs_noisy_abacus_ph201_noise6482_nside128.fits`, its noise draw
-   included), to be fitted with flat priors on `Omega_m`, `sigma8` over ℓ 2–256: does a two-point
-   analysis of that map sit where the field level does (§7.19)? Covariance
+   (`theory_cl_kk_nside128_for_payerne.txt`; Limber alone is 12 % low at ℓ 2). His theory (pyccl, CAMB,
+   the kernel truncated to 292.6 < χ < 3750 Mpc/h, Limber at every ℓ) matches the mean of the 200 maps, and
+   their scatter matches his Gaussian-only error at ℓ ≥ 10 (above it below); his posterior on that
+   mean with a one-map Gaussian covariance (theory tabulated over the prior and interpolated) is centred on
+   the truth from ℓ 10–100 to 10–250, as an Asimov fit is by construction: the κ model is validated
+   independently (`figures/twopt_payerne/`, his figures). `fig:twopt` is one map analysed both ways:
+   the κ-only closure on the ph201 ICs at nside 128 (`run_20261106_143937_60800106`, §7.19), its
+   observable (`kappa_obs_packed`, with its out-of-model draw and noise) resynthesised at nside 128
+   (`kappa_closure_ph201ic_noise6482_nside128_obs_noisy.fits`, same folder), fitted with flat priors on
+   `Omega_m`, `sigma8` over ℓ 2–256; the field-level posterior of that run is not sent before his. The
+   Abacus ph201 map of the κ-only run (`kappa_obs_noisy_abacus_ph201_noise6482_nside128.fits`) is
+   there too, not part of the comparison. Covariance
    realisations at this configuration (the nside-128 set of §7.19 does not serve): from the joint
    config at the closure truth (no script yet), per realisation a new initial
    field and noise draw, and from that same field the κ map (with `N_ℓ` and w_ℓ) and the
