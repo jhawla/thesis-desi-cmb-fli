@@ -636,35 +636,14 @@ if not RESUME_MODE or RESUME_STEP2:
     print(f"   Values: {logdens}")
     print(f"   Std: {ld_std:.2f}")
 
-    # Test 3: Post-warmup scalar params — physical values via std2trunc
-    from desi_cmb_fli.utils import std2trunc as _std2trunc
+    # Test 3: Post-warmup scalar params, physical values (model.reparam, with the fixed latents)
     print("\n3. Scalar Parameters (post-warmup):")
-    abacus_truth = cfg.get("abacus_truth_params", {})
-    closure_truth = cfg.get("truth_params", {})
-    _scalar_table = ["Omega_m_", "sigma8_", "b1_", "b2_", "bs2_", "bn2_", "bnpar_", "fNL_", "fNL_bp_", "fNL_bpd_", "s_e_"]
-    _scalar_table += [f"ngbar_{b}_" for b in range(int(getattr(model, "n_gxy_shells", 0)))]
-    for param in _scalar_table:
-        if param not in state.position:
-            continue
-        base_name = param.rstrip("_")
-        lat_cfg = model.latents.get(base_name)
-        if lat_cfg is None:
-            continue
-        latent_vals = jnp.array(state.position[param])   # shape (num_chains,)
-        low = lat_cfg.get("low", -jnp.inf)
-        high = lat_cfg.get("high", jnp.inf)
-        if low == -jnp.inf and high == jnp.inf:
-            phys_vals = [float(v * lat_cfg["scale_fid"] + lat_cfg["loc_fid"]) for v in latent_vals]
-        else:
-            phys_vals = [float(_std2trunc(v,
-                                          loc=lat_cfg["loc_fid"],
-                                          scale=lat_cfg["scale_fid"],
-                                          low=low,
-                                          high=high))
-                         for v in latent_vals]
-        fid_val   = lat_cfg["loc_fid"]
-        phys_str  = "  ".join(f"{v:.4f}" for v in phys_vals)
-        print(f"   {base_name:8s}: [{phys_str}]  (fid={fid_val:.4f})")
+    _scalars = {k: v for k, v in state.position.items() if k != "init_mesh_"}
+    _phys = model.reparam(_scalars | _fixed_lat) if _scalars else {}
+    for name, lat_cfg in model.latents.items():
+        if name + "_" in _scalars and name in _phys:
+            phys_str = "  ".join(f"{float(v):.4f}" for v in jnp.atleast_1d(_phys[name]))
+            print(f"   {name:8s}: [{phys_str}]  (fid={lat_cfg['loc_fid']:.4f})")
 
 
 # STEP 3: Multi-Chain Mini-Batch Sampling

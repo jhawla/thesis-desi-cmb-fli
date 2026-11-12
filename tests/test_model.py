@@ -280,3 +280,29 @@ def test_bias_evolution_samples_b1_alpha_on_the_light_cone_only():
     assert "b1_alpha" in bias_group(a_obs=None)
     assert "b1_alpha" not in bias_group(a_obs=None, bias_evolution="none")
     assert "b1_alpha" not in bias_group(a_obs=1.0)
+
+
+def test_b1_sigma8_same_posterior():
+    """b1_sigma8 changes the sampled coordinate, not the posterior: reparam goes back and forth,
+    and at one physical point the log-density in the new coordinates differs from the one in b1 by
+    the Jacobian -log(sigma8 / sigma8_fid) alone (docs/pipeline.md 5)."""
+    cfg = default_config | {"mesh_shape": (16, 16, 16), "box_shape": (100.0, 100.0, 100.0)}
+    old = FieldLevelModel(**cfg)
+    new = FieldLevelModel(**(cfg | {"b1_sigma8": True}))
+    scalars = {"Omega_m": 0.3, "sigma8": 0.8, "b1": 1.0, "b2": 0.0, "bs2": 0.0, "bn2": 0.0}
+    truth = old.predict(samples=scalars, frombase=True, hide_base=False, hide_samp=False)
+    base = old.reparam({k: v for k, v in truth.items() if k.endswith("_")})
+    base = {k: v for k, v in base.items() if k in old.latents or k == "init_mesh"}
+    for m in (old, new):
+        m.reset()
+        m.condition({"obs": truth["obs"]})
+        m.block()
+    s8_fid = old.loc_fid["sigma8"]
+    for s8, b1 in [(0.6, 1.3), (1.0, 0.7), (s8_fid, 1.1)]:
+        point = base | {"sigma8": s8, "b1": b1}
+        z_old, z_new = old.reparam(point, inv=True), new.reparam(point, inv=True)
+        back = new.reparam(z_new)
+        assert np.isclose(float(back["b1"]), b1, rtol=1e-5)
+        assert np.isclose(float(back["sigma8"]), s8, rtol=1e-6)
+        diff = float(new.logpdf(z_new) - old.logpdf(z_old))
+        assert np.isclose(diff, -np.log(s8 / s8_fid), atol=2e-2), (s8, diff)

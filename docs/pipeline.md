@@ -999,6 +999,19 @@ cached at the fiducial (what `pixel_exact` requires, §3.2; the same at fixed co
 `Omega_m`–`sigma8` run it is then noise of a fixed spectrum, as in the `fixed` runs of §7.15 and
 §7.17.
 
+**`b1` sampled with `sigma8` (`model.b1_sigma8`).** The galaxy counts fix the amplitude `(1 + b1) sigma8`
+(Eulerian bias times the field's amplitude) far better than either factor, so a galaxy posterior is a
+narrow ridge along `b1`–`sigma8`, which a diagonal mass matrix crosses slowly. With the key on, the
+sampled bias coordinate is `(1 + b1) sigma8 / sigma8_fid − 1` (montecosmo's `reparam_b1`, Eulerian `b1`
+at `a_fid` scaled by `sigma8 / sigma8_fid`), and `b1 = (1 + b̃1) sigma8_fid / sigma8 − 1` is what enters
+the model. Unlike montecosmo, whose prior is then on the scaled coordinate, a `factor` site restores
+the configured prior on `b1` and adds the Jacobian `sigma8_fid / sigma8`: the posterior is the one of a
+run sampling `b1`, and runs with and without the key compare directly (`tests/test_model.py`: at one
+physical point the log-densities differ by the Jacobian alone). Only `b1` is scaled (montecosmo also
+scales `b2` by `sigma8²`). The key is recorded in `model.yaml`; its default (`false`) is the behaviour of
+the runs before it, whose `b1_` the analysis reads as `b1`. `reparam` needs `sigma8` to give `b1`: the
+analysis passes the fixed latents along.
+
 **Kaiser preconditioning** (`precond: kaiser`/`kaiser_dyn`). The field is sampled in a whitened basis
 with `scale = √(1 + B(k,μ)²·P(k)/noise_eff)`, `transfer = √P(k)/scale`
 (`model._precond_scale_and_transfer`). `B` is the **full** Eulerian Kaiser boost
@@ -2566,6 +2579,18 @@ joint at 160³ 0.786, 0.785, 0.785, 0.786, 0.783 over batches 0–4 while `b1` r
 `s_ed` held at 10⁻⁴ 0.789, 0.789, 0.793, 0.790, 0.784 (`b1` 1.26 → 1.31, `bn2` 4.4 → 8.6); the joint at
 120³ 0.790–0.807, as the galaxies alone at 120³ over the same batches (0.804–0.823). Five joint
 batches: whether κ holds `sigma8` over a converged chain is not settled.
+
+**The ph202 galaxies-alone run at mesh 100** (`abacus/abacus_gxyonly_cosmo_box5000_m100_ph202.yaml`,
+`run_20261111_154115_61098142`, `bias_order: 3`, noise prior N(0.961, 0.03), N(0.236, 0.03), sampling `b1`;
+batches 15–37 of 4 chains): `Omega_m` 0.3250 ± 0.0043 (split R̂ 1.04, every chain at 0.324–0.326),
+`sigma8` 0.794 ± 0.022 (split R̂ 1.56; chain means 0.77–0.81). `s_e` falls in three chains over the whole
+run, about 0.006 per five batches, to 0.86–0.87 at batch 37, 3.1–3.3 prior σ below its centre: the prior's
+width (0.03) is thirty times the likelihood's resolution of the noise level (≈ s_e/√(2N), N ≈ 4·10⁵
+cells), so it does not hold it. The chains agree on `(1 + b1) sigma8` (1.776–1.789) and differ along
+`b1`–`sigma8`: corr(`sigma8`, `b1`) −0.92, corr(`sigma8`, `(1 + b1) sigma8`) +0.03, corr(`sigma8`, `b2`)
+−0.91 against −0.79 with `b2 sigma8²` (hence `b1_sigma8`, §5). The posterior field power over the true
+ICs' at k 0.10–0.15 is 0.993–1.001 (scaled by each chain's `sigma8²`; batches 0, 15, 37), while the
+warm-up figure shows the field after the mesh-only warm-up 5 % above the truth there.
 
 ## 8. Remaining steps before the paper
 

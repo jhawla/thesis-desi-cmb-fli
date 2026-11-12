@@ -186,13 +186,21 @@ def load_and_process_run(run_dir, burn_in=0.0, exclude_chains=None):
         if k in model.loc_fid or k.endswith('_')
     }
 
-    chain_obj = Chains(samples_jax, model.groups | model.groups_)
+    # The fixed latents go along (b1_sigma8 needs sigma8 to give b1) and are dropped after.
+    fixed = _fixed_latents(run_dir, model) if samples_jax else {}
+    shape = next(iter(samples_jax.values())).shape[:2] if samples_jax else ()
+    chain_obj = Chains(
+        samples_jax | {k: jnp.broadcast_to(v, shape) for k, v in fixed.items()},
+        model.groups | model.groups_,
+    )
     # Every scalar can be fixed (e.g. a kappa-only run with f_NL fixed): only the field is sampled.
     if samples_jax:
         physical_chains = model.reparam_chains(chain_obj, fourier=False, batch_ndim=2)
     else:
         physical_chains = chain_obj
-    physical_samples = {k: np.array(v) for k, v in physical_chains.data.items()}
+    physical_samples = {
+        k: np.array(v) for k, v in physical_chains.data.items() if k + "_" not in fixed
+    }
 
     # Load Truth values
     config_yaml_path = config_dir / "config.yaml"

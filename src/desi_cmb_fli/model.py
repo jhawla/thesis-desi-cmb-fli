@@ -14,7 +14,7 @@ from jax import numpy as jnp
 from jax import random as jr
 from jax_cosmo import Cosmology
 from jaxpm.painting import cic_paint
-from numpyro import deterministic, render_model, sample
+from numpyro import deterministic, factor, render_model, sample
 from numpyro.handlers import block, condition, seed, trace
 from numpyro.infer.util import log_density
 
@@ -83,6 +83,8 @@ default_config = {
     "galaxies_enabled": True,  # Enable galaxy likelihood (set False for CMB-only runs)
     "gxy_stoch_noise": True,  # Free galaxy noise s_e, s_ed (std s_e (1 + s_ed max(delta_m, -1)) sqrt(n̄S)); False: 1, 0
     "bias_order": 2,  # 2: b1, b2, bs2, bn2 (+ bnpar, b1_alpha); 3: adds b3, bds2, bs3 (docs/pipeline.md 2.4)
+    "b1_sigma8": False,  # True: the sampler moves (1 + b1) sigma8 / sigma8_fid instead of b1, same prior
+    # on b1 (docs/pipeline.md 5); False: b1 itself, as the runs before this key
     "bias_evolution": "redshift",  # 'redshift': on the light cone b1 evolves with b1_alpha and b2, bs2
     # follow b1 through the quenched-galaxy relations (bricks.quenched_bias_relation); 'none': constant
     # biases, b1_alpha not sampled (docs/pipeline.md 2.4)
@@ -283,6 +285,7 @@ MODEL_CONFIG_KEYS = {
     "png_type",
     "bias_evolution",
     "bias_order",
+    "b1_sigma8",
 }
 CMB_CONFIG_KEYS = {
     "enabled",
@@ -392,6 +395,8 @@ def get_model_from_config(config_or_path):
         model_config["bias_evolution"] = str(cfg["model"]["bias_evolution"])
     if "bias_order" in cfg["model"]:
         model_config["bias_order"] = int(cfg["model"]["bias_order"])
+    if "b1_sigma8" in cfg["model"]:
+        model_config["b1_sigma8"] = bool(cfg["model"]["b1_sigma8"])
     if "png_type" in cfg["model"]:
         png_type = cfg["model"]["png_type"]
         model_config["png_type"] = None if png_type in (None, "None", "none") else str(png_type)
@@ -806,6 +811,7 @@ class FieldLevelModel(Model):
     gxy_ngbar_free: bool = field(default=default_config["gxy_ngbar_free"])
     bias_evolution: str = field(default=default_config["bias_evolution"])
     bias_order: int = field(default=default_config["bias_order"])
+    b1_sigma8: bool = field(default=default_config["b1_sigma8"])
     n_gxy_shells: int = field(default=0)
     curved_sky: bool = field(default=default_config["curved_sky"])
     los: tuple | None = field(default=default_config["los"])
@@ -850,6 +856,10 @@ class FieldLevelModel(Model):
             )
         if self.bias_order not in (2, 3):
             raise ValueError(f"bias_order must be 2 or 3, got {self.bias_order!r}")
+        if self.b1_sigma8 and (
+            "low" in self.latents.get("b1", {}) or "high" in self.latents.get("b1", {})
+        ):
+            raise ValueError("b1_sigma8 needs an unbounded b1 prior")
         if self.bias_order == 3 and self.evolution == "kaiser":
             raise ValueError(
                 "bias_order 3 weights particles: use evolution 'lpt' or 'nbody', not 'kaiser'."
@@ -1425,6 +1435,10 @@ class FieldLevelModel(Model):
         else:
             bias_ = self._sample(self.groups["bias"])
             bias_ = samp2base(bias_, self.latents, inv=False, temp=temp)
+            if self.b1_sigma8 and "b1" in bias_:
+                b1s = bias_["b1"]
+                bias_["b1"] = self._b1_sigma8(b1s, cosmo["sigma8"])
+                factor("b1_sigma8_jacobian", self._b1_logprior_ratio(bias_["b1"], b1s, cosmo["sigma8"]))
             bias = {k: deterministic(k, v) for k, v in bias_.items()}
 
         cosmology = get_cosmology(**cosmo)
@@ -2019,7 +2033,12 @@ class FieldLevelModel(Model):
         if inv and self.cmb_enabled and not self.galaxies_enabled:
             bias = {}
         elif len(bias_) > 0:
-            bias = samp2base(bias_, self.latents, inv=inv, temp=temp)
+            bias_in = dict(bias_)
+            if self.b1_sigma8 and "b1" in bias_ and inv:
+                bias_in["b1"] = self._b1_sigma8(bias_["b1"], self._sigma8_of(cosmo_), inv=True)
+            bias = samp2base(bias_in, self.latents, inv=inv, temp=temp)
+            if self.b1_sigma8 and "b1" in bias and not inv:
+                bias["b1"] = self._b1_sigma8(bias["b1"], self._sigma8_of(cosmo))
         else:
             bias = {k: self.loc_fid[k] for k in self.groups["bias"]}
 
@@ -2091,6 +2110,34 @@ class FieldLevelModel(Model):
                 f"[{om.get('low')}, {om.get('high')}]"
             )
         return new
+
+    def _b1_sigma8(self, b1, sigma8, inv=False):
+        """Lagrangian ``b1`` from the sampled ``(1 + b1) sigma8 / sigma8_fid - 1`` (``inv``: the
+        reverse). With ``b1_sigma8`` the sampler moves the galaxy amplitude the data fix, not b1
+        (docs/pipeline.md 5)."""
+        ratio = sigma8 / self.loc_fid["sigma8"]
+        return (1 + b1) * ratio - 1 if inv else (1 + b1) / ratio - 1
+
+    @staticmethod
+    def _sigma8_of(cosmo):
+        if "sigma8" not in cosmo:
+            raise ValueError(
+                "b1_sigma8: b1 is sampled with sigma8, which reparam needs (pass the fixed "
+                "latents along, e.g. analyze_run._fixed_latents)"
+            )
+        return cosmo["sigma8"]
+
+    def _b1_logprior_ratio(self, b1, b1s, sigma8):
+        """Log-density that turns the prior the sampler puts on the scaled ``b1s`` into the
+        configured prior on ``b1``, with the Jacobian ``sigma8_fid / sigma8``: the posterior is the
+        one of a run sampling ``b1``."""
+        conf = self.latents["b1"]
+        prior = (
+            (lambda x: 0.0)
+            if conf.get("loc") is None
+            else dist.Normal(conf["loc"], conf["scale"]).log_prob
+        )
+        return prior(b1) - prior(b1s) - jnp.log(sigma8 / self.loc_fid["sigma8"])
 
     def _sample(self, names: str | list):
         """
