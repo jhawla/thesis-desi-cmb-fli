@@ -131,7 +131,13 @@ def grid_label(cfg, cell_size=None):
     mesh += mesh % 2
     ptcl = int(get_scaled_shape((mesh,), float(model_cfg.get("ptcl_oversamp", 1.0)))[0])
     return (f"box {box:g} Mpc/h, {ptcl}³ particles, cell {box / mesh:.2f} Mpc/h",
-            f"box{box:g}_ptcl{ptcl}")
+            f"{sky_name(cfg)}_box{box:g}_ptcl{ptcl}")
+
+
+def sky_name(cfg):
+    """The simulation of the config's AbacusLensing map (e.g. AbacusSummit_huge_c000_ph202): caches and
+    figures carry it, so that one sky's map or figure is never read or overwritten as another's."""
+    return Path(cfg.get("abacus_kappa", {}).get("file", "nosky/x")).parent.name
 
 
 def plot_polar_maps(t, m, lmax, kmax, grid, fig_path, half_width_deg=25.0):
@@ -211,7 +217,7 @@ def plot_spectra(results, lmax, config_name, grid, tag, fig=None):
     axes[2].axhline(1, color="k", lw=0.6)
     axes[3].set(
         ylabel=r"$(C_\ell^{mm} + C_\ell^{\rm LOS}) / C_\ell^{tt}$",
-        title="Model power plus its covariance term over AbacusLensing (1 = consistent)",
+        title="(model + covariance term) / AbacusLensing (1 = consistent)",
     )
     axes[3].axhline(1, color="k", lw=0.6)
     for ax in axes:
@@ -308,7 +314,7 @@ def main():
         lmax, nside = int(model.cmb_lmax), int(model.cmb_proj_nside)
         if ic is None:
             ic = load_abacus_ic_truth(cfg["abacus_ic"], model)["init_mesh"]
-            t_map = abacus_map(cfg, model, cache / f"abacus_kappa_nside{nside}.npy", args.abacus_map)
+            t_map = abacus_map(cfg, model, cache / f"abacus_kappa_{sky_name(cfg)}_nside{nside}.npy", args.abacus_map)
         model.reset()
         pred = model.predict(
             samples={**truth_params, "init_mesh": jnp.asarray(ic)},
