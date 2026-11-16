@@ -111,6 +111,22 @@ python -c "import jax; print(jax.devices())"  # Should show [CudaDevice(id=0), .
 python scripts/run_inference.py --config configs/inference/config.yaml
 ```
 
+### CPU node (diagnostics without sampling)
+
+The GPU hours are a share of the DESI collaboration's quota: the tests that do not sample (forward model at the
+true ICs, bias fits, spectra, catalogue checks) run on CPU nodes (2 × 64-core AMD EPYC 7763, 512 GB), charged to
+the CPU allocation. JAX runs on the CPU with `JAX_PLATFORMS=cpu` (no `cudatoolkit`); four processes share a node with
+`taskset` (cores `0-31,128-159`, `32-63,160-191`, …). Measured (pipeline §7.19, ph202 localisation): one
+`value_and_grad` of the galaxy counts at mesh 100 with 280³ particles takes 14–18 s with four such processes on the
+node, against ≈ 0.7 s per chain on an A100 in a run. The allocation ends with its script:
+
+```bash
+salloc --nodes 1 --qos interactive --time 01:00:00 --constraint cpu --account desi \
+    srun --ntasks 1 --cpus-per-task 256 bash logs/<topic>/run.sh
+# run.sh: source the conda env as above (without cudatoolkit), export JAX_PLATFORMS=cpu, then
+# taskset -c 0-31,128-159 python -u <script> ... &  (one line per process), wait
+```
+
 ### Long batch job (warm-up beyond 4 h)
 
 The warm-up of `run_inference.py` (mesh, then all parameters) runs in one go and is not checkpointed;
