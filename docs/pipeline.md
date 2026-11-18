@@ -436,8 +436,8 @@ relative) on the observable a_ℓm of a band-limited shell, its worst pixels at 
 removed — the model's discreteness, and on AbacusLensing or a real map real structure the model does
 not resolve — is part of the out-of-model term `C_ℓ^out` of the covariance, the matter the map holds and
 the shells do not (§3.2), so it follows `cl_out_mode` like it. Inside the taper's roll-off the removed part of a mode is proportional
-to its kept part, and the likelihood treats it as independent noise: an approximation over a quarter
-of each cut shell's ℓ_res. The cut removes the near-shell discreteness and the near-observer
+to its kept part: the likelihood's mean restores it through each shell's gain (§3.2), and the covariance
+keeps it as well, on the safe side. The cut removes the near-shell discreteness and the near-observer
 stiffness, so that where the shells start no longer matters, at the price of a costlier κ gradient
 (§7.12). It leaves the far shells' in-band discreteness, the lattice template, which shrinks with the
 particle spacing (above, §7.15). The covariance term carries the bilinear window of
@@ -788,31 +788,38 @@ smaller than the map's depth: a slab of matter behind the box is radially thin a
 where Limber under-predicts it (§7.15). The term is computed and cached at init, so a κ run started
 before the ratio does not resume.
 
-**Mean of the data map given the model's (`cmb_lensing.compute_out_terms`,
-`FieldLevelModel.kappa_mean`).** The matter left out is not independent of the model's: `B_ℓ` and
-the model's kernel `M_ℓ(χ) = Σ_s w_s(ℓ) q_s(χ)` overlap in χ wherever a shell is held in part —
-inside the cosine taper of the per-shell cut, where the model holds `w_s κ_s` of a shell and the map
-all of it, and in the end ramps of the tents. For Gaussian fields the map given the model's κ is then
-`(1 + β_ℓ) κ_model` plus a part independent of it, with `β_ℓ = C^BM_ℓ / C^MM_ℓ`, `C^BM_ℓ = ∫ dχ B_ℓ
-M_ℓ P((ℓ+½)/χ) / χ²` in Limber, and that part has the variance `C^out − β² C^MM`. In the limit
-where every shell were held at a fraction F of its matter, the map would be the model's over F and the
-gain 1/F; the cut holds F < 1 only inside each shell's taper, hence a gain a few percent above one
-(§7.19). The likelihood's
-mean is the model map times the gain `1 + β_ℓ`, applied per multipole on the full projection sphere
-before the mask (`add_ell_filtered`: only the β part goes through the `iter=0` round trip), so both
-`diagonal` and `pixel_exact` carry it (it is 1 above `cmb_lmax`, outside the observable). The
-likelihood records the mean as the deterministic site `kappa_mean`: `kappa_observable` (the stored
-`kappa_batch`), the closure truth's noiseless `kappa_pred`, the closure map `plot_2D_maps.py`
-exports, the lattice template of `kappa_lattice_template.py`, the fallback reconstruction of
-`analyze_run.py` and the IC test read it. The gain comes from the same pass over the kernels as the
-term (`cmb_lensing.compute_out_terms`: `C^BB`, `C^BM`, `C^MM` per multipole, linear Limber on the
-model's spectrum), so it follows `cl_out_mode`: at the sampled cosmology under `exact`, cached at the
-fiducial under `fixed`; the halofit and exact-over-Limber ratios of the term are not applied to it, a
-ratio of two spectra of the same matter (§7.19). The variance keeps `C^out`, `β² C^MM` being
-negligible against it (§7.19). Without the gain
-the model's κ is too faint by β, which the IC test reads as an amplitude above one that grows with
-the number of shells inside their taper (§7.19). A κ run started before the gain changes likelihood
-if resumed.
+**Mean of the data map given the model's, shell by shell (`cmb_lensing.compute_out_terms`,
+`_shell_gains`, `cut_shells`).** The matter left out is not independent of the model's: `B_ℓ` overlaps
+in χ the shells the model holds in part — inside the cosine taper of the per-shell cut, where the
+model holds `w_s κ_s` of a shell and the map all of it, at the end ramps of the tents, and, through the
+tents' overlap, at their neighbours. For Gaussian fields the map given the model's shells is then
+`Σ_s (1 + c_s(ℓ)) w_s κ_s` plus a part independent of them, with `c = C_MM⁻¹ C_MB` the regression of the
+matter left out on the shells as the model holds them, `M_s = w_s q_s`, each separately: `C^{BM_s}_ℓ =
+∫ dχ B_ℓ M_s P((ℓ+½)/χ) / χ²` and `C^{M_s M_t}_ℓ` in Limber, a 32 × 32 system per multipole (tridiagonal
+in the tents). A shell held whole away from the tapers and ramps gets 1; a shell inside its taper gets
+≈ 1/w_s, the held part standing for the whole shell; one held below `GAIN_MIN_HELD` (0.05, the end of a
+taper) is left out of the regression at that multipole. Why shell by shell: the regression on the
+model's *total* κ (one gain per multipole, `1 + C^BM/C^MM`, the former mean) multiplies every shell
+alike, those held whole too; κ alone does not see the difference, but in the joint the galaxies fix
+the matter of their shells, which that gain amplified by β_ℓ ≈ 1–4 %, and C_κg of the joint mean was
+over-predicted by as much (§7.19). The mean is built where the cut already transforms the shells
+(`cut_shells`): the shells that are cut or carry a gain (`GAIN_ROW_TOL` 10⁻² at the fiducial,
+`model.cmb_gain_rows`) are transformed once (`map2alm`, `iter=0`); `kappa_pred` sums the tapered
+shells, the mean adds `w_s (g_s − 1)` of each, so an uncut shell goes through the round trip by its
+gain only; the gain is 1 above `cmb_lmax`, outside the observable. Both `diagonal` and `pixel_exact`
+read the mean on the full projection sphere before the mask. The likelihood records it as the
+deterministic site `kappa_mean`: `kappa_observable` (the stored `kappa_batch`), the closure truth's
+noiseless `kappa_pred`, the closure map `plot_2D_maps.py` exports, the lattice template of
+`kappa_lattice_template.py`, the fallback reconstruction of `analyze_run.py` and the IC tests read it.
+The gains come from the same pass over the kernels as the term (`C^BB`, `C^{BM_s}`, `C^{M_s M_t}` per
+multipole, linear Limber on the model's spectrum), so they follow `cl_out_mode`: at the sampled
+cosmology under `exact`, cached at the fiducial under `fixed`; the halofit and exact-over-Limber ratios
+of the term are not applied to them, ratios of spectra of the same matter. The variance keeps `C^out`:
+the part the shells explain, `c · C_MB`, is 0.7–2.8 % of it over ℓ 2–256 at the final configuration
+(§7.19), left in the variance, which errs on the safe side. Without any gain the model's κ is too faint
+where its shells are held in part, which the IC test reads as an amplitude above one that grows with
+the number of shells inside their taper (§7.19). A κ run started before a change of the mean changes
+likelihood if resumed.
 
 **Depth of the data map.** The model shells hold the matter from `chi_matter_min` to `chi_boundary`.
 On a real map the map's matter runs from the observer to `χ_s` (9388 Mpc/h at the fiducial
@@ -1104,7 +1111,7 @@ measures and the conventions that make its output comparable with the model.
 | `validate_galaxy_from_ic.py` | the galaxy model at the true Abacus ICs against the Abacus counts, no sampling, a standard check of every grid: per k band and per shell of χ the coherence r, the transfer P_dm/P_mm and the whitened residual power (d − m)/√(n̄S) off the Nyquist planes of the final grid, against 20 closure draws with the noise law of the Newton JSON (`s_e`, `s_ed`, the likelihood's; mean ± 1σ), so that an exact model with that noise falls in their band; then the biases refitted per shell (`b1_alpha` held), whose χ² gain measures the redshift evolution the bias lacks; and, with no bias fit, the shape of the effective bias against the matter of the same ICs (all biases and `b1_alpha` at 0), b_eff(k)/b_eff(top quarter of k), against the closure's: the transfer depends on where the bias fit lands in the `b1`–`bn2`–`bnpar` degeneracy, the b_eff shape does not (§7.19, ph202). The Nyquist planes are left out of the residual: there the paint chain on the survey geometry lowers the data's noise below the per-cell noise of the closure (§7.19) | `figures/galaxy_ic_test/<config>.{png,json}` |
 | `plot_galaxy_ic_test.py` | the paper's `fig:gxy_ic` from the JSONs of `validate_galaxy_from_ic.py` (all cells) and of the Newton minimum (its noise fit): transfer, whitened residual (off the Nyquist planes), b_eff shape against k with the closure band (model + fitted noise), k_N marked | `figures/galaxy_ic_test/fig_gxy_ic.png` |
 | `plot_shell_cut.py` | the paper's `fig:shell_cut` from the `.npz` of `validate_kappa_from_ic.py --shell_kmax 0 <cut>`: the model's κ power plus its covariance term over the map's, with and without the per-shell cut | `figures/spectra_diagnostic/fig_shell_cut.png` (from `kappa_from_abacus_ic_box5000_m160_ph202_cut_nocut.npz`) |
-| `validate_joint_from_ic.py` | the joint model at the true Abacus ICs (Abacus cosmology, the biases of a Newton or profile JSON): C_κg of the AbacusLensing map × LRG catalogue over C_κg of the model's mean κ × model galaxies per ℓ band, cosmic variance cancelling, Gaussian errors with the κ and galaxy errors independent of the model; the mixed crosses (model κ × Abacus galaxies, Abacus κ × model galaxies) say on which side a departure sits. Its galaxy maps are projected from the galaxies at every k, beyond the cube the likelihood holds: above ℓ ≈ 160 the ratio reads the per-shell cut, not the likelihood (§7.19) | `figures/joint_ic_test/<config>.{png,json}` |
+| `validate_joint_from_ic.py` | the joint model at the true Abacus ICs (Abacus cosmology, the biases of a Newton or profile JSON): C_κg of the AbacusLensing map × LRG catalogue over C_κg of the model's mean κ × model galaxies per ℓ band, cosmic variance cancelling, Gaussian errors with the κ and galaxy errors independent of the model; the mixed crosses (model κ × Abacus galaxies, Abacus κ × model galaxies) say on which side a departure sits. Its galaxy maps are projected from the galaxies at every k, beyond the cube the likelihood holds: above ℓ ≈ 160 that ratio reads the per-shell cut, not the likelihood; the figure (the paper's `fig:joint_ic`) shows both spectra and the ratio, also with the final-grid count meshes projected along each ray, the galaxies the likelihood holds (§7.19) | `figures/joint_ic_test/<config>.{png,json}` |
 | `kappa_stiffness.py` | largest Hessian eigenvalue of −log p in the field (power iteration on reverse-over-reverse Hessian-vector products), its eigenvector's share near the observer, cost and peak memory, per `shell_weights:shell_kmax[:noise]` variant; the MCLMC step size is capped by it | `figures/conditioning/` |
 | `kappa_lattice_template.py` | `measure`: E_z[κ] by antithetic pairs `(κ(z) + κ(−z))/2` on an (`Omega_m`, `sigma8`) list, packed like the likelihood, with the field power, the undisplaced-lattice κ, `N_ℓ` and the out-of-model term at each point's cosmology; `analyse`: S/N, projection of a run's data, Gaussian posterior with and without the template, of the run's data or `RUN:noiseless` (its noiseless map averaged over the noise), `--condition_om` for `sigma8` at given `Omega_m` (§7.15, §7.17) | `data/cache/template/`, `figures/kappa_lattice_template/` |
 | `ic_power_check.py` | P(k) of the published Abacus ICs as loaded against their own input spectrum (CLASS table grown with the header growth), full box and central cube; a loading error is a constant factor in k (§7.17) | `figures/ic_power/` |
@@ -2159,13 +2166,12 @@ Configs: `abacus/abacus_{gxyonly,kappaonly_so,joint_so}_cosmo_box5000_m160.yaml`
   corner modes (mesh 54 / 200³, §7.8: rising to 1.13 near its k_N). Closure matter `P(k)` (20
   realisations): within ±5 % of the light-cone-averaged linear theory, a dip to 0.95 at k 0.08–0.09,
   1.0–1.1 in the corner modes, no lattice spike.
-- κ at the true ICs (`validate_kappa_from_ic.py`, shell cut at the init Nyquist 0.151, job 60302409,
-  `figures/spectra_diagnostic/kappa_from_abacus_ic_box5000_m160_gain.{png,npz}`), in ℓ 2–64 / 65–128 /
+- κ at the true ICs with the single gain of the time (`validate_kappa_from_ic.py`, shell cut at the init Nyquist 0.151, job 60302409;
+  the figures of that name now hold the shell gains, §7.19, ph202 paragraph), in ℓ 2–64 / 65–128 /
   129–192 / 193–256: amplitude A 1.002 ± 0.015 / 0.995 ± 0.012 / 1.004 ± 0.013 / 0.988 ± 0.017,
   model error over `C^LOS` 0.94 / 0.99 / 0.99 / 1.00, `(C^mm + C^LOS)/C^tt` 1.02 / 1.01 / 1.00 /
   1.01, coherence 0.80 / 0.70 / 0.63 / 0.53, the curve of a model exact but for its covariance term.
-  On ph202 (`abacus/abacus_kappaonly_so_cosmo_box5000_m160_ph202.yaml`, job 61219412,
-  `figures/spectra_diagnostic/kappa_from_abacus_ic_box5000_m160_ph202_gain.{png,npz}`): A 0.986 ± 0.015 / 1.007 ± 0.012 /
+  On ph202 (`abacus/abacus_kappaonly_so_cosmo_box5000_m160_ph202.yaml`, job 61219412, single gain): A 0.986 ± 0.015 / 1.007 ± 0.012 /
   0.989 ± 0.013 / 0.993 ± 0.017, model error over `C^LOS` 0.99 / 1.00 / 1.00 / 1.00, `(C^mm + C^LOS)/C^tt` 1.02 / 0.99 /
   1.01 / 1.00, coherence 0.79 / 0.70 / 0.63 / 0.53, on the exact-but-for-`C^LOS` curve at every ℓ; ph201 rerun in the
   same job gives the values above.
@@ -2760,7 +2766,20 @@ the Born κ alone; without the cut, where the gain holds the tents' end ramps on
 1.023 / 1.021 without. κ alone needs the gain, the part of κ correlated with the galaxies does not: the gain is the
 regression of the matter left out on the model's *total* κ, and multiplies the galaxy shells, held whole, as much as
 the near shells whose tapers it compensates; the galaxies fix the matter of their shells, so the joint mean
-over-predicts C_κg by about β_ℓ. A gain acting shell by shell on the shells it concerns removes it (§8).
+over-predicts C_κg by about β_ℓ. A sharp per-shell cut (taper replaced by a step at ℓ_cut or at its midpoint) does
+not remove it (0.988 with the gain, 0.998 without on ph202; ph201 0.983 and 0.992): the tents' end ramps and the
+overlap of neighbouring tents keep a single gain of 1.007–1.03. *The gain shell by shell* (§3.2; CPU jobs of
+2026-11-18, `logs/joint_lowpass/joint_lowpass_ph20?_final.json`, not in the repository): 30 of 32 shells take a gain
+(the 20 cut ones up to ≈ 1/0.05 at the end of their taper, the galaxy-range shells within 0.02 of one, the last shell,
+the far ramp, 1.27); over ℓ 20–160 the low-passed ratio is 0.997 ± 0.010 (ph202) and 0.993 ± 0.010 (ph201), the model
+galaxies' 1.000 and 0.992; the κ transfer 1.006 / 0.980 / 1.008 / 0.997 / 0.994 (ph202) and 1.004 / 1.012 / 0.992 /
+1.001 / 0.998 (ph201) over ℓ 20–40 / 40–70 / 70–110 / 110–160 / 160–257, the coherence unchanged; the part of the
+matter left out that the shells explain, c·C_MB, is 0.7 / 1.4 / 2.8 / 2.3 % of C^BB in ℓ 2–64 / 65–128 / 129–192 /
+193–256. κ alone at the true ICs, mesh 160, with the shell gains (`validate_kappa_from_ic.py`,
+`figures/spectra_diagnostic/kappa_from_abacus_ic_box5000_m160{,_ph202}_gain.{png,npz}`, replacing those of the single
+gain): A 1.003 ± 0.015 / 0.996 ± 0.012 / 1.002 ± 0.013 / 0.990 ± 0.017 (ph201) and 0.988 / 1.008 / 0.989 / 0.998
+(ph202) in ℓ 2–64 / 65–128 / 129–192 / 193–256, within 0.005 of the single gain's, the coherence and the error power
+on their curves.
 
 **The box faces** (same job, `stage1.py --faces`: the whitened residual at the true ICs over the noise law
 fitted on all cells, `z²`, against the distance to the nearest face of the cube the model treats as
@@ -3001,9 +3020,10 @@ closures' truth biases follow it), the true-IC test (`validate_galaxy_from_ic.py
 `quick_cl_spectra.py`); job 61164431 (the former ph202 config) is cancelled, not released. Done on the final configs
 (2026-11-17/18, §7.14, §7.19): the Newton minima, the true-IC galaxy test (the corner bins understood), `Omega_m` at the
 true ICs within 0.7σ on both skies with the bias power law, the spectra. Left before the **joint** run only: the
-out-of-model gain acts on the whole κ map and over-predicts C_κg by about β_ℓ once the galaxies fix their shells
-(§7.19); it is to act shell by shell, then the joint true-IC test is repeated on the low-passed galaxy maps. The
-galaxies-alone run does not see it.
+out-of-model gain acted on the whole κ map and over-predicted C_κg by about β_ℓ once the galaxies fix their shells;
+it now acts shell by shell (§3.2), and the joint true-IC test on the low-passed galaxy maps is at 0.997 / 0.993 (ph202 /
+ph201) with κ alone unchanged (§7.19). The galaxies-alone run does not see it. The κ-only mesh-160 ph202 run
+(`run_20261111_201030_61093819`) predates the shell gains; its κ amplitude at the true ICs is the same within 0.005.
 
 The analysis aims at box 5000 with κ at nside 128 (ℓ ≤ 256) and the galaxies on a grid finer than mesh 54
 (§7.19); the mesh-54 results (§7.13–7.17) are the record. Two questions come first, each settled with

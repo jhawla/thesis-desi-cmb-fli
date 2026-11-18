@@ -738,49 +738,55 @@ def shell_ell_taper(r_shells, d_r, shell_weights, k_max, ell_max, lmax):
     return taper
 
 
-def cut_shells(shells, taper, nside):
+def cut_shells(shells, taper, nside, gain=None, gain_rows=None):
     """Sum of the per-shell Born maps (n_shells, npix), each shell whose ``taper`` row is not all
-    ones low-passed by it in harmonic space; the untouched shells are summed in pixel space."""
+    ones low-passed by it in harmonic space; the untouched shells are summed in pixel space.
+
+    With ``gain`` (n_shells, n_ell, the out-of-model gain of each shell, ``_shell_gains``) also the
+    likelihood's mean: the same sum plus, for the shells ``gain_rows`` (static: those cut or with a
+    gain), each shell's held part times ``gain - 1`` (1 above ``n_ell``), so that only the gain goes
+    through the harmonic round trip of an uncut shell (docs/pipeline.md 3.2). Returns the map, or
+    ``(map, mean)`` with ``gain``.
+    """
     import healpy as hp
     import jax_healpy as jhp
 
-    cut = np.flatnonzero((np.asarray(taper) < 1.0).any(axis=1))
+    taper = np.asarray(taper)
+    cut = np.flatnonzero((taper < 1.0).any(axis=1))
+    rows = cut if gain is None else np.union1d(cut, np.asarray(gain_rows, dtype=int))
     keep = np.setdiff1d(np.arange(len(taper)), cut)
     kappa = shells[keep].sum(0)
-    if cut.size == 0:
-        return kappa
+    if rows.size == 0:
+        return kappa if gain is None else (kappa, kappa)
     lmax = 2 * int(nside)
     if taper.shape[1] != lmax + 1:
         raise ValueError(f"taper rows must cover l = 0 ... 2 nside = {lmax}, got {taper.shape[1] - 1}")
-    fl = jnp.asarray(np.asarray(taper)[cut][:, hp.Alm.getlm(lmax)[0]])
+    ell_of = hp.Alm.getlm(lmax)[0]
     alm = jax.vmap(
         lambda m: jhp.map2alm(m, lmax=lmax, pol=False, iter=0, healpy_ordering=True)
-    )(shells[cut])
-    return kappa + jnp.real(
-        jhp.alm2map((fl * alm).sum(0), nside=int(nside), lmax=lmax, pol=False, healpy_ordering=True)
-    )
+    )(shells[rows])
 
+    def to_map(fl):
+        return jnp.real(jhp.alm2map((fl[:, ell_of] * alm).sum(0), nside=int(nside), lmax=lmax,
+                                    pol=False, healpy_ordering=True))
 
-def add_ell_filtered(kmap, fl, nside):
-    """``kmap`` plus itself filtered by ``fl`` per multipole, l = 0 ... 2 nside (``map2alm``,
-    ``iter=0``): only the filtered part goes through the round trip."""
-    import healpy as hp
-    import jax_healpy as jhp
-
-    lmax = 2 * int(nside)
-    alm = jhp.map2alm(kmap, lmax=lmax, pol=False, iter=0, healpy_ordering=True)
-    fl = jnp.asarray(fl)[jnp.asarray(hp.Alm.getlm(lmax)[0])]
-    return kmap + jnp.real(jhp.alm2map(fl * alm, nside=int(nside), lmax=lmax, pol=False,
-                                       healpy_ordering=True))
+    is_cut = np.isin(rows, cut)
+    if is_cut.any():
+        kappa = kappa + to_map(jnp.asarray(np.where(is_cut[:, None], taper[rows], 0.0)))
+    if gain is None:
+        return kappa
+    g = jnp.ones((len(rows), lmax + 1)).at[:, : jnp.shape(gain)[1]].set(jnp.asarray(gain)[rows])
+    return kappa, kappa + to_map(jnp.asarray(taper[rows]) * (g - 1.0))
 
 
 def _outside_model_spectra(
     cosmo, ell, r_shells, a_shells, d_r, shell_weights, z_source, chi_max, taper=None,
     n_per_shell=40, n_beyond=200,
 ):
-    """Linear Limber spectra of the kernel left out ``B = W - M`` and of the model's ``M =
-    sum_s w_s(ell) q_s``, per multipole: ``(C^BB, C^BM, C^MM)``, in one pass over the kernels
-    (``compute_cl_outside_model``, ``compute_out_terms``)."""
+    """Linear Limber spectra of the kernel left out ``B = W - sum_s M_s`` and of the shells as the
+    model holds them, ``M_s = w_s(ell) q_s``, per multipole: ``(C^BB, C^{B M_s}, C^{M_s M_t})``,
+    shapes (n_ell,), (n_ell, n_shells), (n_ell, n_shells, n_shells), in one pass over the kernels
+    (``compute_cl_outside_model``, ``compute_out_terms``), and the held fractions ``w_s(ell)``."""
     from desi_cmb_fli.bricks import lin_power_interp
     from desi_cmb_fli.nbody import a2g
 
@@ -789,25 +795,38 @@ def _outside_model_spectra(
                                          chi_max, n_per_shell, n_beyond)
     pk_fn = lin_power_interp(cosmo)
     growth2 = a2g(cosmo, a) ** 2
+    dx = jnp.diff(chi_j)
+    trap = 0.5 * (jnp.concatenate([jnp.zeros(1), dx]) + jnp.concatenate([dx, jnp.zeros(1)]))
 
     def per_ell(ell_val, held):
-        m = (held[:, None] * q).sum(0)
-        kern = w_map - m
-        weight = pk_fn((ell_val + 0.5) / chi_j) * growth2 / chi_j**2
-        return tuple(jax.scipy.integrate.trapezoid(x * weight, x=chi_j)
-                     for x in (kern**2, kern * m, m**2))
+        m = held[:, None] * q
+        kern = w_map - m.sum(0)
+        weight = pk_fn((ell_val + 0.5) / chi_j) * growth2 / chi_j**2 * trap
+        return (kern**2 * weight).sum(), (m * kern * weight).sum(-1), (m * weight) @ m.T
 
     held = (np.ones((q.shape[0], ell_idx.size)) if taper is None
             else np.asarray(taper, dtype=float)[:, ell_idx])
-    return jax.vmap(per_ell)(jnp.asarray(ell_idx, dtype=float), jnp.asarray(held.T))
+    bb, bm, mm = jax.vmap(per_ell)(jnp.asarray(ell_idx, dtype=float), jnp.asarray(held.T))
+    return bb, bm, mm, held
 
 
-def _gain(cross, auto):
-    """``1 + C^BM / C^MM`` per multipole: the data map's kappa expected given the model's
-    (docs/pipeline.md 3.2). The kernel left out ``B`` and the model's ``M`` overlap in chi (the
-    tapers of the per-shell cut, the end ramps of the tents), so the matter left out is correlated
-    with the model's; this is its regression on it."""
-    return 1.0 + jnp.where(auto > 0, cross / jnp.where(auto > 0, auto, 1.0), 0.0)
+GAIN_MIN_HELD = 0.05  # a shell held below this fraction at a multipole takes no gain there
+GAIN_ROW_TOL = 1e-3  # a shell whose gain stays within this of 1 at every multipole is not transformed
+
+
+def _shell_gains(bm, mm, held, ell):
+    """The gain of each shell per multipole, ``1 + c_s(ell)``, shape (n_shells, n_ell): ``c = C_MM^-1
+    C_MB``, the regression of the matter left out on the shells as the model holds them, each
+    separately (docs/pipeline.md 3.2). The kernel left out and a shell overlap where the shell is
+    held in part -- inside its multipole taper, at the end ramps of the tents -- and, through the
+    tents' overlap, at its neighbours; a shell held whole away from them gets 1. Shells held below
+    ``GAIN_MIN_HELD`` at a multipole (the end of a taper) are left out of the regression there, as
+    are ell < 2."""
+    act = (np.asarray(held).T >= GAIN_MIN_HELD) & (np.asarray(ell)[:, None] >= 2)
+    n = act.shape[1]
+    a = jnp.where(jnp.asarray(act[:, :, None] & act[:, None, :]), mm, jnp.eye(n))
+    b = jnp.where(jnp.asarray(act), bm, 0.0)
+    return 1.0 + jnp.linalg.solve(a, b[..., None])[..., 0].T
 
 
 def compute_cl_outside_model(
@@ -1016,8 +1035,8 @@ def compute_theoretical_cl_kg(
 
 def compute_out_terms(cosmo, ell_1d, chi_max, shells, mode="exact", cl_cached=None,
                       gain_cached=None, window2=None):
-    """Out-of-model term C_ell^out of the kappa covariance and the gain ``1 + beta_ell`` of the
-    likelihood's mean (``_gain``), from one pass over the kernels: everything the Born
+    """Out-of-model term C_ell^out of the kappa covariance and the gain of each shell in the
+    likelihood's mean (``_shell_gains``, (n_shells, n_ell)), from one pass over the kernels: everything the Born
     shells leave out of the matter the data map holds up to ``chi_max`` (the CMB if None) -- beyond
     the box, the end ramps of the tents and the per-shell cut (``compute_cl_outside_model``, whose
     keyword arguments but ``cosmo``, ``ell`` and ``chi_max`` are ``shells``). C_ell^out times
@@ -1040,8 +1059,8 @@ def compute_out_terms(cosmo, ell_1d, chi_max, shells, mode="exact", cl_cached=No
 
     if chi_max is None:
         chi_max = a2chi(cosmo, jnp.asarray(1.0 / (1.0 + shells["z_source"])))
-    left, cross, auto = _outside_model_spectra(cosmo, ell_1d, **shells, chi_max=chi_max)
-    return (left if window2 is None else left * window2), _gain(cross, auto)
+    left, cross, auto, held = _outside_model_spectra(cosmo, ell_1d, **shells, chi_max=chi_max)
+    return (left if window2 is None else left * window2), _shell_gains(cross, auto, held, ell_1d)
 
 
 def compute_cl_out(cosmo, ell_1d, chi_max, shells, mode="exact", cl_cached=None, window2=None):

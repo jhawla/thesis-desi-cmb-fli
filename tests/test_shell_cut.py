@@ -14,7 +14,6 @@ from test_born_shells import _cfg, _limber
 
 from desi_cmb_fli.bricks import get_cosmology, lin_power_interp
 from desi_cmb_fli.cmb_lensing import (
-    add_ell_filtered,
     compute_cl_out,
     compute_cl_outside_model,
     compute_out_terms,
@@ -227,41 +226,53 @@ def test_the_covariance_term_is_the_exact_projection_where_limber_fails():
     assert abs(projection[-1] - 1.0) < 0.02
 
 
-def test_the_out_of_model_gain_is_the_regression_of_the_left_out_matter_on_the_model():
-    model = FieldLevelModel(**_cfg(cmb_shell_weights="linear", cmb_shell_kmax=0.05))
+def test_the_gain_of_each_shell_is_the_regression_of_the_left_out_matter_on_the_shells():
+    model = FieldLevelModel(**_cfg(cmb_shell_weights="linear", cmb_shell_kmax=0.05, cmb_n_shells=12))
     taper = model.cmb_shell_taper
     cosmo = get_cosmology(**model.loc_fid)
     ell = model.ell_1d
+    n = model.cmb_n_shells
 
     def gain(held):
-        return compute_out_terms(cosmo, ell, model.chi_high_z_max,
-                                 model.cmb_shells | {"taper": held}, mode="exact")[1]
+        return np.asarray(compute_out_terms(cosmo, ell, model.chi_high_z_max,
+                                            model.cmb_shells | {"taper": held}, mode="exact")[1])
 
     np.testing.assert_allclose(model.cmb_out_gain, gain(taper), rtol=1e-10)
-    # the end ramps alone make the left-out matter overlap the model's
-    full = gain(None)
-    assert np.all(full[2:] > 1.0)
-    # every shell held at F: the model's kernel times F, its overlap with the map's alike, gain / F
-    np.testing.assert_allclose(gain(np.full_like(taper, 0.5))[2:], 2.0 * full[2:], rtol=1e-10)
-    # a shell inside its taper (held at 0.5) raises the gain
+    assert model.cmb_out_gain.shape == (n, ell.size)
+    # every shell held whole: only the end ramps are left out, and they overlap the end shells
+    whole = gain(None)
+    assert np.all(whole[:, :2] == 1.0)
+    end = np.abs(whole[[0, -1], 2:] - 1.0).max()
+    assert end > 1e-2 and np.abs(whole[2:-2, 2:] - 1.0).max() < 0.2 * end
+    # every shell held at F: the matter left out inside the shells is (1 - F) / F of what they hold,
+    # so a shell away from the ends takes the gain 1 / F
+    np.testing.assert_allclose(gain(np.full_like(taper, 0.5))[3:-3, 2:], 2.0, rtol=1e-2)
+    # one shell inside its taper: its gain undoes the taper, a shell held whole away from it keeps 1
     half = np.ones_like(taper)
-    half[1] = 0.5
-    assert np.all(gain(half)[2:] > full[2:])
+    half[n // 2] = 0.5
+    g = gain(half)
+    np.testing.assert_allclose(g[n // 2, 2:], 2.0, rtol=2e-2)
+    assert np.abs(g[n // 2 + 3 : -2, 2:] - 1.0).max() < 0.2 * end
 
 
-def test_the_model_mean_applies_the_gain_per_multipole():
-    model = FieldLevelModel(**_cfg(cmb_shell_weights="linear", cmb_shell_kmax=0.05))
-    kappa = np.asarray(_truth(model)["kappa_pred"])
-    mean = np.asarray(model.kappa_mean(jnp.asarray(kappa)))
-    nside, lmax = model.cmb_proj_nside, 2 * model.cmb_proj_nside
-    a_k, a_m = hp.map2alm(kappa, lmax=lmax, iter=3), hp.map2alm(mean, lmax=lmax, iter=3)
-    ratio = (hp.alm2cl(a_m, a_k) / hp.alm2cl(a_k))[2 : nside + 1]
-    np.testing.assert_allclose(ratio, model.cmb_out_gain[2 : nside + 1], rtol=2e-2)
-    # without the gain the map is untouched
-    rng = np.random.default_rng(1)
-    m = jnp.asarray(rng.normal(size=12 * nside**2))
-    np.testing.assert_array_equal(np.asarray(add_ell_filtered(m, np.zeros(lmax + 1), nside)),
-                                  np.asarray(m))
+def test_cut_shells_adds_each_shells_gain_to_the_mean():
+    nside, lmax = 16, 32
+    rng = np.random.default_rng(2)
+    shells = jnp.asarray(rng.normal(size=(3, 12 * nside**2)))
+    taper = np.ones((3, lmax + 1))
+    taper[0, 20:] = 0.0  # shell 0 cut, shell 1 held whole with a gain, shell 2 untouched
+    gain = np.ones((3, 25))
+    gain[0, 2:], gain[1, 2:] = 1.5, 1.2
+    pred, mean = cut_shells(shells, taper, nside, jnp.asarray(gain), [0, 1])
+    # the model's map is unchanged; the mean adds each shell's held part times (gain - 1), the gain
+    # being 1 above its multipoles, so an uncut shell goes through the round trip by its gain only
+    np.testing.assert_array_equal(np.asarray(pred), np.asarray(cut_shells(shells, taper, nside)))
+    delta = np.zeros(shells.shape[1])
+    for s in (0, 1):
+        fl = taper[s] * (np.pad(gain[s], (0, lmax + 1 - gain.shape[1]), constant_values=1.0) - 1.0)
+        alm = hp.map2alm(np.asarray(shells[s]), lmax=lmax, iter=0)
+        delta += hp.alm2map(hp.almxfl(alm, fl), nside, lmax=lmax)
+    np.testing.assert_allclose(np.asarray(mean) - np.asarray(pred), delta, atol=1e-10)
 
 
 def test_under_exact_the_gain_follows_the_cosmology_from_the_same_pass_as_the_term():
@@ -276,7 +287,7 @@ def test_under_exact_the_gain_follows_the_cosmology_from_the_same_pass_as_the_te
     np.testing.assert_allclose(np.asarray(gain), np.asarray(model.cmb_out_gain), rtol=1e-10)
     np.testing.assert_allclose(np.asarray(cl), np.asarray(model.cl_out_cached), rtol=1e-8)
     _, other = terms(Omega_m=0.35)
-    assert np.max(np.abs(np.asarray(other) - np.asarray(gain))[2:]) > 0
+    assert np.max(np.abs(np.asarray(other) - np.asarray(gain))[:, 2:]) > 0
     # under 'fixed' both come from the cache
     cl_f, gain_f = compute_out_terms(None, model.ell_1d, None, model.cmb_shells, mode="fixed",
                                      cl_cached=model.cl_out_cached, gain_cached=model.cmb_out_gain)
@@ -292,7 +303,7 @@ def test_pixel_exact_carries_the_gain_and_refuses_what_it_cannot_hold():
     model.condition({"kappa_obs": truth["kappa_obs"]})
     model.block(hide_det=False)
     tr = trace(seed(model.model, 0)).get_trace()
-    # the likelihood's mean is the model map times the gain, on the observed pixels' KL modes
+    # the likelihood's mean is the shells times their gains, on the observed pixels' KL modes
     mean, pred = np.asarray(tr["kappa_mean"]["value"]), np.asarray(tr["kappa_pred"]["value"])
     assert not np.allclose(mean, pred)
     np.testing.assert_allclose(np.asarray(tr["kappa_obs"]["fn"].loc),

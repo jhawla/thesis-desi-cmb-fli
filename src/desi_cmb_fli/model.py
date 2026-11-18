@@ -631,23 +631,6 @@ class Model:
         tr = trace(seed(condition(self._model, data=latents), rng_seed=0)).get_trace()
         return self.pack_kappa_obs(tr["kappa_mean"]["value"])
 
-    def kappa_mean(self, kappa_pred, gain=None):
-        """The data map's kappa expected given the model's ``kappa_pred``: times the out-of-model
-        gain per multipole (l <= cmb_lmax; the fiducial one if ``gain`` is None, 1 above), on the
-        full projection sphere before any mask (docs/pipeline.md 3.2). The likelihood records it
-        as the deterministic site ``kappa_mean``, at the sampled cosmology under 'exact'."""
-        gain = getattr(self, "cmb_out_gain", None) if gain is None else gain
-        if gain is None:
-            return kappa_pred
-        from desi_cmb_fli.cmb_lensing import add_ell_filtered
-
-        fl = (
-            jnp.zeros(2 * int(self.cmb_proj_nside) + 1)
-            .at[: len(self.ell_1d)]
-            .set(jnp.asarray(gain) - 1.0)
-        )
-        return add_ell_filtered(kappa_pred, fl, self.cmb_proj_nside)
-
     ############
     # Wrappers #
     ############
@@ -1015,6 +998,7 @@ class FieldLevelModel(Model):
             import healpy as hp
 
             from desi_cmb_fli.cmb_lensing import (
+                GAIN_ROW_TOL,
                 _box_ray_intervals,
                 bilinear_window,
                 compute_out_terms,
@@ -1257,6 +1241,7 @@ class FieldLevelModel(Model):
             self.cmb_los_window2 = None
             self.cmb_los_limber = None
             self.cmb_out_gain = None
+            self.cmb_gain_rows = None
 
             if self.cl_out_mode not in ("exact", "fixed"):
                 raise ValueError(
@@ -1300,8 +1285,8 @@ class FieldLevelModel(Model):
                 )
 
                 # At the fiducial in every mode: the likelihood under 'fixed', the diagnostics. The
-                # matter left out is correlated with the model's: the data map's expected kappa is
-                # the model's times the gain (3.2).
+                # matter left out is correlated with the shells that hold it in part: the data map's
+                # expected kappa is each shell times its gain (3.2).
                 self.cl_out_cached, self.cmb_out_gain = compute_out_terms(
                     cosmo_fid,
                     self.ell_1d,
@@ -1314,10 +1299,11 @@ class FieldLevelModel(Model):
                     f"  C_l^out at the fiducial (mode={self.cl_out_mode}, "
                     f"chi={self.chi_boundary:.0f}->{chi_high_z_upper:.0f} Mpc/h)"
                 )
-                g = np.asarray(self.cmb_out_gain)[2:]
+                dev = np.abs(np.asarray(self.cmb_out_gain) - 1.0).max(axis=1)
+                self.cmb_gain_rows = np.flatnonzero(dev > GAIN_ROW_TOL)
                 print(
-                    f"  Out-of-model gain 1 + C^BM/C^MM: {g.min():.4f} ... {g.max():.4f} "
-                    f"(l 2-{self.cmb_lmax})"
+                    f"  Out-of-model gain per shell: {self.cmb_gain_rows.size} of {dev.size} shells "
+                    f"take one (shells {self.cmb_gain_rows.tolist()}), the others are held whole"
                 )
 
             if self.cmb_likelihood_mode == "pixel_exact":
@@ -1912,13 +1898,9 @@ class FieldLevelModel(Model):
                     self.t_exit,
                     return_full=True,
                     shell_weights=self.cmb_shell_weights,
-                    per_shell=self.cmb_shell_taper is not None,
+                    per_shell=self.cmb_shell_taper is not None or self.full_los_correction,
                 )
-                if self.cmb_shell_taper is not None:
-                    kappa_pred = cut_shells(kappa_pred, self.cmb_shell_taper, self.cmb_proj_nside)
-
-                kappa_pred = deterministic("kappa_pred", kappa_pred)
-                # Out-of-model term of the CMB covariance and the gain of the mean (3.2).
+                # Out-of-model term of the CMB covariance and the gain of each shell in the mean (3.2).
                 cl_out_1d, gain = (None, None)
                 if self.full_los_correction:
                     cl_out_1d, gain = compute_out_terms(
@@ -1931,7 +1913,18 @@ class FieldLevelModel(Model):
                         gain_cached=self.cmb_out_gain,
                         window2=self.cmb_los_window2 * self.cmb_los_limber,
                     )
-                kappa_mean = deterministic("kappa_mean", self.kappa_mean(kappa_pred, gain))
+                kappa_mean = kappa_pred
+                if self.cmb_shell_taper is not None or self.full_los_correction:
+                    taper = self.cmb_shell_taper
+                    if taper is None:
+                        taper = np.ones((len(self.cmb_r_shells), 2 * int(self.cmb_proj_nside) + 1))
+                    if gain is None:
+                        kappa_pred = kappa_mean = cut_shells(kappa_pred, taper, self.cmb_proj_nside)
+                    else:
+                        kappa_pred, kappa_mean = cut_shells(kappa_pred, taper, self.cmb_proj_nside,
+                                                            gain, self.cmb_gain_rows)
+                kappa_pred = deterministic("kappa_pred", kappa_pred)
+                kappa_mean = deterministic("kappa_mean", kappa_mean)
 
                 if self.cmb_likelihood_mode == "pixel_exact":
                     loc_k = self.cmb_kl_U.T @ kappa_mean[self.cmb_obs_pix]

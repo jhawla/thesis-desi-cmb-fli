@@ -16,7 +16,11 @@ galaxies, Abacus κ × model galaxies), which say on which side a departure sits
 Galaxy maps from the galaxies themselves (`validation.galaxy_healpix_delta`: catalogue counts for
 Abacus with their pixel window and shot noise removed, bias-weighted particles spread bilinearly for
 the model), κ maps on the projection sphere (both carry its bilinear window, which cancels in the
-ratios), all band-limited to ℓ ≤ 2·cmb_nside on the κ mask.
+ratios), all band-limited to ℓ ≤ 2·cmb_nside on the κ mask. The figure shows both spectra and their
+ratio, the ratio also with the galaxy maps the likelihood holds: the final-grid count meshes of the
+data and of the model projected along each ray (the modes of the final cube only). Above ℓ ≈ 160 the
+per-shell cut of κ removes matter that galaxies beyond the cube still trace, which only the first
+version sees.
 
     python scripts/validate_joint_from_ic.py \\
         --config configs/inference/abacus/abacus_joint_so_cosmo_box5000_m100_ph202.yaml \\
@@ -35,10 +39,12 @@ import jax.random as jr
 import matplotlib
 import numpy as np
 import yaml
+from scipy.ndimage import map_coordinates
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
+from desi_cmb_fli.bricks import band_limit, get_cosmology  # noqa: E402
 from desi_cmb_fli.cmb_lensing import (  # noqa: E402
     bilinear_window,
     load_abacus_galaxy_observation,
@@ -142,23 +148,76 @@ def main():
 
     ref = band(res["kg_model_model"])
     sigma = np.array([np.sqrt(np.sum((w**2 * var_l)[m])) / np.sum(w[m]) for m in sel]) / ref
+
+    # The galaxies as the likelihood holds them: the final-grid count meshes (data, and the model's
+    # at the same biases) projected along each ray of the projection sphere, trilinear on the cell
+    # nodes, survey cells only; they hold only the modes of the final cube.
+    obs3, mask3 = np.asarray(tr["obs"], float), np.asarray(tr["gxy_occ_mask3d"], bool)
+    nbar3 = np.asarray(model.gxy_count * jnp.asarray(model.selec_mesh), float)
+    truth = {**cfg.get("truth_params", {}), **cfg.get("abacus_truth_params", {})}
+    cosmo = get_cosmology(Omega_m=float(truth["Omega_m"]), sigma8=float(truth["sigma8"]))
+    f = model.evolve((cosmo, biases, {"init_mesh": jnp.asarray(ic)}, {"fNL": 0.0}))
+    m3 = np.asarray(model.gxy_count * band_limit(f["gxy_paint"] * jnp.asarray(model.selec_paint),
+                                                 model._sim_mesh), float)
+    cell = float(model.box_shape[0]) / obs3.shape[0]
+    obsv = np.asarray(model.observer_position, float)
+    chi_s = np.linspace(1080.0, 2460.0, 139)
+    vec = np.array(hp.pix2vec(nside_p, np.arange(hp.nside2npix(nside_p)))).T
+
+    def project(field):
+        num, den = np.zeros(len(vec)), np.zeros(len(vec))
+        fz, nz = np.where(mask3, field - nbar3, 0.0), np.where(mask3, nbar3, 0.0)
+        for s0 in range(0, len(vec), 32768):
+            v = vec[s0 : s0 + 32768]
+            pts = ((obsv + chi_s[None, :, None] * v[:, None, :]) / cell).reshape(-1, 3).T
+            num[s0 : s0 + 32768] = map_coordinates(fz, pts, order=1, mode="grid-wrap").reshape(len(v), -1).sum(1)
+            den[s0 : s0 + 32768] = map_coordinates(nz, pts, order=1, mode="grid-wrap").reshape(len(v), -1).sum(1)
+        return num / np.maximum(den, 1e-12)
+
+    full = np.ones(hp.nside2npix(nside_p), bool)
+    gl = {"model": project(m3), "data": project(obs3)}
+    _, lp_dd = cl(kd, kmask, gl["data"], full)
+    _, lp_mm = cl(km, kmask, gl["model"], full)
+    _, lg_mm = cl(gl["model"], full, None, None)
+    _, lg_dd = cl(gl["data"], full, None, None)
+    _, lg_md = cl(gl["model"], full, gl["data"], full)
+    e_gl = lg_dd - 2 * lg_md + lg_mm  # the data map keeps its shot noise: it is part of the error
+    var_lp = (e_k * lg_mm + kk_mm * e_gl + e_k * e_gl) / ((2 * ell + 1) * float(kmask.mean()))
+    ref_lp = band(lp_mm)
+    sigma_lp = np.array([np.sqrt(np.sum((w**2 * var_lp)[m])) / np.sum(w[m]) for m in sel]) / ref_lp
     out = {
         "config": args.config, "profile": str(args.profile), "ell_edges": edges.tolist(), "fsky": fsky,
         "kg_data_over_model": (band(res["kg_data_data"]) / ref).tolist(),
         "sigma": sigma.tolist(),
         "kg_modelkappa_datagal_over_model": (band(res["kg_model_data"]) / ref).tolist(),
         "kg_datakappa_modelgal_over_model": (band(res["kg_data_model"]) / ref).tolist(),
+        "kg_model": ref.tolist(),
+        "kg_data": band(res["kg_data_data"]).tolist(),
+        "kg_data_over_model_final_cube": (band(lp_dd) / ref_lp).tolist(),
+        "sigma_final_cube": sigma_lp.tolist(),
     }
     for k, v in out.items():
         if isinstance(v, list) and k != "ell_edges":
             print(f"{k:36s} " + " ".join(f"{x:6.3f}" for x in v), flush=True)
 
-    fig, ax = plt.subplots(figsize=(5.5, 3.6))
-    ax.axhline(1, color=INK, lw=0.8)
-    ax.errorbar(centre, out["kg_data_over_model"], yerr=sigma, xerr=[centre - edges[:-1], edges[1:] - centre],
-                fmt="o", color=BLUE, ms=5, lw=1.2, capsize=0)
-    ax.set(xscale="log", xlabel=r"$\ell$", ylabel=r"$C_\ell^{\kappa g}$ Abacus / model")
-    ax.grid(alpha=0.2)
+    xerr = [centre - edges[:-1], edges[1:] - centre]
+    fig, (ax, axr) = plt.subplots(2, 1, figsize=(5.5, 5.2), sharex=True,
+                                  gridspec_kw={"height_ratios": [1.3, 1]})
+    ax.errorbar(centre, centre * np.asarray(out["kg_data"]), xerr=xerr, fmt="o", color=BLUE, ms=5,
+                lw=1.2, label="AbacusLensing × LRG")
+    ax.errorbar(centre, centre * np.asarray(out["kg_model"]), xerr=xerr, fmt="s", color=INK, ms=4,
+                lw=1.0, mfc="none", label="model from the Abacus ICs")
+    ax.set(ylabel=r"$\ell\,C_\ell^{\kappa g}$")
+    ax.legend(frameon=False, fontsize=8)
+    axr.axhline(1, color=INK, lw=0.8)
+    axr.errorbar(centre, out["kg_data_over_model"], yerr=sigma, xerr=xerr, fmt="o", color=BLUE, ms=5,
+                 lw=1.2, capsize=0, label="galaxy maps from the galaxies")
+    axr.errorbar(centre * 1.06, out["kg_data_over_model_final_cube"], yerr=sigma_lp, fmt="o", color=BLUE,
+                 mfc="white", ms=5, lw=1.0, capsize=0, label="galaxies on the likelihood's grid")
+    axr.set(xscale="log", xlabel=r"$\ell$", ylabel="Abacus / model")
+    axr.legend(frameon=False, fontsize=8)
+    for a_ in (ax, axr):
+        a_.grid(alpha=0.2)
     fig.tight_layout()
     odir = REPO / "figures" / "joint_ic_test"
     odir.mkdir(parents=True, exist_ok=True)
