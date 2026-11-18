@@ -56,3 +56,39 @@ def test_pipeline_grids():
     # harmonic 3 on the Nyquist plane
     assert lattice_aliases(200, 140, 80) == [(3, 4, 40)]
     assert not lattice_aliases(324, 140, 80) and lattice_aliases(300, 140, 80)
+
+
+def test_mesh100_grids():
+    # 280 particles on a 280-cell paint grid, final 100: harmonic 2 on the even fold 2, in phase
+    assert (2, 2, 0) in lattice_aliases(280, 280, 100)
+    # the same particles on a 260- or 300-cell paint grid: no harmonic at index 0
+    for paint in (260, 300):
+        assert all(a != 0 for *_, a in lattice_aliases(280, paint, 100))
+    # 560 particles (twice the paint grid): harmonic 1 on the even fold 2
+    assert (1, 2, 0) in lattice_aliases(560, 280, 100)
+
+
+def _galaxy_model(ptcl_oversamp, paint_oversamp):
+    from desi_cmb_fli.model import FieldLevelModel, default_config
+
+    config = default_config.copy()
+    config.update(
+        mesh_shape=(10, 10, 10),
+        box_shape=(500.0, 500.0, 500.0),
+        galaxies_enabled=True,
+        init_oversamp=2.4,
+        evol_oversamp=ptcl_oversamp,
+        ptcl_oversamp=ptcl_oversamp,
+        paint_oversamp=paint_oversamp,
+    )
+    return FieldLevelModel(**config)
+
+
+def test_model_refuses_a_commensurate_lattice():
+    # 28 particles on a 28-cell paint grid (the mesh-100 production ratio, scaled down)
+    with pytest.raises(ValueError, match="commensurate"):
+        _galaxy_model(2.8, 2.8)
+
+
+def test_model_accepts_an_incommensurate_lattice():
+    _galaxy_model(2.8, 2.6)

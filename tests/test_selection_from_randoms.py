@@ -49,8 +49,9 @@ def faked(monkeypatch):
     def catalog2positions(path, cosmo, observer_position, box_shape, mesh_shape, z_range=None):
         return _cell_positions(N_GXY, 0, mesh_shape), N_GXY, 100.0, 900.0
 
-    def randoms2positions(path, cosmo, observer_position, box_shape, mesh_shape,
-                          z_range=None, row_range=None):
+    def randoms2positions(
+        path, cosmo, observer_position, box_shape, mesh_shape, z_range=None, row_range=None
+    ):
         lo, hi = (0, N_RAND) if row_range is None else row_range
         return _cell_positions(N_RAND, 1, mesh_shape)[lo:hi], hi - lo
 
@@ -112,3 +113,21 @@ def test_lowering_the_completeness_cut_keeps_the_likelihood_finite(model, faked,
     nbar = float(model.gxy_count) * np.asarray(model.selec_mesh)
     assert np.all(np.isfinite(np.asarray(truth["obs"])))
     assert np.all(nbar[mask] > 0.0)
+
+
+def test_selection_without_counting_noise_recovers_footprint_and_profile():
+    """Poisson randoms on half the sky with a known n(chi): footprint x profile, the noise gone."""
+    n, box = 64, 1000.0
+    x = (np.arange(n) - n / 2) * box / n
+    X, Y, Z = np.meshgrid(x, x, x, indexing="ij")
+    chi = np.sqrt(X**2 + Y**2 + Z**2)
+    profile = np.where((chi > 150) & (chi < 450), 1.0 + 0.5 * np.sin(chi / 60.0), 0.0)
+    expected = 30.0 * profile * (Z > 0)
+    mesh = np.random.default_rng(0).poisson(expected).astype(float)
+    out = cl.selection_without_counting_noise(mesh, np.zeros(3), np.full(3, box))
+    assert np.all(out[Z < -box / n] == 0.0)  # outside the footprint (one cell off its edge)
+    np.testing.assert_allclose(out.sum(), mesh.sum(), rtol=1e-6)
+    core = (Z > 2 * box / n) & (chi > 170) & (chi < 430)
+    # the randoms' map scatters by 1/sqrt(30) about the truth; the rebuilt one by far less
+    assert np.std(mesh[core] / expected[core] - 1) > 0.15
+    assert np.std(out[core] / expected[core] - 1) < 0.03

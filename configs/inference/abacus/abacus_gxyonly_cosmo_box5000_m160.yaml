@@ -24,10 +24,11 @@ model:
   precond: kaiser
   init_oversamp: 1.5
   # Particle count N = evol_oversamp x final cells (even); check before a run (docs/pipeline.md 2.5):
-  #   galaxies: the galaxy profile at the true ICs (scripts/galaxy_likelihood_profile.py) has its minimum in A within 0.02 of 1 (docs/pipeline.md 7.16)
-  evol_oversamp: 1.75  # 280^3 particles, spacing 17.9 Mpc/h: galaxy profile A = 0.999 (pipeline 7.19)
+  #   galaxies: N not commensurate with the paint grid (the model refuses N = paint or 2 x paint) and evolution - init grid >= final/4 (else a warning);
+  #   before a run, scripts/galaxy_likelihood_profile.py --mode newton at the true ICs: A_min within about sigma_A of 1 (docs/pipeline.md 2.5, 7.16)
+  evol_oversamp: 1.75  # 280^3 particles, spacing 17.9 Mpc/h (pipeline 7.19)
   ptcl_oversamp: 1.75
-  paint_oversamp: 1.75
+  paint_oversamp: 1.625  # 260^3 paint grid, not commensurate with the 280^3 particles (pipeline 2.5, 7.16)
   gxy_density: 0.000843318125
   png_type: fNL
 cmb_lensing:

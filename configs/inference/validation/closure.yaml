@@ -27,7 +27,8 @@ model:
   precond: kaiser  # kaiser or kaiser_dyn
   init_oversamp: 1.5   # inferred linear field grid; enlarges the inferred field
   # Particle count N = evol_oversamp x final cells (even); check before a run (docs/pipeline.md 2.5):
-  #   galaxies: the galaxy profile at the true ICs (scripts/galaxy_likelihood_profile.py) has its minimum in A within 0.02 of 1 (docs/pipeline.md 7.16)
+  #   galaxies: N not commensurate with the paint grid (the model refuses N = paint or 2 x paint) and evolution - init grid >= final/4 (else a warning);
+  #   before a run, scripts/galaxy_likelihood_profile.py --mode newton at the true ICs: A_min within about sigma_A of 1 (docs/pipeline.md 2.5, 7.16)
   #   CMB lensing: box / N <= 25 Mpc/h (the model warns otherwise).
   evol_oversamp: 3.7037037037037037  # 200^3 particles (lattice template, pipeline 7.15); add_png runs here too
   ptcl_oversamp: 3.7037037037037037  # particle cloud density

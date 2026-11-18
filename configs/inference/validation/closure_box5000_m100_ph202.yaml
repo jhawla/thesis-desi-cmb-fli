@@ -26,11 +26,12 @@ model:
   precond: kaiser
   init_oversamp: 2.4  # 240^3 initial field, k_N 0.15 h/Mpc, as at mesh 160
   # Particle count N = evol_oversamp x final cells (even); check before a run (docs/pipeline.md 2.5):
-  #   galaxies: the galaxy profile at the true ICs (scripts/galaxy_likelihood_profile.py) has its minimum in A within 0.02 of 1 (docs/pipeline.md 7.16)
+  #   galaxies: N not commensurate with the paint grid (the model refuses N = paint or 2 x paint) and evolution - init grid >= final/4 (else a warning);
+  #   before a run, scripts/galaxy_likelihood_profile.py --mode newton at the true ICs: A_min within about sigma_A of 1 (docs/pipeline.md 2.5, 7.16)
   #   CMB lensing: box / N <= 25 Mpc/h (the model warns otherwise).
   evol_oversamp: 2.8  # 280^3 particles, spacing 17.9 Mpc/h, as at mesh 160: same kappa model (pipeline 7.19)
   ptcl_oversamp: 2.8
-  paint_oversamp: 2.8
+  paint_oversamp: 2.6  # 260^3 paint grid, not commensurate with the 280^3 particles (pipeline 2.5, 7.16)
   gxy_density: 0.000843318125
   png_type: fNL
 cmb_lensing:
@@ -49,20 +50,20 @@ cmb_lensing:
   kl_rcond: 1e-2
   chi_high_z_max: 3750
   observer_mode: center
-truth_params:  # ph202 galaxy profile at A = 1 (figures/galaxy_likelihood_profile/abacus_gxyonly_cosmo_box5000_m100_ph202_amplitude.json, order 2), the held noise
+truth_params:  # ph202 joint minimum at the true ICs, order 3 (figures/galaxy_likelihood_profile/abacus_gxyonly_cosmo_box5000_m100_ph202_newton.json), the held noise
   Omega_m: 0.315192
   sigma8: 0.811355
-  b1: 1.196785
-  b1_alpha: 1.010338
-  b2: 0.344791
-  bs2: -0.203407
-  bn2: 17.780892
-  bnpar: -28.665498
-  b3: 0.0
-  bds2: 0.0
-  bs3: 0.0
-  s_e: 0.9607
-  s_ed: 0.2362
+  b1: 1.132233
+  b1_alpha: 1.078765
+  b2: 0.400050
+  bs2: -0.169056
+  bn2: -1.730368
+  bnpar: -14.556336
+  b3: -1.090335
+  bds2: -0.450996
+  bs3: 0.549191
+  s_e: 0.8999
+  s_ed: 0.2137
   fNL: 0.0
 latents:
   b3:  # preconditioning unit at the posterior width measured at the true ICs (b3, bds2, bs3 curvature, pipeline 7.19)
@@ -126,16 +127,16 @@ latents:
     scale_fid: 1.0
     loc_fid: 0.0
   # Galaxy noise (gxy_stoch_noise): informative prior from the Abacus LRG residual at the true ICs, the
-  # maximum-likelihood s_e, s_ed (0.920, 0.229 at mesh 100; 0.924, 0.234 at mesh 160), width the spread of
+  # maximum-likelihood s_e, s_ed (0.901, 0.221 ph201; 0.900, 0.214 ph202, at mesh 100), width the spread of
   # the noise level across redshift shells; free, s_e and s_ed fall and the chains over-fit (pipeline 3.1, 7.19)
-  s_e:  # ph202 fit at the true ICs with the order-3 biases refitted: 0.9607, 0.2362 (logs/ph202_prep/refit.log; ph201 0.914, 0.227)
-    loc: 0.961
+  s_e:  # fit at the true ICs, final grids and noise-free selection, order 3 (galaxy_likelihood_profile.py --mode newton, pipeline 7.19): ph202 0.900, 0.214; ph201 0.901, 0.221
+    loc: 0.9
     scale: 0.03
-    loc_fid: 0.961
+    loc_fid: 0.9
   s_ed:
-    loc: 0.236
+    loc: 0.214
     scale: 0.03
-    loc_fid: 0.236
+    loc_fid: 0.214
 mcmc:
   num_warmup: 8192
   fixed_params:  # Omega_m and sigma8 inferred; fNL at its truth; the noise held at its ph202 fit (abacus_truth_params), as the galaxies alone (_noiseheld): under its prior s_e collapses (pipeline 3.1, 7.19)
@@ -154,8 +155,8 @@ observation_mode: closure
 closure_geometry_from_abacus: true  # the ph202 randoms set the selection; the data are generated from truth_params
 closure_gxy_density_scale: 1.0
 abacus_truth_params:
-  s_e: 0.9607  # ph202 fit at the true ICs (logs/ph202_prep/refit.log), the held noise
-  s_ed: 0.2362
+  s_e: 0.8999  # ph202 fit at the true ICs (galaxy_likelihood_profile.py --mode newton, pipeline 7.19), the held noise
+  s_ed: 0.2137
   Omega_m: 0.315192
   sigma8: 0.811355
   fNL: 0.0

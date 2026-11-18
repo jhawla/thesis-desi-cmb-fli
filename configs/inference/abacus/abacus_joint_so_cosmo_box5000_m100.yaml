@@ -15,6 +15,7 @@ model:
   galaxies_enabled: true
   gxy_stoch_noise: true  # galaxy noise std s_e (1 + s_ed max(delta_m, -1)) sqrt(n̄S): s_e, s_ed inferred (true) or 1, 0 (false), pipeline 3.1
   bias_evolution: redshift  # redshift: on the light cone b1 evolves with b1_alpha, b2 and bs2 follow b1 (quenched-galaxy relations, arXiv:2412.06886); none: constant biases (pipeline 2.4)
+  bias_order: 3  # third-order Lagrangian biases b3, bds2, bs3: the amplitude at the true ICs needs them at mesh 100 (pipeline 2.4, 7.16, 7.19)
   gxy_ngbar_free: false
   lightcone: true
   a_obs: null
@@ -24,11 +25,12 @@ model:
   precond: kaiser
   init_oversamp: 2.4  # 240^3 initial field, k_N 0.15 h/Mpc, as at mesh 160
   # Particle count N = evol_oversamp x final cells (even); check before a run (docs/pipeline.md 2.5):
-  #   galaxies: the galaxy profile at the true ICs (scripts/galaxy_likelihood_profile.py) has its minimum in A within 0.02 of 1 (docs/pipeline.md 7.16)
+  #   galaxies: N not commensurate with the paint grid (the model refuses N = paint or 2 x paint) and evolution - init grid >= final/4 (else a warning);
+  #   before a run, scripts/galaxy_likelihood_profile.py --mode newton at the true ICs: A_min within about sigma_A of 1 (docs/pipeline.md 2.5, 7.16)
   #   CMB lensing: box / N <= 25 Mpc/h (the model warns otherwise).
   evol_oversamp: 2.8  # 280^3 particles, spacing 17.9 Mpc/h, as at mesh 160: same kappa model (pipeline 7.19)
   ptcl_oversamp: 2.8
-  paint_oversamp: 2.8
+  paint_oversamp: 2.6  # 260^3 paint grid, not commensurate with the 280^3 particles (pipeline 2.5, 7.16)
   gxy_density: 0.000843318125
   png_type: fNL
 cmb_lensing:
@@ -56,6 +58,12 @@ truth_params:
   bn2: 0.0
   fNL: 0.0
 latents:
+  b3:  # preconditioning unit at the posterior width measured at the true ICs (b3, bds2, bs3 curvature, pipeline 7.19)
+    scale_fid: 0.02
+  bds2:
+    scale_fid: 0.017
+  bs3:
+    scale_fid: 0.037
   fNL:
     loc: 0.0
     scale: 10000.0
@@ -111,16 +119,16 @@ latents:
     scale_fid: 1.0
     loc_fid: 0.0
   # Galaxy noise (gxy_stoch_noise): informative prior from the Abacus LRG residual at the true ICs, the
-  # maximum-likelihood s_e, s_ed (0.920, 0.229 at mesh 100; 0.924, 0.234 at mesh 160), width the spread of
+  # maximum-likelihood s_e, s_ed (0.901, 0.221 ph201; 0.900, 0.214 ph202, at mesh 100), width the spread of
   # the noise level across redshift shells; free, s_e and s_ed fall and the chains over-fit (pipeline 3.1, 7.19)
   s_e:
-    loc: 0.92
+    loc: 0.901
     scale: 0.03
-    loc_fid: 0.92
+    loc_fid: 0.901
   s_ed:
-    loc: 0.23
+    loc: 0.221
     scale: 0.03
-    loc_fid: 0.23
+    loc_fid: 0.221
 mcmc:
   num_warmup: 8192
   fixed_params:  # Omega_m and sigma8 inferred, fNL at its truth

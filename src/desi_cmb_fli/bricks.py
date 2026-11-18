@@ -922,9 +922,10 @@ def lattice_aliases(ptcl, paint, final, interlace_order=INTERLACE_ORDER, m_max=3
     Harmonic ``m`` of ``ptcl`` particles per side, folded by ``n`` paint periods, lands at index
     ``a = m * ptcl - n * paint``; interlacing of order ``p`` cancels the folds with ``n`` not a
     multiple of ``p``; the Fourier crop keeps ``|a| <= final / 2`` (the Nyquist plane included).
-    Returns the surviving ``(m, n, a)``: a deterministic lattice pattern in the unmasked painted field.
-    It does not decide the galaxy likelihood, whose selection multiplies the field before the crop
-    (docs/pipeline.md 2.5, 7.16).
+    Returns the surviving ``(m, n, a)``. ``a = 0`` (the lattice commensurate with the paint grid):
+    the displaced lattice's echo lands on the field's own wavevector and adds to it in phase, which
+    biases the galaxy amplitude (the model refuses it for m <= 2). ``a != 0``: the echo lands on another
+    wavevector, a pattern damped by the displacements (docs/pipeline.md 2.5, 7.16).
     """
     out = []
     for m in range(1, m_max + 1):

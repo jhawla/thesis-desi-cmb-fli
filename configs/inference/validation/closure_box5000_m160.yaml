@@ -28,11 +28,12 @@ model:
   precond: kaiser  # kaiser or kaiser_dyn
   init_oversamp: 1.5   # inferred linear field grid; enlarges the inferred field
   # Particle count N = evol_oversamp x final cells (even); check before a run (docs/pipeline.md 2.5):
-  #   galaxies: the galaxy profile at the true ICs (scripts/galaxy_likelihood_profile.py) has its minimum in A within 0.02 of 1 (docs/pipeline.md 7.16)
+  #   galaxies: N not commensurate with the paint grid (the model refuses N = paint or 2 x paint) and evolution - init grid >= final/4 (else a warning);
+  #   before a run, scripts/galaxy_likelihood_profile.py --mode newton at the true ICs: A_min within about sigma_A of 1 (docs/pipeline.md 2.5, 7.16)
   #   CMB lensing: box / N <= 25 Mpc/h (the model warns otherwise).
-  evol_oversamp: 1.75  # 280^3 particles, spacing 17.9 Mpc/h: galaxy profile A = 0.999 (pipeline 7.19)
+  evol_oversamp: 1.75  # 280^3 particles, spacing 17.9 Mpc/h (pipeline 7.19)
   ptcl_oversamp: 1.75  # particle cloud density
-  paint_oversamp: 1.75  # CIC paint mesh
+  paint_oversamp: 1.625  # 260^3 paint grid, not commensurate with the 280^3 particles (pipeline 2.5, 7.16)
   gxy_density: 8.43318125e-4 # used only in closure mode; overwritten by load_abacus_galaxy_observation in abacus mode
   # los: null  # Disable RSD (comment out to enable RSD)
   png_type: fNL  # 'fNL' = universality (b_phi/b_phi_delta derived from b1/b2); 'fNL_bias' = infer fNL, fNL*b_phi, fNL*b_phi_delta as free params. null/omit = Gaussian

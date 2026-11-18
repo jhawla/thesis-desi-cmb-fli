@@ -1507,12 +1507,16 @@ class FieldLevelModel(Model):
         return delta if mask is None else jnp.where(jnp.asarray(mask), delta, 0.0)
 
     def _check_lattice_aliases(self):
-        """Report the lattice harmonics that land in the unmasked painted band.
+        """Refuse a particle lattice commensurate with the paint grid; report the other aliases.
 
-        The galaxy paint (``paint_and_deconv``) interlaces unless the paint, final and evolution grids
-        coincide; ``lattice_aliases`` gives the harmonics that survive (docs/pipeline.md 2.5). They
-        do not decide the galaxy likelihood, where the selection multiplies the field before the crop:
-        the galaxy profile at the true ICs does (``scripts/galaxy_likelihood_profile.py``, §7.16).
+        ``lattice_aliases`` lists the lattice harmonics that the interlaced paint folds into the
+        final band (docs/pipeline.md 2.5). A first or second harmonic landing at index 0 adds to
+        the field in phase at every wavevector and biases the galaxy amplitude: with an oversampled
+        paint grid, whose size is free, it is an error. The others (incoherent beats, higher
+        harmonics damped by the displacements) and the plain grid (paint = final = evolution,
+        commensurate by construction) are reported. The bias products and the 2LPT
+        source, computed on the evolution grid, alias into the final band from index
+        ``evol - init``; a warning when that is below a quarter of the final grid.
         """
         plain = np.array_equal(self.paint_shape, self.sim_mesh_shape) and np.array_equal(
             self.evol_shape, self.sim_mesh_shape
@@ -1524,12 +1528,33 @@ class FieldLevelModel(Model):
         }
         for ptcl, paint, final in sorted(axes):
             hits = lattice_aliases(ptcl, paint, final, order)
+            coherent = [(m, n, a) for m, n, a in hits if a == 0 and m <= 2]
+            if not plain and coherent:
+                ok = [p for d in range(2, paint, 2) for p in (paint - d, paint + d)
+                      if p > final and abs(p - ptcl) >= final / 10
+                      and all(abs(a) >= final / 10 for *_, a in lattice_aliases(ptcl, p, final))]
+                raise ValueError(
+                    f"{ptcl} particles per side are commensurate with the {paint}-cell paint grid "
+                    f"(harmonic m, fold n, index: {coherent}): the lattice "
+                    "adds to the galaxy field in phase and biases its amplitude (docs/pipeline.md "
+                    f"2.5, 7.16). Nearest paint grids without it: {ok[:2]} cells, i.e. "
+                    f"paint_oversamp {[round(p / final, 4) for p in ok[:2]]}."
+                )
             if hits:
                 print(
-                    f"  Lattice harmonics in the unmasked band ({ptcl} particles, paint {paint}, "
-                    f"final {final}; harmonic m, fold n, index): {hits}. Validate the particle "
-                    "count with scripts/galaxy_likelihood_profile.py (docs/pipeline.md 2.5, 7.16)."
+                    f"  Lattice harmonics in the final band ({ptcl} particles, paint {paint}, "
+                    f"final {final}; harmonic m, fold n, index): {hits} (docs/pipeline.md 2.5)."
                 )
+        for evol, init, final in zip(self.evol_shape, self.init_shape, self.sim_mesh_shape, strict=True):
+            if not plain and int(evol) - int(init) < int(final) / 4:
+                warnings.warn(
+                    f"Evolution grid {int(evol)} for an init grid {int(init)}: the bias products "
+                    f"and the 2LPT source alias into the final band ({int(final)} cells) from "
+                    f"index {int(evol) - int(init)}, below a quarter of the grid, which moves the "
+                    "galaxy amplitude at the true ICs (docs/pipeline.md 2.5, 7.16).",
+                    stacklevel=2,
+                )
+                break
 
     def paint_and_deconv(self, pos, weights=None, from_shape=None, crop=True):
         """CIC paint + interlace + deconvolve, with optional oversampled Fourier crop.

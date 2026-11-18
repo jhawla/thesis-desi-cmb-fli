@@ -20,6 +20,7 @@ from desi_cmb_fli.cmb_lensing import (
     kappa_radial_window,
     lensing_kernel,
     project_mesh_to_healpix,
+    shell_profiles,
 )
 from desi_cmb_fli.metrics import bin_cl_log, get_cl_healpix, masked_healpix_to_full
 from desi_cmb_fli.nbody import a2g
@@ -787,10 +788,11 @@ def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
       loader's ``bilinear_resample_healpix``.
     * gg and kappa-g: the survey's dN/dchi (``gxy_kernel``), Eulerian bias ``bE`` at the model's
       ``a_fid`` evolving as ``bE (D(a_fid)/D(a))**b1_alpha`` (the model's linear bias), nonlinear
-      P(k); the same k cut in closure, none on data. In closure kappa-g also carries the
-      radial window of the Born shells (``kappa_radial_window``): where the shells start or stop
-      inside the galaxies, the model map does not hold their matter. It leaves out the per-shell
-      multipole cut, which acts on shells mostly nearer than the galaxies.
+      P(k), no k cut: the model's galaxies hold power beyond the init-grid Nyquist (the bias
+      products and the 2LPT source reach twice it). In closure kappa-g carries the radial window
+      of the Born shells (``kappa_radial_window``: where the shells start or stop inside the
+      galaxies, the model map does not hold their matter), each shell times its multipole taper
+      (one window per multipole), and the k cut of the model's kappa.
     * Every curve times the exact-over-Limber ratio of its kernels in linear theory
       (``_exact_over_limber_curves``, the computation of the out-of-model term's ratio): Limber
       misses the radial modes of kernels not wide against chi/ell, and the galaxies' Kaiser term.
@@ -817,6 +819,12 @@ def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
             )
             kappa_window = kappa_radial_window(model.cmb_r_shells, model.cmb_d_r,
                                                model.cmb_shell_weights, support)
+            taper = getattr(model, "cmb_shell_taper", None)
+            if taper is not None:
+                chi_w, p = shell_profiles(model.cmb_r_shells, model.cmb_d_r, model.cmb_shell_weights)
+                t = np.stack([np.interp(ell_theory, np.arange(row.size), row)
+                              for row in np.asarray(taper, dtype=float)])
+                kappa_window = (chi_w, (np.asarray(support, dtype=float)[:, None] * t).T @ p)
             out["cl_kk"] = np.asarray(compute_theoretical_cl_kappa_windowed(
                 cosmo_val, ell_j, model.cmb_r_shells, model.cmb_a_shells, model.cmb_d_r,
                 z_source, shell_weights=support, k_nyq=k_cut,
@@ -834,8 +842,7 @@ def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
         g_fid = a2g(cosmo_val, jnp.asarray(model.a_fid))
         bias_of_a = lambda a: bE * (g_fid / a2g(cosmo_val, a)) ** b1_alpha  # noqa: E731
         out["cl_gg"] = np.asarray(compute_theoretical_cl_gg(
-            cosmo_val, ell_j, chi0, chi1, bE, n_steps=400, bias_of_a=bias_of_a, k_nyq=k_cut,
-            nz=(r, nz)))
+            cosmo_val, ell_j, chi0, chi1, bE, n_steps=400, bias_of_a=bias_of_a, nz=(r, nz)))
         if model.cmb_enabled:
             out["cl_kg"] = np.asarray(compute_theoretical_cl_kg(
                 cosmo_val, ell_j, chi0, chi1, model.cmb_z_source, bE, n_steps=400,

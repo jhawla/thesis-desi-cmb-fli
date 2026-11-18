@@ -979,30 +979,34 @@ def compute_theoretical_cl_kg(
     """C_ell^{kappa g} cross-spectrum via Limber; ``nz`` and ``k_nyq`` as for C_ell^{gg}.
 
     ``kappa_window = (chi, w)`` multiplies the lensing kernel by the radial weight with which the
-    convergence map holds the matter at each distance (``kappa_radial_window``); without it the
-    map is assumed to hold all the matter the galaxies trace.
+    convergence map holds the matter at each distance (``kappa_radial_window``); ``w`` is one row,
+    or one row per ``ell`` when the weight depends on the multipole (the per-shell multipole
+    cut). Without it the map is assumed to hold all the matter the galaxies trace.
     """
     chi_s = jc.background.radial_comoving_distance(cosmo, 1.0 / (1.0 + z_source))[0]
     chi = jnp.linspace(chi_min, chi_max, n_steps)
     a = jc.background.a_of_chi(cosmo, chi)
-    w_kappa = lensing_kernel(cosmo, chi, a, chi_s)
+    ell = jnp.atleast_1d(jnp.asarray(ell, dtype=float))
+    w_kappa = jnp.broadcast_to(lensing_kernel(cosmo, chi, a, chi_s), (ell.size, chi.size))
     if kappa_window is not None:
-        w_kappa = w_kappa * jnp.interp(chi, jnp.asarray(kappa_window[0]),
-                                       jnp.asarray(kappa_window[1]), left=0.0, right=0.0)
+        rows = jnp.atleast_2d(jnp.asarray(kappa_window[1]))
+        held = jax.vmap(lambda row: jnp.interp(chi, jnp.asarray(kappa_window[0]), row,
+                                               left=0.0, right=0.0))(rows)
+        w_kappa = w_kappa * held
     bias = jnp.ones_like(a) * b1 if bias_of_a is None else bias_of_a(a)
     w_g = bias * _galaxy_kernel(chi, chi_min, chi_max, nz)
     pk_fn = nonlinear_power(cosmo)
 
-    def get_cl_per_ell(ell_val):
+    def get_cl_per_ell(ell_val, wk):
         k = (ell_val + 0.5) / chi
         pk = jax.vmap(pk_fn)(k, a)
-        integrand = (w_kappa * w_g / chi**2) * pk
+        integrand = (wk * w_g / chi**2) * pk
         if k_nyq is not None:
             integrand = integrand * (chi >= (ell_val + 0.5) / k_nyq)
         dx = chi[1] - chi[0]
         return (jnp.sum(integrand) - 0.5 * (integrand[0] + integrand[-1])) * dx
 
-    return jax.vmap(get_cl_per_ell)(ell)
+    return jax.vmap(get_cl_per_ell)(ell, w_kappa)
 
 
 # =========================================================================
@@ -1240,6 +1244,58 @@ def _is_cubic_box_catalog(path) -> bool:
     import fitsio
     cols = fitsio.FITS(str(path))[1].get_colnames()
     return "x" in cols and "RA" not in cols
+
+
+SELECTION_SHELL = 2.0  # Mpc/h: radial bin of the noise-free selection (docs/pipeline.md 3.1)
+
+
+def selection_without_counting_noise(mesh, box_center, box_shape, curved_sky=True, los=None):
+    """The randoms' selection mesh rebuilt as footprint(direction) x profile(distance), noise-free.
+
+    ``mesh`` is the randoms painted on a grid (counts or completeness per node). Their counting
+    noise, multiplied into the model's prediction node by node, biases the fit (docs/pipeline.md
+    3.1); averaged over whole radial shells it vanishes. The profile is the mean of ``mesh`` over
+    the in-footprint nodes of each ``SELECTION_SHELL``-wide shell of distance (``radius_mesh``:
+    comoving distance on the curved sky, distance along ``los`` otherwise), which keeps the n(z)
+    and the painted edge profile; the footprint is binary, on a HEALPix map of the node directions
+    seen from the observer whose pixels are about one cell wide at the survey's inner distance: a
+    pixel is in when its nodes hold more than half the median of the profile-normalised mesh.
+    Valid for a selection separable in direction and distance with a uniform angular completeness
+    (the mocks: full sky, octant); the total of ``mesh`` is kept.
+    """
+    import healpy as hp
+
+    from desi_cmb_fli.bricks import cell2phys_pos, radius_mesh, regular_pos
+
+    shape = tuple(int(s) for s in np.shape(mesh))
+    m = np.asarray(mesh, dtype=np.float64).ravel()
+    box = np.asarray(box_shape, dtype=float)
+    chi = np.asarray(radius_mesh(box_center, box, shape, curved_sky=curved_sky, los=los)).ravel()
+    pos = np.array(cell2phys_pos(regular_pos(shape), np.asarray(box_center, float), box,
+                                 np.asarray(shape, float)), dtype=np.float32)  # a writable copy
+    rb = np.floor(chi / SELECTION_SHELL).astype(np.int64)
+    prof0 = np.bincount(rb, m) / np.maximum(np.bincount(rb), 1)
+    ref = prof0[rb]
+    use = ref > 0.5 * prof0.max()  # the shells of the survey's bulk, away from the radial edges
+    cell = float(np.max(box / np.asarray(shape)))
+    nside = 1
+    while hp.nside2resol(nside) > cell / max(float(chi[use].min()), cell):
+        nside *= 2
+    pos[np.all(pos == 0, axis=1)] = (0.0, 0.0, 1.0)  # the observer's own node: any direction
+    pix = hp.vec2pix(nside, *pos.T.astype(np.float64))
+    q = np.bincount(pix[use], m[use] / ref[use], minlength=hp.nside2npix(nside))
+    q /= np.maximum(np.bincount(pix[use], minlength=hp.nside2npix(nside)), 1)
+    footprint = q > 0.5 * np.median(q[q > 0])
+    w = footprint[pix]
+    prof = np.bincount(rb, m * w) / np.maximum(np.bincount(rb, w.astype(float)), 1)
+    out = w * prof[rb]
+    out *= m.sum() / max(out.sum(), 1e-300)
+    print(
+        f"[Abacus-gxy] Selection without counting noise: {SELECTION_SHELL:g} Mpc/h shells x "
+        f"footprint (nside {nside}, sky fraction {footprint.mean():.3f}); rms of the randoms' mesh "
+        f"about it {np.std((m / np.where(out > 0, out, 1))[out > 0.5 * out.max()]):.4f}"
+    )
+    return out.reshape(shape).astype(np.float32)
 
 
 def _load_abacus_cubic_box(file_paths, model, final_shape, paint_oversamp) -> dict:
@@ -1556,6 +1612,19 @@ def load_abacus_galaxy_observation(
                 to_cache["window_paint"] = np.asarray(rand_mesh_paint, dtype=np.float32)
             np.savez(cache_path, **to_cache)
             print(f"[Abacus-gxy] Randoms reduction cached: {cache_path}")
+
+    # The selection is the randoms' map without their counting noise (docs/pipeline.md 3.1), on the
+    # paint grid when the model multiplies it there; the final-grid map is its band limit.
+    geom = {"box_center": model.box_center, "box_shape": model.box_shape,
+            "curved_sky": model.curved_sky, "los": model.los}
+    if rand_mesh_paint is not None:
+        from desi_cmb_fli.bricks import band_limit
+
+        rand_mesh_paint = jnp.asarray(selection_without_counting_noise(rand_mesh_paint, **geom))
+        paint_per_final = float(np.prod(rand_paint_shape) / np.prod(final_shape))
+        rand_mesh_window = band_limit(rand_mesh_paint * paint_per_final, final_shape)
+    else:
+        rand_mesh_window = jnp.asarray(selection_without_counting_noise(rand_mesh_window, **geom))
 
     # No global alpha = n_gal/n_rand: the unit-mean normalisation below divides any constant out.
     # The ASDF path's per-shell alpha (w_i above) does survive, since it varies from shell to shell.
