@@ -271,16 +271,15 @@ Under `evolution: lpt`, `ptcl_oversamp` **must equal** `evol_oversamp` (`__post_
 otherwise): jaxpm's `cic_read` reshapes the particle array to the force-grid shape, so LPT needs
 exactly one particle per evol cell.
 
-**The particle count is chosen per grid, not by a fixed factor.** Montecosmo's 7/4 is too coarse
+**The particle count and the paint grid are chosen together.** Montecosmo's 7/4 is too coarse
 here: at 7/4 of a coarse final grid the displaced particle lattice and the bias products leave
 structure in the predicted band that grows with the displacement amplitude, so that on Abacus the
 galaxy likelihood at the true field prefers a smaller field (`sigma8` biased low) and the κ model holds
 too much power at the top of the band (§7.12, §7.14). More particles at the same init grid remove both
-for the cost of the particles alone; the inferred field is unchanged. The count must pass the two
-checks below (the galaxy profile and the κ spacing rule); the configs state theirs and the check that
-validates it in the comment above `evol_oversamp`, and the measured cases are in §7.14–7.16 and §7.19.
-The paint grid can equal the particle grid (one particle per paint cell, as montecosmo): it does at
-the finest grid measured (§7.19).
+for the cost of the particles alone; the inferred field is unchanged. The particle count follows the κ
+spacing rule below, and the paint grid must then not be commensurate with it (montecosmo's equal
+`ptcl_oversamp` and `paint_oversamp` are): the configs state their grids and the rules in the comment
+above `evol_oversamp`, and the measured cases are in §7.14–7.16 and §7.19.
 
 **The particle lattice: two artifacts, two rules.** The particles start on a regular cubic lattice
 of spacing `d = box/N` (`N` per side, even: `get_scaled_shape`). A regular lattice is a crystal: its
@@ -290,31 +289,38 @@ likelihood by two routes, with different rules.
 
 - *Galaxies — the lattice folded into the band by the paint grid.* CIC sampling on the paint grid
   (`P` cells per side) folds every frequency by whole paint periods: harmonic `m` lands at index
-  `a = m·N − n·P` for some fold `n`. Order-2 interlacing cancels the odd folds; the crop to the final
-  grid (`F` cells) keeps `|a| ≤ F/2`, the Nyquist plane included (`chreshape`). The surviving index of
-  harmonic `m` is `a = (m·N + P) mod 2P − P`; the lattice stays out of the unmasked painted field when
-  `|a| > F/2` for `m = 1, 2, 3` (higher harmonics are damped by the kernel and the displacements). It
-  does not decide the galaxy likelihood: there the selection multiplies the field at paint resolution
-  before the crop, and the measured profile at the true ICs is what tells a count is neutral (§7.16:
-  the counts the rule calls clean, 216 at box 5000 and 324 at box 7500, are not). A
-  surviving harmonic is a deterministic pattern on the axis modes at index `a` that the data do not
-  hold; where `m·N/P` is an integer the CIC kernel vanishes on the harmonic and what lands, at `a = 0`,
-  is the displaced lattice's term in phase with the field. The rule is set by `N` against `P` and `F`,
-  not by the density: a few particles more or less move a harmonic in or out.
+  `a = m·N − n·P` for some fold `n`. Order-2 interlacing (the paint and a copy shifted by half a cell
+  along the diagonal) cancels the folds of odd total index, not the even ones; the crop to the final
+  grid (`F` cells) keeps `|a| ≤ F/2`, the Nyquist plane included (`chreshape`). Where a harmonic lands
+  at `a = 0` — `N = P` (`m = n = 2`) or `N = 2P` (`m = 1`, `n = 2`) — the displaced lattice's echo falls
+  on the field's own wavevector and adds to it in phase: a coherent transfer error at the top of the
+  band, growing with `k` and damped by the displacements. The galaxy amplitude is read precisely there:
+  at linear order it is degenerate with `b1`, and the non-linear terms that separate them weigh most at
+  the highest `k`, the corners of the final cube, so a fraction of a per cent in the transfer moves the
+  amplitude at the true ICs by several of its σ (§7.16). Where `a ≠ 0` the echo lands on another
+  wavevector, a pattern uncorrelated with the field that the displacements damp: at a spacing of
+  18 Mpc/h it leaves the amplitude unchanged; at the coarser spacings of meshes 54–80 (25 Mpc/h and
+  above) the damping is weaker and those patterns moved the profile too (the spike of the closure
+  matter `P(k)` on the axis modes, §7.16). The model refuses a first or second harmonic at `a = 0`
+  when the paint grid is oversampled (`_check_lattice_aliases`: an error naming the nearest paint
+  grids without it) and reports the other entries of `bricks.lattice_aliases`; the plain grid (paint =
+  final = evolution) is commensurate by construction and only reported. The rule is set by `N` against
+  `P` and `F`, not by the density: a few particles more or less move a harmonic in or out.
+- *Galaxies — the bias products on the evolution grid.* δ², s², the third-order operators and the
+  2LPT source are formed on the evolution grid (one node per particle) from a field band-limited at
+  the init Nyquist, so they reach twice it and fold back into the final band from index
+  `evol − init`. The model warns when that is below a quarter of the final grid (§7.16 for the case
+  measured).
 - *CMB lensing — the lattice projected on the sphere.* The Born projection scatters the particles onto
   HEALPix shells with no paint grid; the lattice leaves a κ template whose weight in the likelihood
   falls with the spacing `d` (§2.6, §7.15). The rule is a density: `d ≤ 25 Mpc/h`, the spacing at which
   the κ-only Abacus posterior is debiased (`bricks.KAPPA_LATTICE_MAX_SPACING`).
 
-`bricks.lattice_aliases` lists the surviving `(m, n, a)`; at construction the model prints them when
-galaxies are on, and warns when κ is on and `d` exceeds 25 Mpc/h (with the count that meets it). The
-check of a particle count before a run is the galaxy profile at the true ICs
-(`galaxy_likelihood_profile.py`, minimum in A within 0.02 of 1) and the spacing rule; the configs carry
-both as a comment above `evol_oversamp`. The measured cases (§7.14–7.16, §7.19) show the two rules
-pulling apart: a count can satisfy the spacing rule and put lattice harmonics in the galaxy band
-(they show as a spike in the closure matter `P(k)` and bend the posterior field on those axis modes),
-and a count the alias rule calls clean can move the galaxy profile further from A = 1 than one it
-flags; the profile decides.
+At construction the model applies the galaxy rules when galaxies are on, and warns when κ is on and
+`d` exceeds 25 Mpc/h (with the count that meets it). The rules say what is understood; the check of a
+grid or a selection before a run is the joint minimum in (A, biases) of the galaxy likelihood at the
+true ICs (`galaxy_likelihood_profile.py --mode newton`, minutes on a CPU node), within about its σ_A of
+A = 1 (§7.16).
 
 Flow in `FieldLevelModel.evolve`: init field → chreshape→evol → `add_png` + PNG re-band-limit → LPT
 displacement → paint+crop to final; `lagrangian_weights` comes **after** and is handed `init_mesh_evol_grid`, i.e. the **pre-`add_png`**
@@ -623,8 +629,8 @@ has to come from simulations spanning the galaxy–halo connections the data all
 central, §4). Holding the noise does not stop the slide of `sigma8` along `b1`–`sigma8` at order 2 (§7.19).
 
 **Survey mask & radial selection from randoms.** For the AbacusLensing LRG mocks (equal-weight
-galaxies and ~20× randoms), `S` is the **painted random density**, normalised to unit mean over the
-occupied cells. The randoms are painted with **the same scheme as the galaxies and as the model** —
+galaxies and randoms: 100 per galaxy in the ph201 file, 20 usable in ph202's, §7.19), `S` is built from
+the **painted random density**, normalised to unit mean over the occupied cells. The randoms are painted with **the same scheme as the galaxies and as the model** —
 interlaced, CIC-deconvolved, at `paint_shape` — so `S` and the counts carry the same window. The
 catalogue is far too large to hold, so the two interlacing shifts are accumulated chunk by chunk
 (`interlace_accumulate`) and combined once at the end (`interlace_combine` / `interlace_finalize`);
@@ -632,6 +638,22 @@ painting is linear in the positions, so this is identical to one call on the who
 (`tests/test_interlace_accumulate.py`). The occupancy mask stays on the plain CIC paint, where
 `> 0` still means "a random landed here" — the deconvolved mesh rings. The reduction is cached on
 disk, keyed on everything that changes it, including the paint grid.
+
+**The selection without the randoms' counting noise.** A paint cell holds a few hundred randoms, so
+their map scatters by several per cent from cell to cell. Multiplied into the prediction node by node,
+that scatter is not noise of the data, which the likelihood's variance holds, but an error of the
+model's mean that multiplies the field: its expected contribution to χ² grows with the model's
+small-scale variance, which the fit lowers — `bn2` up, `bnpar` down, the amplitude with them — in
+proportion to one over the number of randoms per galaxy (§7.19). The loader therefore rebuilds `S` as
+footprint(direction) × profile(distance) (`cmb_lensing.selection_without_counting_noise`): the profile
+is the mean of the painted randoms over the in-footprint nodes of each 2 Mpc/h shell of distance
+(`radius_mesh`), which keeps the n(z) and the painted radial edges and averages the counting noise
+over a whole shell; the footprint is a binary HEALPix map of the node directions seen from the
+observer, its pixels about one cell wide at the survey's inner distance. `selec_mesh` is the band limit
+of the rebuilt `selec_paint`, so the two grids still describe one survey
+(`tests/test_selection_from_randoms.py`). It assumes a selection separable in direction and distance,
+with a uniform angular completeness: exact for the mocks (full sky, octant). Real data will need the
+angular completeness as a continuous map and n(z) per imaging region, to be validated then.
 
 **Completeness cut (`abacus_galaxy.completeness_min`, default 0.8).** Cells on the survey boundary —
 octant faces and radial shell edges — are only fractionally covered, and are dropped below this
@@ -1079,7 +1101,10 @@ measures and the conventions that make its output comparable with the model.
 | `quick_pk_spectra.py` | 3-D spectra: closure matter `P(k)` against the light-cone-averaged linear theory (`P_lin(k, a=1)` × ⟨`D²`⟩ over the cells), or the Abacus galaxy `P_gg` against the model's at a run's biases (`--bias_run`), shot noise subtracted; bins out to `√3 k_Nyq`, since the corner modes enter the cell likelihood at full weight | `figures/spectra_diagnostic/pk_*` |
 | `quick_cl_spectra.py` | `C_ℓ^{κκ}`, `C_ℓ^{gg}`, `C_ℓ^{κg}` against Limber times the exact-over-Limber ratio, closure (N realisations) or Abacus; the binned spectra beside the figure (`.npz`), `--replot` redraws it from them; conventions below | `figures/spectra_diagnostic/cl_*` |
 | `validate_kappa_from_ic.py` | the κ model at the true Abacus ICs against the AbacusLensing map, no sampling: the model's mean map (§3.2) against it: per ℓ bin coherence, transfer, amplitude A per band, error power against `N_ℓ` and `C_ℓ^LOS`, the coherence `√(1 − C^LOS/C^tt)` of a model exact but for its covariance term, and `(C^mm + C^LOS)/C^tt` (1 for a consistent model); `--shell_kmax` list, `--maps` for the pole maps (§7.9); the nside-16384 map is read once on a compute node and cached in `data/cache/` | `figures/spectra_diagnostic/kappa_from_abacus_ic_*.{png,npz}`, `figures/maps/` |
-| `validate_galaxy_from_ic.py` | the galaxy model at the true Abacus ICs against the Abacus counts, no sampling, a standard check of every grid: per k band and per shell of χ the coherence r, the transfer P_dm/P_mm and the whitened residual power (d − m)/√(n̄S) (1 for a model exact up to the likelihood's Poisson variance), against 20 closure noise draws (mean ± 1σ); then the biases refitted per shell (`b1_alpha` held), whose χ² gain measures the redshift evolution the bias lacks | `figures/galaxy_ic_test/<config>.{png,json}` |
+| `validate_galaxy_from_ic.py` | the galaxy model at the true Abacus ICs against the Abacus counts, no sampling, a standard check of every grid: per k band and per shell of χ the coherence r, the transfer P_dm/P_mm and the whitened residual power (d − m)/√(n̄S) off the Nyquist planes of the final grid, against 20 closure draws with the noise law of the Newton JSON (`s_e`, `s_ed`, the likelihood's; mean ± 1σ), so that an exact model with that noise falls in their band; then the biases refitted per shell (`b1_alpha` held), whose χ² gain measures the redshift evolution the bias lacks; and, with no bias fit, the shape of the effective bias against the matter of the same ICs (all biases and `b1_alpha` at 0), b_eff(k)/b_eff(top quarter of k), against the closure's: the transfer depends on where the bias fit lands in the `b1`–`bn2`–`bnpar` degeneracy, the b_eff shape does not (§7.19, ph202). The Nyquist planes are left out of the residual: there the paint chain on the survey geometry lowers the data's noise below the per-cell noise of the closure (§7.19) | `figures/galaxy_ic_test/<config>.{png,json}` |
+| `plot_galaxy_ic_test.py` | the paper's `fig:gxy_ic` from the JSONs of `validate_galaxy_from_ic.py` (all cells) and of the Newton minimum (its noise fit): transfer, whitened residual (off the Nyquist planes), b_eff shape against k with the closure band (model + fitted noise), k_N marked | `figures/galaxy_ic_test/fig_gxy_ic.png` |
+| `plot_shell_cut.py` | the paper's `fig:shell_cut` from the `.npz` of `validate_kappa_from_ic.py --shell_kmax 0 <cut>`: the model's κ power plus its covariance term over the map's, with and without the per-shell cut | `figures/spectra_diagnostic/fig_shell_cut.png` (from `kappa_from_abacus_ic_box5000_m160_ph202_cut_nocut.npz`) |
+| `validate_joint_from_ic.py` | the joint model at the true Abacus ICs (Abacus cosmology, the biases of a Newton or profile JSON): C_κg of the AbacusLensing map × LRG catalogue over C_κg of the model's mean κ × model galaxies per ℓ band, cosmic variance cancelling, Gaussian errors with the κ and galaxy errors independent of the model; the mixed crosses (model κ × Abacus galaxies, Abacus κ × model galaxies) say on which side a departure sits. Its galaxy maps are projected from the galaxies at every k, beyond the cube the likelihood holds: above ℓ ≈ 160 the ratio reads the per-shell cut, not the likelihood (§7.19) | `figures/joint_ic_test/<config>.{png,json}` |
 | `kappa_stiffness.py` | largest Hessian eigenvalue of −log p in the field (power iteration on reverse-over-reverse Hessian-vector products), its eigenvector's share near the observer, cost and peak memory, per `shell_weights:shell_kmax[:noise]` variant; the MCLMC step size is capped by it | `figures/conditioning/` |
 | `kappa_lattice_template.py` | `measure`: E_z[κ] by antithetic pairs `(κ(z) + κ(−z))/2` on an (`Omega_m`, `sigma8`) list, packed like the likelihood, with the field power, the undisplaced-lattice κ, `N_ℓ` and the out-of-model term at each point's cosmology; `analyse`: S/N, projection of a run's data, Gaussian posterior with and without the template, of the run's data or `RUN:noiseless` (its noiseless map averaged over the noise), `--condition_om` for `sigma8` at given `Omega_m` (§7.15, §7.17) | `data/cache/template/`, `figures/kappa_lattice_template/` |
 | `ic_power_check.py` | P(k) of the published Abacus ICs as loaded against their own input spectrum (CLASS table grown with the header growth), full box and central cube; a loading error is a constant factor in k (§7.17) | `figures/ic_power/` |
@@ -1123,7 +1148,10 @@ than the theory decorated with noise terms.
   ℓ = 50, 0.898 at ℓ = 64 for nside 64), which model and data carry alike.
 - κg in closure multiplies the lensing kernel by the shells' radial window (`kappa_radial_window`):
   where the shells start or stop inside the galaxy range, the model κ does not hold the matter those
-  galaxies trace.
+  galaxies trace; each shell enters with its multipole taper, one window per multipole, and the κ side
+  keeps the init-Nyquist cut of κκ.
+- gg has no k cut: the model's galaxies hold power beyond the init-grid Nyquist (the bias products
+  and the 2LPT source on the evolution grid reach twice it; measured, §7.19).
 - Galaxies are projected from galaxies, never from the mesh (mesh interpolation adds a low-pass window
   no Limber curve holds, ≈ 20 % of `C_ℓ^{gg}` at 0.4 `k_Nyq`): the catalogue count map of the loader
   (`gxy_hp_counts`, nside 256), pixel window removed and shot noise subtracted; or the model particles
@@ -1141,17 +1169,19 @@ a per-sample metric (median and 16–84 %), beside the same metric for the poste
 agreement between chains answers convergence, not reconstruction, and is not drawn. The posterior
 mean has less amplitude than the truth wherever the data leave the field free; a sample has the
 right amplitude but its own fluctuation; the two together bound what is reconstructed.
-- `initial_conditions.png`: in the plane through the observer, the true field, the posterior mean
-  and the posterior standard deviation; each field's power over the linear spectrum of its own
+- `initial_conditions.png`: in the plane through the observer, at full resolution, the true field, the
+  posterior mean (which by itself filters out what the data leave free) and the posterior standard deviation; each field's power over the linear spectrum of its own
   cosmology, √(P_true/P_lin(θ_true)) and √(P_rec/P_lin(θ_sample)), all expected at 1, with the
-  coherence `r(k)` of a sample; per radius, the rms ratio sample/true over the prior's
-  σ(θ_sample)/σ(θ_true) at the smoothing scale, the rms of (sample − truth) over the true rms (the
-  root of the posterior MSE per sample), and the correlation of a sample and of the posterior mean
-  with the truth; dashed circles = the galaxy range. With the cosmology free a sample carries the
+  coherence `r(k)` of a sample; per radius, the correlation of the posterior mean with the truth at
+  full resolution, which is √(Var(mean)/Var(truth)) (Cov(truth, mean) = Var(mean) for any
+  posterior): the fraction of the true field's variance the data recover at the cell scale, so a
+  number that depends on the grid; the scale dependence is the `r(k)` panel's; dashed circles = the
+  galaxy range. With the cosmology free a sample carries the
   spectrum of its own `Omega_m`, `sigma8`, so a plain `T(k) = √(P_rec/P_true)` would read the
   sample's cosmology as a reconstruction deficit wherever the data leave the field free.
   `compare_reconstruction.py` overlays the radial correlation (sample and posterior mean) and the
-  coherence of several runs, with slices of their posterior means.
+  coherence of several runs, with slices of their posterior means, both fields smoothed at a scale
+  common to all the runs (`--smoothing`, 100 Mpc/h), since the runs may be on different grids.
 - `kappa_reconstruction.png` (runs with κ), in the likelihood's band: the truth, the posterior mean
   of the Born κ, the posterior standard deviation per pixel and `(truth − mean)/std`; then the power
   budget (truth, a sample's Born κ and, on an external map, Born κ + `C_ℓ^out`, expected on the
@@ -1213,7 +1243,7 @@ right amplitude but its own fluctuation; the two together bound what is reconstr
 | κ alone, `Omega_m`–`sigma8`, Abacus | box 7500: biased along the degeneracy by the lattice template; box 5000: Mahalanobis distance of the truth 2.2 (ACT), 2.0 at SO with widths +1 % / +21 % over the exact likelihood; `exact` term +1.34σ / 0.00σ, Mahalanobis 2.15 | §7.15, §7.17 |
 | closure `Omega_m`–`sigma8` triplet | unbiased; κ gain on σ(`sigma8`) 62 % (Fisher 69 %), on σ(`Omega_m`) 13 % (Fisher 9 %); galaxy and joint widths within 11 % of the Fisher | §7.13 |
 | joint `Omega_m`–`sigma8`, Abacus, mesh 54 | box 5000, SO, `exact` term: −0.83σ / −1.97σ (Mahalanobis 1.98), the low `sigma8` mostly the noise draw of the κ map, a third the ICs, no model error; paired κ gain 19 % ± 1 % on σ(`Omega_m`) (Fisher 14 %), 79 % ± 0.3 % on σ(`sigma8`) (Fisher 79 %); the κ map at the coherence of the model at the true ICs | §7.17 |
-| galaxy likelihood against the grids | depends on the ratio of the particle and paint grids; cause not established; at 280³ particles on a 280³ paint grid the profile is at A = 0.999 (mesh 160), 0.989 (mesh 100) | §7.16, §7.19 |
+| galaxy likelihood against the grids | a particle lattice commensurate with the paint grid (280³ on 280³, 560³ on 280³) biases the amplitude at the true ICs (−0.0045 at mesh 100, −0.0056 at mesh 160); incommensurate grids agree; the model refuses the commensurate ones; the randoms' counting noise in the selection pulls the biases (noise-free selection); with both fixed and order-3 biases A_min 0.998 / 0.999 ± 0.002 (ph201 / ph202, mesh 100) | §2.5, §3.1, §7.16, §7.19 |
 | galaxy model at k ≤ 0.1 (meshes 100–160) | at order 2 the Abacus chains drift along `b_E·sigma8` ≈ const to a better fit than the truth (mesh-100 production run `sigma8` 0.723 ± 0.020, not converged), driven by the deterministic residual: its largest measured part is the third order at mesh 100, the initial modes 0.15 < k < 0.24 the 240³ field lacks at mesh 160. Mesh 100 with the third order, production step: Abacus follows the closure of the same chain key (+0.000, −0.011), closures on initial fields drawn from the prior centre on the truth (0.808 over four chains), the closure on the ph201 ICs sits at 0.773 | §7.19 |
 | κ alone at nside 128 (ℓ ≤ 256), Abacus | widths at the Fisher, no trend; Mahalanobis 2.44 along the degeneracy, `sigma8` at the true `Omega_m` as the IC closure's (0.806 against 0.807): no model error in the κ amplitude | §7.19 |
 | joint at mesh 100 | `sigma8` held at ≈ 0.80 by κ while `Omega_m` (+2.4σ) and the biases drift; 27 of 60 batches, not converged | §7.19 |
@@ -1541,7 +1571,8 @@ data.
 **The Abacus LRG bias evolves; the model's did not.** The model's `b1` term is `b1·D(a)·δ_L` with one
 `b1`. Regression of the Abacus counts on the true linear field (`galaxy_bias_regression.py`, k 0.01–0.034,
 linear Kaiser with the radial line of sight): `B` = 1.833 ± 0.012, 2.102 ± 0.008, 2.264 ± 0.013 in three
-shells of χ 1093–2447, so `B·D(χ)` is flat (outer/inner 1.235 against 1/D's 1.244); the closure
+shells of χ 1093–2447, outer over inner 1.235 against 1/D's 1.244: `B·D(χ)` follows 1/D at the ends of the
+range, not in between (six shells, below: a ±3 % bend around the power law); the closure
 (non-evolving truth) 2.123, 2.149, 2.151. RSD amplitude 0.970 ± 0.018 of the fiducial `f`
 (`figures/galaxy_bias_evolution/bias_evolution_true_ic.{png,json}`).
 
@@ -1598,6 +1629,27 @@ the radial tilt of the code's bias (rms ratio flat in radius). Corner of the 750
 137 batches): `f_NL` 2.9 ± 5.0 against 8.9 ± 5.8 at 140³ without α, `b∇²` 13.7 ± 14.2 against 56.2 ±
 13.9; σ(`f_NL`) −15 %. The two changes enter together; these runs do not say which one moves `f_NL`.
 
+**A bend around the power law, which the power law does not pay for.** The six-shell regression of the
+figure (`bias_evolution_true_ic.json`, ph201), as `B·D(z)` at z 0.45 / 0.55 / 0.66 / 0.77 / 0.89 / 1.03: 1.383 ±
+0.016 / 1.415 ± 0.010 / 1.426 ± 0.009 / 1.465 ± 0.008 / 1.441 ± 0.009 / 1.363 ± 0.015, χ² 51 for 5 degrees of
+freedom against a constant and 48 for 4 against `D^−α` (α 1.06): it rises to z ≈ 0.8 and falls beyond, ±3 %
+around the power law; on ph202 the per-shell refits at the true ICs show the same bend (`b1` 1.106 / 1.148 / 1.110 in the near, middle and far thirds, `b1_alpha` held). The mock makes it: its host
+masses (`MASS`, all centrals) keep one distribution to z 0.8 (median log₁₀ M 13.00, 5th percentile 12.69–12.72
+in Δz 0.05 from z 0.4) and reach lower beyond (median 12.98 / 12.93 / 12.88 / 12.82 / 12.78 and 5th percentile
+12.53 / 12.42 / 12.38 / 12.36 / 12.35 at z 0.85–1.1), the same on both skies (`logs/bias_hump/hod_nz_mass.py`, not in
+the repository): a fixed mass distribution makes `B·D` rise with z, lighter hosts make it fall. What it does to the
+cosmology at the final configuration (mesh 100, order-3 biases, noise-free selection; `logs/bias_hump/omega_gn.py`,
+CPU jobs of 2026-11-18): the joint minimum of the galaxy χ² at the true ICs in (A, `Omega_m`, every bias) by
+Gauss–Newton, `Omega_m` acting at fixed field through D(a), f and the LPT, gives `Omega_m` 0.3122 ± 0.0043
+(ph201) and 0.3125 ± 0.0044 (ph202) against 0.3152, A 0.9965 ± 0.0026 and 0.9977 ± 0.0026 (σ from Δχ² = 1): the
+power law with α free does not move them by more than their σ. A curvature of the linear bias, `1 + b1(a) = (1 +
+b1)(D_fid/D)^α exp(C2 ln²(D_fid/D))`, takes the bend (C2 −2.49 ± 0.08 and −2.30 ± 0.08, χ² −1100) but opens a
+valley in `Omega_m` at fixed field: along the Gauss–Newton path χ² changes by about 2 between `Omega_m` 0.336 and
+0.348, and the iterations wander there (last 0.344 and 0.341, not converged). The redshift shape the galaxies give `Omega_m` at fixed field is the shape a free bias
+curvature takes, so the power law stays: it leaves the bend in the residual (the per-shell refits of
+`validate_galaxy_from_ic.py`, χ² gains 114–214 per shell on ph202) and the cosmology at the truth. Real LRGs,
+with satellites and their own selection, need the same test on other mocks (§8).
+
 ### 7.15 Lattice template of the κ model — measured
 
 **κ only on Abacus at box 7500 is biased along the degeneracy** (200³ particles, `chi_high_z_max`
@@ -1639,12 +1691,16 @@ MCMC, and predicted `ph202` before it ran:
 
 | box / cell / d (Mpc/h) | 7500/93.75/37.5 | 7500/93.75/31.2 | 6000/75/30.0 | 5495/94.7/27.5 | 7500/93.75/26.8 | 5000/92.6/25.0 | 7500/93.75/23.4 | 5000/62.5/20.8 | 5000/62.5/17.9 |
 |---|---|---|---|---|---|---|---|---|---|
-| S/N, ℓ ≤ 64 | 5.46 | 3.58 | 2.67 | 1.80 | 2.26 | 1.26 | 1.59 | 0.82 | 0.49 |
+| S/N, ℓ ≤ 64, ACT `N_ℓ` | 5.46 | 3.58 | 2.67 | 1.80 | 2.26 | 1.26 | 1.59 | 0.82 | 0.49 |
+| S/N, ℓ ≤ 64, SO `N_ℓ` | 6.46 | 4.24 | 3.16 | 2.13 | 2.68 | 1.48 | 1.89 | 0.97 | 0.58 |
 
-The S/N falls smoothly with d, whatever the box or cell (estimation noise of the 8 pairs subtracted with the unbiased variance, `ddof = 1`). These are with the ACT `N_ℓ` in C; with the SO
-baseline substituted (same template grids) they rise by 18 %: 5.46 → 6.47 at d = 37.5, 1.30 → 1.54 at box
-5000 — the band is signal-dominated, so the noise moves the template's weight little. Its ratio to the undisplaced lattice follows
-exp[−(2π/d)²σ²/2] with σ = 4.8 Mpc/h, larger than the linear displacement rms at the shells (1.5–3.7
+The S/N falls smoothly with d, whatever the box or cell (estimation noise of the 8 pairs subtracted with the unbiased variance, `ddof = 1`). The
+template does not depend on the noise, its S/N does through C: the SO baseline (`analyse --nell`, same template
+grids; the grids' stored N is the raw ACT `N_ℓ` at nside 32, the 324³ row's the SO one, S/N 1.80 with both) raises it
+by 16–19 % — the band is signal-dominated, so the noise moves the template's weight little. S/N 1 falls at d ≈ 21
+Mpc/h with SO. The `geometry_*.json` and the figure hold the SO values; at the final configuration (d 17.9, SO,
+nside 128) no template is detected: S/N 0.23 over ℓ 2–256 with 32 pairs, within the estimation noise (§7.19). Its ratio to the undisplaced lattice follows
+exp[−(2π/d)²σ²/2] with σ = 4.7 Mpc/h (the ratio is weighted by C, SO `N_ℓ`), larger than the linear displacement rms at the shells (1.5–3.7
 Mpc/h): the form fits, the size is not explained. Cost of a gradient on an A100 at box 7500: κ only
 0.125 / 0.191 / 0.286 / 0.391 s at evolution grid 2.5 / 3.0 / 3.5 / 4.0, joint 0.28 s at 2.5 and
 0.45 s at 3.0, out of memory beyond — hence the 5000 box: d = 25 at the inference cell with smaller
@@ -1880,7 +1936,45 @@ free; `…_box5000_amplitude_box5000_p{200,216}.json`, `…_amplitude_m80p{300,3
 mesh 80, 300 (harmonic 1 at 20) +122 / +29, A 1.001; 324 (none) −14 / +93, A 0.944. The counts the rule
 calls clean are further from A = 1 than those it flags: the rule describes the unmasked field (the
 closure matter `P(k)`), not the galaxy likelihood, which multiplies the selection at paint resolution
-before the crop (§3.1), a step the rule leaves out. What sets the galaxy profile is not established.
+before the crop (§3.1), a step the rule leaves out. At mesh 100 what sets it is established below.
+
+**Mesh 100: the commensurate lattice and the bias products** (CPU jobs 61465340–61467723 of 2026-11-17,
+`logs/grid_m100/`, not in the repository). The joint minimum in (A, six biases) of the galaxy χ² at the true
+ICs (variance n̄S on the survey cells, as the profile) by Gauss–Newton, iterated with each model's own
+Jacobian (forward mode; `galaxy_likelihood_profile.py --mode newton`); one step from the profile biases
+reproduces the L-BFGS profiles (0.989 at 280 particles, 0.993 at 300 and 320, 0.996 at 260; `figures/galaxy_likelihood_profile/abacus_gxyonly_cosmo_box5000_m100_amplitude{,_p260,_p300,_p320,_paint350}.json`, the last at a 350-cell paint grid); σ_A 0.0021
+(Δχ² = 1). ph201, init 240, paint 280, 100 randoms per galaxy, order 2:
+
+| particles | particles / paint | A_min |
+| --- | --- | --- |
+| 260 | 13/14 | 0.9965 |
+| 280 | 1 | 0.9888 |
+| 300 | 15/14 | 0.9932 |
+| 320 | 8/7 | 0.9930 |
+| 500 | 25/14 | 0.9935 |
+| 560 | 2 | 0.9896 |
+
+(290 and 420 particles, one step with the 280 Jacobian: 0.9931, 0.9932.) The lattices commensurate with the
+paint grid, 280 (`m = n = 2`) and 560 (`m = 1`, `n = 2`, predicted before it was measured), are the two
+outliers; the incommensurate ones from 290 to 500 agree within 0.0005. Interlacing over the eight shifts
+{0, ½}³, which cancels every fold with an odd index on any axis, moves 280 by +0.0009 and the incommensurate
+counts by less than 10⁻⁴: the coherent part is the even fold. Changing the paint grid alone does the same as
+changing the particles: 280 particles on a 300- or 260-cell paint grid give 0.9942 and 0.9947 with the
+noise-free selection of §3.1, 300 particles on 280 0.9942. At 260 particles the bias products fold into the
+band from index 20 (§2.5); with an init grid of 200 (from index 60) the gap between 260 and 300 particles
+falls from 0.0033 to 0.0007. Where the pull on A comes from (the Gauss–Newton step of the data residual split
+by Parseval, at 280): 90 % from |k| > 0.05, 0.0065 of the 0.011 from the cube corners beyond k_N, from
+off-axis orientations, from the interior cells (0.0098), not the survey edges. Low-passing the painted field
+to the final band before the selection multiplies it raises χ² by 70 000: the model's high-k content is
+needed at the edges. Init grids larger than 240 lower A at order 2 (0.991 at 280 with 340 particles, 0.990 at
+320 with 360, `bnpar` drifting positive) and order 3 brings 320 back to 0.996: model content, the production
+keeps 240. Mesh 160, same init, particle and paint grids: 280 particles 0.9931, 300 0.9987 (σ_A 0.0008), and
+1.0001 with the noise-free selection. The rule of §2.5 holds: the entries at `a = 0` bias the amplitude, the
+beats at `a = ±40` (300 or 260 against 280) do not. A numpy toy of the paint chain (a Zel'dovich lattice,
+interlaced CIC, deconvolution; transfer against the input field relative to a fine incommensurate lattice)
+shows the coherent deficit directly: 64³ and 128³ particles on a 64³ paint grid lose up to 3 % of transfer
+at the top of the band at an rms displacement of 0.2 cell, 68³ and 76³ none
+(`figures/grid_diagnostics/toy_lattice_resonance.png`, script `logs/grid_m100/toy_lattice_resonance.py`).
 
 ### 7.17 Abacus `Omega_m`–`sigma8` triplet at box 5000 — measured
 
@@ -2054,11 +2148,12 @@ Configs: `abacus/abacus_{gxyonly,kappaonly_so,joint_so}_cosmo_box5000_m160.yaml`
   abacus/abacus_gxyonly_cosmo_box5000.yaml --box 5000 --mesh 160 --particles 280`, job 60033571,
   `figures/galaxy_likelihood_profile/abacus_gxyonly_cosmo_box5000_amplitudem160p280.json`, 1 659 875
   cells): χ²(A) − χ²(1) = +15 564, +3 816, +574, 0, +688, +4 106 at A = 0.90, 0.95, 0.98, 1, 1.02, 1.05,
-  minimum of the parabola A = 0.999 (mesh 54 / 200³: 0.976); χ²(1) per cell 0.90 under the Poisson
+  minimum of the parabola A = 0.999 (mesh 54 / 200³: 0.976; with the current model, 0.9931 at this grid and
+  0.9987 at 300 particles, §7.16: this profile predates later model changes); χ²(1) per cell 0.90 under the Poisson
   variance at the mean density. Biases profiled at A = 1, the truths of the mesh-160 closures: `b1`
   1.13, `b2` 0.23, `bs2` −0.21, `bn2` 0.86, `bnpar` −12.0, `b1_alpha` 1.13. 280³ particles on a 280³
   paint grid is a particle/paint ratio of 1.00; at box 7500 the 140/140 grid (same ratio, cell 93.75)
-  preferred a smaller field (§7.14), at mesh 160 it does not.
+  preferred a smaller field (§7.14); with the current model it does at mesh 160 too (§7.16).
 - Abacus `P_gg` over the model at the profile biases (`quick_pk_spectra.py --set_bias`, 5
   realisations): 0.97–1.03 in every bin to k_N; mean 0.999 below k_N/2, 0.993 above, 1.02 in the
   corner modes (mesh 54 / 200³, §7.8: rising to 1.13 near its k_N). Closure matter `P(k)` (20
@@ -2442,7 +2537,7 @@ mean 0.26–0.39), ≈ 0 beyond `chi_boundary`; each field at 1.00 of its own pr
 **The mesh-100 grid checks on ph202** (job 61217286, no sampling; `logs/cl_m100_ph202/`, not in the repository).
 *Galaxy counts at the true ICs* (`validate_galaxy_from_ic.py` on `abacus/abacus_gxyonly_cosmo_box5000_m100_ph202_noiseheld.yaml`,
 the order-2 profile at A = 1: `b1` 1.197, `b2` 0.345, `bs2` −0.203, `bn2` 17.8, `bnpar` −28.7, `b1_alpha` 1.010;
-`figures/galaxy_ic_test/abacus_gxyonly_cosmo_box5000_m100_ph202_noiseheld.{png,json}`), all cells, k < 0.02 / 0.02–0.04 /
+the figure since replaced by the test on the final configuration, below), all cells, k < 0.02 / 0.02–0.04 /
 0.04–0.063 (closure mean ± scatter of 20 draws): transfer 0.946 / 0.982 / 0.998 (1.00 ± 0.010 / 0.002 / 0.002), coherence
 0.972 / 0.980 / 0.971 (0.982 / 0.980 / 0.969), whitened residual 1.35 / 0.97 / 0.94 (1.00 ± 0.06 / 0.015 / 0.009); by shell
 the transfer at k < 0.02 is 0.945, 0.959, 0.980 and the residual 1.64, 1.40, 1.01; the shell refits leave it. The same test
@@ -2450,9 +2545,10 @@ on ph201 at mesh 100 (`abacus/abacus_gxyonly_cosmo_box5000_m100.yaml`, its profi
 `figures/galaxy_ic_test/abacus_gxyonly_cosmo_box5000_m100.{png,json}`): transfer 0.998 / 0.999 / 1.001, coherence 0.983 /
 0.983 / 0.973, residual 0.91 / 0.87 / 0.86, the nearest shell alone at 0.948 and 1.49 below k 0.02, as at mesh 160. The
 large-scale deficit over the middle and far shells is ph202's, not the grid's; its cause is not established.
-*Angular spectra* (`quick_cl_spectra.py`, closure on `validation/closure_box5000_m100_ph202.yaml`: the ph202 selection,
-20 realisations from seed 77, truth the ph202 profile above with the held noise; Abacus on the same config with
-`observation_mode: abacus`; `figures/spectra_diagnostic/cl_{closure_box5000_m100_ph202_20real,abacus_box5000_m100_ph202}.{png,npz}`):
+*Angular spectra* (`quick_cl_spectra.py`, closure on `validation/closure_box5000_m100_ph202.yaml` as it then was: the
+ph202 selection with its randoms' counting noise, the 280/280 grids, 20 realisations from seed 77, truth the ph202
+profile above with the held noise; Abacus on the same config with `observation_mode: abacus`; the figures since
+replaced by those of the final configuration, below):
 closure κκ 0.97–1.01 at ℓ 20–237, bin by bin the mesh-160 ratios (same seed: the galaxy grid does not enter κ); gg and κg
 0.94–0.97 at ℓ 71–111, then gg 0.90–0.94 and κg 0.84–0.93 at ℓ 129–237, against a theory with the linear bias only and a
 truth with `bn2` 17.8, `bnpar` −28.7 (a closure with the higher biases at zero is not run). Abacus ph202: κκ 0.99–1.02,
@@ -2500,13 +2596,171 @@ sample takes z = (1 + z_cosmo)(1 + v_r/c) − 1. An LRG's `ID` is the `index_hal
 the sky position required to agree to 0.01°, 95 % of the LRGs are matched on both skies (0.92 at z 0.4 to 0.97 at
 z 1.1). The mock's redshift is the halo's rebuilt one to an rms of 9·10⁻⁴ (slope 0.984 on v_r, correlation 0.90,
 the same on both skies), against a RSD spread of 1.9·10⁻³. Halos give the same biases on both skies to 0.003, with
-and without RSD; the LRGs differ between the skies in real space as in redshift space (−0.034 against −0.093): the
-difference is in which halos the ph202 mock makes LRGs, not in the matter, the velocities or the mock's redshifts. The
+and without RSD; the LRG fits differ between the skies in real space as in redshift space (−0.034 against −0.093),
+not through the matter, the velocities or the mock's redshifts, and not through which halos become LRGs, which is the
+same on both skies (below). The
 matched rows are read against each other (the unmatched 5 % vary with z while the randoms keep the full n(z), which
 moves both skies' differences by about −0.01): mock redshifts, real space and rebuilt redshifts give −0.043, −0.034,
 −0.045 on ph201 and −0.102, −0.093, −0.105 on ph202, the sky difference ≈ −0.06 each time. Both skies also share a part the
 model at any tested order does not take: one bias set does not fit k < 0.03 and 0.03–0.064 for the halos, the
 high-k fit leaning on `bn2`.
+*The selection of halos, without the model* (CPU job 61398243, `logs/ph202_lowk/sel_resid.py`). The matched LRGs at
+their halo's real-space position (L) against the halos weighted by the fraction that become LRGs in their bin of
+log₁₀ N (0.05 dex) and z (0.01) (E: the LRGs if the selection used mass and redshift alone), CIC on mesh 100, each
+field against randoms following its own radial histogram, octant-jackknife errors, k < 0.01 / 0.01–0.02 /
+0.02–0.03 / 0.03–0.04 / 0.04–0.064: P(L,E)/P(E,E) 1.032 ± 0.007 / 1.006 / 1.002 / 1.000 / 0.999 (ph201) and
+1.027 ± 0.008 / 1.004 / 0.999 / 1.000 / 0.999 (ph202), errors ≤ 0.002 above k 0.01; against all halos with
+log₁₀ N ≥ 1.54, P(L,H)/P(H,H) 1.269–1.247 and 1.287–1.249. At fixed mass and redshift the selected fraction
+does not depend on the concentration r98/r25 nor on the halo density smoothed at 10, 30 or 100 Mpc/h (quartiles
+0.997–1.002 on both skies), and over HEALPix nside 8 × Δz 0.1 cells L − E has 1.12 and 1.11 times the binomial
+variance. The LRGs are drawn from the halos by mass and redshift alone, alike on the two skies.
+*The radial modes.* Across the skies, the n(z) of the halos weighted by the ph201 mass selection differs by 3–4
+times Poisson (rms of the ph202/ph201 ratio 0.0079 / 0.0064 / 0.0044 / 0.0034 at Δz 0.01 / 0.02 / 0.05 / 0.1, Poisson
+0.0027 / 0.0019 / 0.0012 / 0.0009), that of the mock LRGs (their redshifts) at Poisson or below (0.0031 / 0.0023 /
+0.0008 / 0.0004): the mock's n(z) is imposed and holds no radial mode of its sky; the matched LRGs in real space
+differ against the halos' difference (correlation −0.33 to −0.74). At the true ICs (`radial_probe.py`, order-2
+profile biases, 50 Mpc/h radial bins of the survey cells, against nbar): the radial monopole of the data and that
+of the model correlate at +0.60 on ph201 and +0.01 on ph202 (rms 0.0048 / 0.0061 and 0.0076 / 0.0075, Poisson
+0.0016; χ² of data − model 17.5 and 35.2 per bin). With the model rescaled to the data's total in each bin (what
+free `ngbars` do), ph202's whitened residual at k < 0.01 goes from 1.37 to 0.99 and its transfer from 0.953 /
+0.973 / 0.979 / 0.985 / 0.999 to 0.968 / 0.975 / 0.979 / 0.984 / 0.998; ph201's is unchanged (≈ 1.00).
+Refitting the biases with the totals matched (`radial_split.py`, CPU job of 2026-11-16) leaves them where they are
+(ph202 `bn2` 17.8, `bnpar` −28.5; ph201 4.7, −9.8) and the split fit too (−0.095 against −0.097 on ph202, −0.027
+against −0.028 on ph201): the radial modes do not drive the ph202 bias fit.
+*Without a bias fit* (`beff_probe.py`): the effective bias against the model's matter at the true ICs (all biases 0,
+same selection, painting and RSD), b_eff = P(d − n̄, m₀ − n̄)/P(m₀ − n̄, m₀ − n̄), its shape b_eff(k)/b_eff(0.05–0.064)
+over k < 0.01 / 0.01–0.02 / 0.02–0.03 / 0.03–0.04 / 0.04–0.05, octant-jackknife errors. Mock redshifts: ph201
+0.986 ± 0.006 / 0.992 / 0.994 / 0.998 / 0.998, ph202 0.954 ± 0.009 / 0.986 / 0.992 / 0.995 / 0.997 (errors ≤ 0.003
+above k 0.01), ph202 − ph201 = −2.9σ / −1.6σ / −0.8σ / −1.3σ / −0.6σ, the k < 0.01 band below 0.98 in all eight
+octants of ph202. Matched LRGs in real space: ph201 1.044 ± 0.013 / 0.997 / 0.994 / 0.997 / 0.997, ph202 1.029 ± 0.016
+/ 0.989 / 0.992 / 0.993 / 0.995, differences −0.7σ / −1.6σ / −0.7σ / −1.2σ / −0.9σ, amplitudes 1.98–1.99 on both. The
+data of the two skies have the same scale dependence against the matter of their ICs to 0.3 % above k 0.01.
+Against the closure of each sky's own profile biases (`validate_galaxy_from_ic.py`, b_eff over its top quarter of k,
+all cells, k < 0.01 / 0.01–0.02 / 0.02–0.03 / 0.03–0.04 / 0.04–0.064, data / closure mean): ph201 0.980 / 0.984,
+0.991 / 0.996, 0.994 / 0.997, 0.998 / 0.999, 1.000 / 1.000; ph202 0.913 / 0.999, 0.986 / 1.014, 0.991 / 1.015,
+0.997 / 1.013, 0.999 / 1.002, alike in the three shells. With the ph202 biases (`bn2` 17.8, `bnpar` −28.7) the
+model's scale dependence against the matter is 2–3 % above the data's over k 0.01–0.04, with the ph201 biases it
+is the data's: the ph202 transfer deficit is that mismatch. The fit depends on the data only through their
+cross-correlation with the model's operator fields, so what pulls the ph202 biases there is in the data's
+projection on the operators other than the matter (δ², s², ∇²δ, the RSD terms) or in the cube's corner modes beyond
+k_N, which these bands do not hold. The data also carry 3 % less power at k < 0.01
+in the mock's redshifts only, the band of the radial modes the imposed n(z) removes.
+*What pulls the ph202 fit: its randoms* (CPU jobs of 2026-11-16, `logs/ph202_lowk/pull_probe.py`; the band χ² of
+the whitened residual over the cube's modes, the 6 order-2 biases refitted at the true ICs). The Gauss–Newton step from
+the ph201 biases on the ph202 data comes from k ≥ 0.03 (`bn2` +8.2 from 0.03–k_N, +5.9 from the corner modes, +0.4
+below 0.03; ph201 at its own biases: 0). Neither a band cut nor `bnpar` nor the RSD remove it: on |k| ≤ k_N / 0.05 /
+0.04 `bn2` goes to 34 / 48 / 58 on ph202 (13.5 / 21.8 / 32 on ph201) and the model's b_eff shape further above the
+data's; `bnpar` held at 0 gives `bn2` 23.8; the matched LRGs in real space give `bn2` 19.2 (ph201 2.5), the model
+1.4–1.9 % above the data's shape. Swapping the randoms swaps the fits:
+
+| data / randoms | `b1` | `bn2` | `bnpar` | `b1_alpha` | transfer, k 0.01–0.02 / 0.02–0.03 / 0.03–0.04 |
+| --- | --- | --- | --- | --- | --- |
+| ph201 / ph201 | 1.143 | 4.7 | −9.6 | 1.070 | 0.997 / 0.998 / 1.000 |
+| ph201 / ph202 | 1.193 | 16.9 | −30.0 | 1.021 | 0.977 / 0.980 / 0.986 |
+| ph202 / ph201 | 1.145 | 5.1 | −9.6 | 1.062 | 0.995 / 0.997 / 0.999 |
+| ph202 / ph202 | 1.197 | 17.8 | −28.7 | 1.010 | 0.973 / 0.979 / 0.985 |
+
+(mock redshifts; in real space ph201 / ph202 randoms `bn2` 18.6, ph202 / ph201 randoms 2.8, the model's b_eff shape
+on the data's within 0.5 % above k 0.01 with the ph201 randoms, 1.4–2.1 % above with the ph202 ones, on both skies).
+*The number of randoms.* 80 % of the rows of the ph202 randoms file have Z = 0 (the loader drops them with its
+redshift range); the other 20 % carry redshifts copied from the data (each found among the data's values; n(z) the
+data's below Poisson, χ² 35 over 690 bins of Δz 0.001), uniform on the sky (χ²/dof 0.97 at nside 16). The ph202 analysis
+therefore has 20 randoms per galaxy, ph201 100 (all rows in 0.405–1.095, n(z) at 1.5 × Poisson of the data, i.e. drawn
+from the target n(z)). The randoms' number, not their redshifts, sets the fit: with the first 20 % of the ph201 randoms
+the fit of ph201 lands at `bn2` 16.9, `bnpar` −28.9, `b1` 1.192 and that of ph202 at 17.2, −29.7, 1.194; randoms of our
+own at 20 per galaxy, uniform on the sky, give `bn2` 16.3–17.3 on both skies whatever their n(z) (copied from the data,
+Gaussian-smoothed with σ_z 0.03, or the fine n(z) of either producer file), the transfer at k 0.01–0.04 0.974–0.989.
+The selection multiplies the model at the paint resolution (17.9 Mpc/h cells, ≈ 2 galaxies each): its estimate from
+the randoms carries their counting noise, measured about its noise-free version (§3.1) at 18 % per paint cell for the
+20 per galaxy of ph202 and 8 % for the 100 of ph201 (5.5 % on the 260-cell paint grid), which the fit takes up with
+`bn2` and `bnpar`. Against the number N of randoms per galaxy (the first rows of the
+ph201 file, ph201 data, CPU job 61413715), N = 20 / 40 / 60 / 80 / 90 / 100: `bn2` 16.9 / 9.7 / 7.0 / 5.6 / 5.0 / 4.7,
+`bnpar` −28.9 / −17.8 / −13.5 / −11.3 / −10.3 / −9.6, `b1` 1.192 / 1.164 / 1.153 / 1.147 / 1.145 / 1.143, transfer at
+k 0.01–0.02 0.977 / 0.989 / 0.993 / 0.996 / 0.997 / 0.997: linear in 1/N, which extrapolated (N ≥ 40) puts N → ∞ at
+`bn2` 1.3, `bnpar` −4.4, `b1` 1.130. A numpy toy shows the mechanism with nothing else in it (a known field, Poisson data, a
+selection from N randoms per galaxy, an amplitude and a gradient bias fitted): both move linearly in 1/N and go back
+to the truth with the noise-free selection (`figures/grid_diagnostics/toy_randoms_noise.png`, script
+`logs/grid_m100/toy_randoms_noise.py`). The 100 randoms per galaxy of ph201 still shift `bn2` by ≈ +3.3 (σ 0.36 from the
+Poisson curvature), `b1` by ≈ +0.013. *The selection without counting noise* (§3.1; CPU jobs of 2026-11-17, `logs/grid_m100/`, joint minimum in (A, biases)
+at the true ICs by Gauss–Newton, §7.16): ph202 on 280/280 at order 2, its own randoms → noise-free: χ² 386 691 → 338 765,
+`b1` 1.230 → 1.151, `bn2` 18.8 → 1.2, `bnpar` −27.0 → −3.4, `b1_alpha` 1.009 → 1.077, A 0.9866 → 0.9912, the biases of
+ph201 in the same setting (`b1` 1.153, `bn2` 1.3, `bnpar` −1.7, A 0.9896); ph201 at 300 particles: χ² −9 700, `bn2`
+5.5 → 1.5, A +0.0010; at mesh 160 χ² −40 000. A and `bn2` at the minimum against 1/N (ph201, 280/280) fall on a line to
+the noise-free point. With the noise-free selection, the order-3 biases and the paint grid of the configs (260 cells,
+§7.16), the code of §2.5 and §3.1 gives A_min 0.9976 ± 0.0021 (ph201) and 0.9986 ± 0.0020 (ph202) (CPU job 61472358,
+`logs/grid_m100/code_newton_ph20?.log`, `figures/galaxy_likelihood_profile/abacus_gxyonly_cosmo_box5000_m100{,_ph202}_newton.json`, the biases and noise fit every final-configuration check reads; a 300-cell paint grid gives 0.9973 and 0.9995), with the same biases on both
+skies (`b1` 1.133 / 1.132, `bn2` −1.9 / −1.7, `bnpar` −13.4 / −14.6, `b3` −1.13 / −1.09). The noise law fitted at that
+minimum, `s_e` 0.901 / 0.900, `s_ed` 0.221 / 0.214 (ph201 / ph202), is the configs' prior centre and held noise.
+The true-IC test at those biases (`validate_galaxy_from_ic.py --profile <the Newton json>`,
+`figures/galaxy_ic_test/abacus_gxyonly_cosmo_box5000_m100{,_ph202}.{png,json}`), all cells, k < 0.01 / 0.01–0.02 /
+0.02–0.04 / 0.04–0.063: transfer 1.008 / 1.002 / 1.002 / 1.000 (ph201) and 0.950 / 1.000 / 1.001 / 1.001 (ph202),
+whitened residual 0.90 / 0.85 / 0.83 / 0.82 and 1.39 / 0.85 / 0.83 / 0.82: the ph202 deficit at k 0.01–0.04 is gone;
+below k = 0.01 ph202 keeps the radial modes of the imposed n(z) (above), which the amplitude does not feel
+(A_min 0.9986 with every mode). Per shell, with the global biases, the transfer is 0.985–0.991 in the nearest shell and
+1.004–1.010 in the middle one on both skies, the redshift evolution the bias model does not hold to 1 %. The ph202 galaxy deficit and its biases were the
+counting noise of its randoms.
+*Angular spectra on the final configuration* (`quick_cl_spectra.py` on `validation/closure_box5000_m100_ph202.yaml`:
+noise-free selection, paint 260, truth the ph202 Newton biases at order 3, 20 realisations from seed 77; Abacus ph202
+on the same config with `observation_mode: abacus`; CPU jobs of 2026-11-17, `logs/grid_m100/step3b_cl_{closure,abacus}.log`;
+`figures/spectra_diagnostic/cl_{closure_box5000_m100_ph202_20real,abacus_box5000_m100_ph202}.{png,npz}`), measured over
+the figure's theory: closure κκ 0.97–1.00 at ℓ 45–237; gg 0.99–1.02 and κg 0.98–1.01 at ℓ 45–111, then gg 1.03, 1.04,
+1.06, 1.12, 1.21 and κg 0.99, 0.97, 0.94, 0.92, 0.97 at ℓ 129, 151, 175, 204, 237, as at mesh 160; Abacus κκ 0.99–1.02,
+gg 0.97–1.10, κg 0.97–1.07 at ℓ 71–237. The high-ℓ departures are the theory curve's (`logs/grid_m100/cl_theory_tests.py`,
+not in the repository: the measured closure spectra over the figure's theory and over two changed theories, the change
+entered as a ratio of Limber spectra; the script's own normalisation is off by one bias factor, gg 0.77 and κg 0.87 on the
+plateau, 0.87² = 0.76, so the shapes below are over the ℓ 52–111 plateau). gg at ℓ 129 / 151 / 175 / 204 / 237: +2 / +2 /
++4 / +10 / +19 % with the figure's sharp cut of P(k) at the init Nyquist (k 0.151), +1 / +1 / +1 / +3 / +4 % without it
+(+1 / +1 / +1 / +3 / +5 % with the cut at twice that k): the model's galaxies have power beyond the init grid's Nyquist
+(the bias products and 2LPT reach it). κg: −1 / −3 / −5 / −7 / −2 % against the figure's theory, which leaves out the
+per-shell multipole cut of the model's κ (§2.6, 20 of 32 shells), +1 / 0 / 0 / +1.5 / +3 % with it (each row over its
+own plateau). The figure's theory now has both (`validation.compute_cl_theory`: gg without the k cut, κg through each
+Born shell's multipole taper, one radial window per multipole; `quick_cl_spectra.py --replot`, 2026-11-18): measured
+over it at ℓ 129 / 151 / 175 / 204 / 237, gg 1.02 / 1.02 / 1.02 / 1.04 / 1.06 and κg 1.01 / 1.00 / 1.00 / 1.02 / 1.03,
+0.98–1.02 for both at ℓ 45–111.
+*3-D spectra on the final configuration* (`quick_pk_spectra.py`, CPU jobs of 2026-11-17, `logs/grid_m100/step3b_pk_closure.log`;
+`figures/spectra_diagnostic/pk_{closure_matter,abacus_vs_model}_box5000_m100_ph202.png`). Closure matter `P(k)` (10
+realisations, the light-cone-averaged linear theory of §6): 1.02–1.05 at k 0.005–0.025 (scatter of one realisation
+0.02–0.05, so the mean is 3–6σ above), 0.99–1.01 at 0.03–0.065, falling to 0.955 at k ≈ 0.085 in the corner modes and
+0.96–0.97 to 0.098; that theory weights the growth by volume and is linear, and the shape against it is not examined
+further (the true-IC tests are the model's check). Abacus `P_gg` over the model at the ph202 Newton biases (3
+realisations; the log of that job was overwritten, the numbers are read off the figure): 0.94–1.11 at k < 0.03 within
+the model's realisation band, 0.97–1.03 from 0.03 to 0.095. Against the record above (the same figure before the noise-free selection), gg and κg moved from below
+the theory (0.90–0.94, 0.84–0.93 at ℓ 129–237) to above it: the closure's truth changed, `bn2` +17.8 → −1.7 (the
+randoms' counting noise had set it), and −`bn2`k² takes 0.3 off b_E ≈ 2.15 at k ≈ 0.13; a linear-bias theory follows
+neither truth at high ℓ, so this figure checks the theory curve, not the model (the theory holds the linear bias only).
+*The corner bins of the whitened residual* (CPU jobs of 2026-11-18, `logs/corner_noise/`, not in the repository). In the
+true-IC test the residual is flat at 0.80–0.83 to k 0.098 and falls to 0.78 / 0.75 / 0.62 (ph201) and 0.75 / 0.76 / 0.59
+(ph202) in the last three bins (k 0.100–0.109), where the closure stays at 1. Split by mode, the fall is on the Nyquist
+planes of the final grid (a component at ±k_N), which make 35 / 47 / 95 % of those bins and none below k_N: off the
+planes the residual follows the closure drawn with the fitted noise law, pulls −0.4 / +0.3 / −1.5σ (ph201) and −2.0 /
+−0.5 / −0.9σ (ph202) in the three bins, the last of which holds about four modes off the planes. The catalogue split at random in two halves, each painted by the
+loader's chain, gives pure Poisson noise whatever the clustering: (d₁ − d₂)/√(n̄S) has power 1.00 off the planes and 0.82–0.93 on
+them, on both skies. Poisson points through the same chain (`interlace_paint_deconv`, paint 260 → final 100), whitened
+power on the planes: uniform over the whole box 1.00 (estimator over every cell or over the survey cells alike),
+uniform inside the survey cells only 0.88, at the survey's n̄S 0.85, the galaxies 0.87; a uniform box on a 52 → 20 toy,
+1.00. The band limit of a noise field that stops at the survey's boundary moves part of the planes' variance out of the
+survey cells; it is a property of the paint chain on the geometry, not of the galaxies or the model. The likelihood
+gives those modes the variance n̄S, about 15 % more than they hold: a few per cent of the cube's modes slightly
+under-weighted, no bias in the mean (data and model go through the same chain). The closure's noise, drawn per cell,
+does not have it.
+*Joint κ–galaxies at the true ICs* (`validate_joint_from_ic.py` on `abacus/abacus_joint_so_cosmo_box5000_m100_ph202.yaml`
+with the ph202 Newton biases, CPU jobs of 2026-11-17, `figures/joint_ic_test/abacus_joint_so_cosmo_box5000_m100_ph202{,_nocut}.{png,json}`).
+C_κg of the Abacus map × LRG catalogue over the model's, ℓ 2–10 / 10–20 / 20–40 / 40–70 / 70–110 / 110–160 / 160–257:
+0.951 ± 0.071 / 1.007 ± 0.049 / 0.983 ± 0.027 / 0.976 ± 0.019 / 0.979 ± 0.014 / 0.980 ± 0.012 / 1.218 ± 0.010; model κ ×
+Abacus galaxies over the model 0.96–1.00 and 1.001 in the last band, Abacus κ × model galaxies 0.973–0.987 and 1.171: the
+galaxy side agrees, the departures are κ's. Without the per-shell cut (`shell_kmax: 0`, a test config) the last band is
+1.011: there the model's κ lacks the multipoles the cut removes and the galaxy maps, projected from the galaxies, hold
+the matter at those k. The likelihood holds the galaxies on the final cube only: with both galaxy maps projected from
+the final-grid count meshes (`logs/joint_lowpass/joint_lowpass.py`, not in the repository; the field along each ray of
+the projection sphere, trilinear on the cell nodes), the last band is 1.035 ± 0.093 (Abacus galaxies) and 1.021 ± 0.086
+(model galaxies), and the cut is invisible to the joint likelihood. Over ℓ 20–160, weighted, the low-passed ratio
+is 0.984 ± 0.010 with the likelihood's mean (the model's κ times the out-of-model gain, §3.2) and 0.998 ± 0.010 with
+the Born κ alone; without the cut, where the gain holds the tents' end ramps only (1.007–1.016), 0.992 and 1.000; the
+κ transfer C(κ_A, κ_m)/C(κ_m, κ_m) over the same bands is 1.005 / 0.978 / 1.008 / 0.996 with the gain and 1.013 / 0.987 /
+1.023 / 1.021 without. κ alone needs the gain, the part of κ correlated with the galaxies does not: the gain is the
+regression of the matter left out on the model's *total* κ, and multiplies the galaxy shells, held whole, as much as
+the near shells whose tapers it compensates; the galaxies fix the matter of their shells, so the joint mean
+over-predicts C_κg by about β_ℓ. A gain acting shell by shell on the shells it concerns removes it (§8).
 
 **The box faces** (same job, `stage1.py --faces`: the whitened residual at the true ICs over the noise law
 fitted on all cells, `z²`, against the distance to the nearest face of the cube the model treats as
@@ -2730,10 +2984,26 @@ AbacusLensing maps the data are an N-body light cone and the two-point theory is
 posteriors sit at the same place on both skies, so the ph201 κ-only offset (Mahalanobis 2.4, +2.0σ / −2.4σ) is that
 map's with its noise draw, found by the two-point analysis as well, and not a bias of the field-level κ model.
 His theory is Limber at every ℓ: our exact-over-Limber ratio applied to his grid moves his closure posterior by
-+0.0007 / −0.0008 (0.1σ, `logs/twopt_limber/limber_check.py`). In the paper: `fig:twopt` (closure, §6, the method),
++0.0007 / −0.0008 (0.1σ, `logs/twopt_limber/limber_check.py`). His likelihood of the bandpowers is Gaussian; with the
+Wishart likelihood of full-sky bandpowers in its place his posterior barely moves (his test, reported 2026-11-16, not in
+his repository), so the Gaussian is kept: the Wishart form has no tractable counterpart on a masked sky. In the paper: `fig:twopt` (closure, §6, the method),
 `fig:twopt_cl` and `fig:twopt_abacus` (ph202, §5, the κ model).
 
 ## 8. Remaining steps before the paper
+
+**Before any galaxy or joint run** (no sampling, CPU). The two questions of 2026-11-16 are settled (§7.16, §7.19):
+the particle lattice commensurate with the paint grid biased the amplitude at the true ICs, and the randoms' counting
+noise in the selection pulled the biases (it made the ph202 deficit). The code refuses commensurate grids (§2.5), the
+selection is rebuilt without counting noise (§3.1), the mesh-100 and mesh-160 configs paint on 260 cells with 280
+particles, and the ph201 mesh-100 configs take the order-3 biases. Before the runs, on the final configs: the joint
+minimum and the noise fit at the true ICs (`galaxy_likelihood_profile.py --mode newton`; the configs' held noise and the
+closures' truth biases follow it), the true-IC test (`validate_galaxy_from_ic.py`) and the spectra (`quick_pk_spectra.py`,
+`quick_cl_spectra.py`); job 61164431 (the former ph202 config) is cancelled, not released. Done on the final configs
+(2026-11-17/18, §7.14, §7.19): the Newton minima, the true-IC galaxy test (the corner bins understood), `Omega_m` at the
+true ICs within 0.7σ on both skies with the bias power law, the spectra. Left before the **joint** run only: the
+out-of-model gain acts on the whole κ map and over-predicts C_κg by about β_ℓ once the galaxies fix their shells
+(§7.19); it is to act shell by shell, then the joint true-IC test is repeated on the low-passed galaxy maps. The
+galaxies-alone run does not see it.
 
 The analysis aims at box 5000 with κ at nside 128 (ℓ ≤ 256) and the galaxies on a grid finer than mesh 54
 (§7.19); the mesh-54 results (§7.13–7.17) are the record. Two questions come first, each settled with
@@ -2790,11 +3060,15 @@ the production step and path length before production runs):
    production configs hold the noise at the fit at the true ICs, so they do not make this test. A noise field
    with density-dependent and quadratic couplings (arXiv:2511.05484) removes the need for an informative prior.
 3. **The runs at the chosen grid** (galaxies alone, κ alone, joint). The two standard checks of the grid are done on
-   ph202 (§7.19): the angular spectra hold; the galaxy counts at the true ICs have a transfer of 0.95 at k < 0.02 over
-   the middle and far shells, which ph201 at the same grid does not have. Localised in §7.19 ("Where the ph202
-   large-scale galaxy deficit comes from"): not the ICs, the matter, the crop, the randoms nor the redshift-space
-   distortions; the halos of the two skies agree, the LRGs of the two skies differ in real space as in redshift space (§7.19 table). Open: why the
-   ph202 selection of halos carries it; no ph202 galaxy run before. Diagnostics of every run: R̂ (split, and the drift the chains
+   ph202 (§7.19): the angular spectra hold; the galaxy counts at the true ICs had a transfer of 0.95 at k < 0.02, which
+   ph201 at the same grid does not have. Its cause, settled (§7.19): the counting noise of the ph202 randoms (20 per
+   galaxy against 100 for ph201) in the selection, which pulls the bias fit (`bn2` ≈ 17, `bnpar` ≈ −30); with the
+   selection rebuilt without counting noise (§3.1) both skies give the same biases. The paint grid of the mesh-100
+   configs was commensurate with the particles (280 on 280), which biased the amplitude (§7.16); the configs now paint
+   on 260 cells. With both and the order-3 biases, A_min at the true ICs is 0.998 (ph201) and 0.999 (ph202) ± 0.002.
+   Before the ph202 runs: the noise fit, the true-IC test and the spectra on the final configs (§8, top); job 61164431
+   (the former config, now refused by the grid check) is cancelled. Before real data: the selection's angular
+   completeness as a continuous map and n(z) per imaging region (§3.1), to confirm with A. de Mattia. Diagnostics of every run: R̂ (split, and the drift the chains
    share, §5), ESS, step size, warm-up figures, `analyze_run.py`, `compare_runs.py`,
    `compare_reconstruction.py`, `triplet_numbers.py`, paired gains against the Fisher. The mesh-54 runs
    with the current code (`gxy_stoch_noise: true` set in `abacus/abacus_{gxyonly,joint_so}_cosmo_box5000.yaml`,
@@ -2879,7 +3153,9 @@ spectra (05, `quick_pk_spectra.py`), the angular spectra (05, `quick_cl_spectra.
 seed 77), the maps (04, `plot_2D_maps.py`), the Fisher contours (06, `fisher_cosmo.py --b1_alpha`), the
 lensing fraction (`plot_lensing_fraction.py`), the two-point comparison (§7.20: `fig:twopt` 06 and
 `fig:twopt_abacus` 05, `plot_twopt_overlay.py`; `fig:twopt_cl` 05, C. Payerne's figures in `figures/twopt_payerne/`).
-With no file yet: `fig:nonlinear` (01, `plot_linear_vs_nbody.py`, never saved under `figures/`),
+With no file yet: `fig:shell_cut` (02: the model's κ power at 280³ / nside 128 with and without the per-shell cut,
+`validate_kappa_from_ic.py`), `fig:lattice` (02: the lattice template and its S/N against the particle spacing, from
+`figures/kappa_lattice_template/`), `fig:tents` (02, a schematic),
 `fig:cosmo` (06: the triangle of `compare_runs.py` with the Fisher ellipses of `fisher_cosmo.py` overlaid, to add); `fig:noise` (03) lacks the signal and `C_ℓ^out`;
 `docs/figures/fli_architecture.png` (02) lacks the out-of-model term and the per-shell cut. Records,
 not regenerated: `results/reconstruction_noise_ladder_250.png` (06, script not in the repository) and
