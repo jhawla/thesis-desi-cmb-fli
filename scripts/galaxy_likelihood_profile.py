@@ -9,8 +9,17 @@ of the field amplitude A at the fiducial cosmology (`--mode amplitude`: A·init_
 A × the fiducial for the likelihood) or of `Omega_m` at the true field (`--mode omega_m`). A model
 consistent with the data has its minimum at A = 1 and at the true `Omega_m`.
 
+`--mode newton` finds the joint minimum in (A, biases) directly: the biases by L-BFGS at A = 1, then
+Gauss–Newton steps in A and the biases (the third-order `b3`, `b_{δs²}`, `b_{s³}` too when the config has
+`bias_order: 3`), each with the model's Jacobian by forward-mode differentiation, until the step in A is
+below 1e-4; σ_A from Δχ² = 1; then the noise law of the configs (`s_e`, `s_ed`) fitted to the
+residual at the minimum. It is the check of a grid or a selection before a run (minutes on a CPU
+node; pipeline §2.5, §7.16): A_min within about σ_A of 1.
+
     python scripts/galaxy_likelihood_profile.py --config configs/inference/abacus/abacus_gxyonly_cosmo_box5000.yaml \\
         --mode amplitude --values 1.0 0.9 0.95 1.05
+    python scripts/galaxy_likelihood_profile.py --config configs/inference/abacus/abacus_gxyonly_cosmo_box5000_m100_ph202.yaml \\
+        --mode newton
 
 Prints χ² per value (split between the survey cells within 300 Mpc/h of a box face and the others)
 and the profiled biases; writes `figures/galaxy_likelihood_profile/<config stem>_<mode>.json`. Needs a
@@ -41,8 +50,10 @@ OUT = Path(__file__).resolve().parents[1] / "figures" / "galaxy_likelihood_profi
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--config", required=True)
-    ap.add_argument("--mode", choices=["amplitude", "omega_m"], default="amplitude")
-    ap.add_argument("--values", type=float, nargs="+", required=True)
+    ap.add_argument("--mode", choices=["amplitude", "omega_m", "newton"], default="amplitude")
+    ap.add_argument(
+        "--values", type=float, nargs="+", default=[1.0], help="A or Omega_m values (not newton)"
+    )
     ap.add_argument(
         "--alpha0", action="store_true", help="z-independent bias (b1_alpha fixed at 0)"
     )
@@ -123,6 +134,22 @@ def main():
     x0 = X0.copy()
     if args.alpha0:
         x0[5] = 0.0
+    if args.mode == "newton":
+        newton(
+            args,
+            model,
+            obs,
+            mask,
+            nbar,
+            selec_paint,
+            init_true,
+            get_cosmology(Omega_m=om0, sigma8=s80),
+            vg,
+            x0,
+            free,
+            t0,
+        )
+        return
     res = []
     for v in args.values:
         om, amp = (om0, v) if args.mode == "amplitude" else (v, 1.0)
@@ -170,6 +197,108 @@ def main():
                 "cells": int(mask.sum()),
                 "cells_near_face": int((mask & edge).sum()),
                 "profile": res,
+            },
+            indent=1,
+        )
+        + "\n"
+    )
+    print(f"Saved {out}")
+
+
+def newton(
+    args, model, obs, mask, nbar, selec_paint, init_true, cosmo, vg, x0, free, t0, max_iter=8
+):
+    """Joint minimum in (A, biases): L-BFGS on the biases at A = 1, then Gauss–Newton steps."""
+    om = float(cosmo.Omega_m)
+
+    def fun(u):
+        th = x0.copy()
+        th[free] = u * SCALE[free]
+        val, g = vg(jnp.asarray(th, jnp.float32), om, 1.0)
+        return float(val), np.asarray(g, float)[free] * SCALE[free]
+
+    r = minimize(
+        fun,
+        x0[free] / SCALE[free],
+        jac=True,
+        method="L-BFGS-B",
+        options={"maxiter": 200, "gtol": 1e-3},
+    )
+    start = x0.copy()
+    start[free] = r.x * SCALE[free]
+    names = ["A"] + [NAMES[i] for i in free]
+    third = getattr(model, "bias_order", 2) == 3
+    if third:
+        names += ["b3", "bds2", "bs3"]
+    fixed = {NAMES[i]: float(x0[i]) for i in range(len(NAMES)) if i not in free}
+    sd = jnp.sqrt(jnp.maximum(nbar, 1e-10))
+
+    def white(th):
+        b = {**fixed, **dict(zip(names[1:], th[1:], strict=True))}
+        f = model.evolve((cosmo, b, {"init_mesh": th[0] * init_true}, {"fNL": 0.0}))
+        m = model.gxy_count * band_limit(f["gxy_paint"] * selec_paint, model._sim_mesh)
+        return jnp.where(mask, m / sd, 0.0)
+
+    wj = jax.jit(white)
+    tangent = jax.jit(lambda th, v: jax.jvp(white, (th,), (v,))[1])
+    ow = jnp.where(mask, obs / sd, 0.0)
+    th = np.array([1.0] + [float(start[i]) for i in free] + [0.0] * (3 * third))
+    eye = np.eye(len(names), dtype=np.float32)
+    hist = []
+    for it in range(max_iter):
+        thj = jnp.asarray(th, jnp.float32)
+        res = np.asarray(ow - wj(thj), np.float64).ravel()
+        jac = np.stack([np.asarray(tangent(thj, jnp.asarray(e)), np.float64).ravel() for e in eye])
+        fish = jac @ jac.T
+        step = np.linalg.solve(fish, jac @ res)
+        sigma = np.sqrt(np.diag(np.linalg.inv(fish)))
+        hist.append(
+            {
+                "theta": dict(zip(names, map(float, th), strict=True)),
+                "chi2": float(res @ res),
+                "sigma": dict(zip(names, map(float, sigma), strict=True)),
+                "step_A": float(step[0]),
+            }
+        )
+        print(
+            f"newton it {it}: chi2 {res @ res:.1f}; "
+            + ", ".join(f"{n} {v:.4f}" for n, v in zip(names, th, strict=True))
+            + f"; step A {step[0]:+.5f} (sigma_A {sigma[0]:.4f})  t {time.time() - t0:.0f}s",
+            flush=True,
+        )
+        th = th + step
+        if it > 0 and abs(step[0]) < 1e-4:
+            break
+    last = hist[-1]
+    print(f"A_min {last['theta']['A'] + last['step_A']:.4f} ± {last['sigma']['A']:.4f}", flush=True)
+    # The noise law of the configs, std = s_e (1 + s_ed max(delta_m, -1)) sqrt(nbar S), fitted to the
+    # residual at the minimum by maximum likelihood over the survey cells (pipeline §3.1).
+    thj = jnp.asarray(th, jnp.float32)
+    mdl = np.asarray(wj(thj) * sd)[np.asarray(mask)]
+    nb = np.asarray(nbar)[np.asarray(mask)]
+    dev = (np.asarray(obs)[np.asarray(mask)] - mdl) / np.sqrt(nb)
+    dm = np.maximum(mdl / nb - 1, -1)
+
+    def nll(p):
+        s = p[0] * (1 + p[1] * dm)
+        return np.sum((dev / s) ** 2 + 2 * np.log(np.abs(s)))
+
+    noise = minimize(
+        nll, [1.0, 0.2], method="Nelder-Mead", options={"xatol": 1e-5, "fatol": 1e-3}
+    ).x
+    print(f"noise fit at the minimum: s_e {noise[0]:.4f}, s_ed {noise[1]:.4f}", flush=True)
+    OUT.mkdir(parents=True, exist_ok=True)
+    out = OUT / f"{Path(args.config).stem}_newton{'_alpha0' if args.alpha0 else ''}{args.tag}.json"
+    out.write_text(
+        json.dumps(
+            {
+                "config": args.config,
+                "mode": "newton",
+                "cells": int(mask.sum()),
+                "A_min": last["theta"]["A"] + last["step_A"],
+                "sigma_A": last["sigma"]["A"],
+                "noise_fit": {"s_e": float(noise[0]), "s_ed": float(noise[1])},
+                "iterations": hist,
             },
             indent=1,
         )

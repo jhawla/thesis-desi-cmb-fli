@@ -31,9 +31,6 @@ from desi_cmb_fli.utils import ObservationMode, restore_model_state_from_truth
 # Enable x64 (needed for some operations)
 jax.config.update("jax_enable_x64", True)
 
-IC_SMOOTHING_MPC = 100.0
-
-
 def _merge_batches(run_dir):
     """
     Merge separate batch output files into a single samples.npz.
@@ -320,14 +317,16 @@ def _quantiles(x):
 def plot_initial_conditions(model, truth, samples, out_path, truth_cosmo=None,
                             what="posterior samples"):
     """True initial field against its posterior: posterior mean and spread in the plane through the
-    observer, posterior of the power and of the coherence, posterior of the reconstruction per radius.
+    observer, posterior of the power and of the coherence, correlation of the posterior mean with the
+    truth per radius, all at the resolution of the field.
 
-    ``samples`` yields (Fourier field, cosmology) pairs (``_field_samples``). Reconstruction is a
-    property of the posterior, so each quality curve is the distribution over the samples of a
-    per-sample metric (median, 16-84 %), with the posterior mean's beside it; the agreement between
-    chains answers convergence and is not shown. Each field's power is over the linear spectrum of
-    its own cosmology (``truth_cosmo`` for the truth), all expected at 1: with the cosmology free, a
-    sample carries the spectrum of its own Omega_m, sigma8.
+    ``samples`` yields (Fourier field, cosmology) pairs (``_field_samples``). The power and the
+    coherence are distributions over the samples of a per-sample curve (median, 16-84 %); each
+    field's power is over the linear spectrum of its own cosmology (``truth_cosmo`` for the truth),
+    all expected at 1: with the cosmology free, a sample carries the spectrum of its own Omega_m,
+    sigma8. Per radius, the correlation of the posterior mean with the truth is
+    sqrt(Var(mean) / Var(truth)), the fraction of the true field's variance the data recover at the
+    cell scale; the agreement between chains answers convergence and is not shown.
     """
     if "init_mesh" not in truth:
         print("truth.npz has no init_mesh (no abacus_ic in the config): skipping.")
@@ -351,16 +350,8 @@ def plot_initial_conditions(model, truth, samples, out_path, truth_cosmo=None,
     def prior_pow(cosmo, k):
         return np.asarray(lin_power_interp(get_cosmology(**cosmo))(jnp.asarray(k)))
 
-    kx = 2 * np.pi * np.fft.fftfreq(shape[0], d=box[0] / shape[0])
-    ky = 2 * np.pi * np.fft.fftfreq(shape[1], d=box[1] / shape[1])
-    kz = 2 * np.pi * np.fft.rfftfreq(shape[2], d=box[2] / shape[2])
-    k2 = kx[:, None, None] ** 2 + ky[None, :, None] ** 2 + kz[None, None, :] ** 2
-    smooth = jnp.asarray(np.exp(-0.5 * k2 * IC_SMOOTHING_MPC**2))
-    # rms the prior gives the smoothed field at each cosmology, the reference of the radial profile
-    kmod, w2 = np.sqrt(k2).ravel(), np.asarray(smooth).ravel() ** 2
-    true_prior_rms2 = (prior_pow(truth_cosmo, kmod) * w2).sum()
     true_real = jnp.fft.irfftn(true_k)
-    true_r = np.asarray(jnp.fft.irfftn(true_k * smooth))
+    true_f = np.asarray(true_real)
 
     rad = np.asarray(radius_mesh(model.box_center, box, np.asarray(shape), curved_sky=True))
     edges = np.arange(0.0, float(rad.max()) + 200.0, 200.0)
@@ -368,10 +359,9 @@ def plot_initial_conditions(model, truth, samples, out_path, truth_cosmo=None,
     shells = [(0.5 * (r0 + r1), m) for r0, r1 in zip(edges[:-1], edges[1:], strict=False)
               if (m := (rad >= r0) & (rad < r1)).sum() >= 2]
     mid = np.array([c for c, _ in shells])
-    true_rms = np.array([true_r[m].std() for _, m in shells])
 
-    amp_true, amp_rec, coh, ratio, diff, corr = None, [], [], [], [], []
-    s1, s2, n = np.zeros(shape), np.zeros(shape), 0
+    amp_true, amp_rec, coh = None, [], []
+    f1, f2, n = np.zeros(shape), np.zeros(shape), 0
     for rec_k, cosmo in itertools.chain([first], samples):
         ks, pow_rec, trans, c = (np.asarray(x) for x in model.powtranscoh(true_real,
                                                                           jnp.fft.irfftn(rec_k)))
@@ -379,22 +369,20 @@ def plot_initial_conditions(model, truth, samples, out_path, truth_cosmo=None,
             amp_true = np.sqrt(pow_rec / trans**2 / prior_pow(truth_cosmo, ks))
         amp_rec.append(np.sqrt(pow_rec / prior_pow(cosmo, ks)))
         coh.append(c)
-        prior_rms_ratio = np.sqrt((prior_pow(cosmo, kmod) * w2).sum() / true_prior_rms2)
-        rec_r = np.asarray(jnp.fft.irfftn(rec_k * smooth))
-        ratio.append([rec_r[m].std() for _, m in shells] / true_rms / prior_rms_ratio)
-        diff.append([(rec_r[m] - true_r[m]).std() for _, m in shells] / true_rms)
-        corr.append([np.corrcoef(true_r[m], rec_r[m])[0, 1] for _, m in shells])
-        s1, s2, n = s1 + rec_r, s2 + rec_r**2, n + 1
-    mean_r = s1 / n
-    std_r = np.sqrt(np.maximum(s2 / n - mean_r**2, 0.0))
-    corr_mean = np.array([np.corrcoef(true_r[m], mean_r[m])[0, 1] for _, m in shells])
+        rec_f = np.asarray(jnp.fft.irfftn(rec_k))
+        f1, f2, n = f1 + rec_f, f2 + rec_f**2, n + 1
+    # Full resolution: the posterior mean holds only what the data constrain, and its correlation
+    # with the truth is sqrt(Var(mean) / Var(truth)), the fraction of the true field recovered.
+    mean_f = f1 / n
+    corr_mean = np.array([np.corrcoef(true_f[m], mean_f[m])[0, 1] for _, m in shells])
+    std_f = np.sqrt(np.maximum(f2 / n - mean_f**2, 0.0))
 
     # Slice the plane that contains the observer, in observer-centred coordinates, so that the
     # figure is right for every observer_mode (centre of the box, a face, a corner).
     center = np.asarray(model.box_center, dtype=float)
     coord = [np.arange(shape[d]) * (box[d] / shape[d]) - box[d] / 2 + center[d] for d in range(3)]
     sl = int(np.clip(np.argmin(np.abs(coord[2])), 0, shape[2] - 1))
-    lim = float(np.percentile(np.abs(true_r[:, :, sl]), 99.5))
+    lim = float(np.percentile(np.abs(true_f[:, :, sl]), 99.5))
     extent = [coord[0][0], coord[0][-1], coord[1][0], coord[1][-1]]
     chi_lo, chi_hi = ((float(x) for x in np.asarray(truth["chi_range_gxy"]))
                       if "chi_range_gxy" in truth else (None, None))
@@ -402,9 +390,9 @@ def plot_initial_conditions(model, truth, samples, out_path, truth_cosmo=None,
     fig, axes = plt.subplots(1, 5, figsize=(25, 4.8),
                              gridspec_kw={"width_ratios": [1, 1, 1, 1.15, 1.15]})
     for ax, img, title, cmap, vlim_ in (
-        (axes[0], true_r[:, :, sl], "True initial field (simulation IC)", "RdBu_r", (-lim, lim)),
-        (axes[1], mean_r[:, :, sl], "Posterior mean", "RdBu_r", (-lim, lim)),
-        (axes[2], std_r[:, :, sl], "Posterior standard deviation", "viridis", (0.0, lim)),
+        (axes[0], true_f[:, :, sl], "True initial field (simulation IC)", "RdBu_r", (-lim, lim)),
+        (axes[1], mean_f[:, :, sl], "Posterior mean", "RdBu_r", (-lim, lim)),
+        (axes[2], std_f[:, :, sl], "Posterior standard deviation", "viridis", (0.0, lim)),
     ):
         im = ax.imshow(img.T, origin="lower", extent=extent, cmap=cmap, vmin=vlim_[0], vmax=vlim_[1])
         ax.set_title(title, fontsize=11)
@@ -435,10 +423,7 @@ def plot_initial_conditions(model, truth, samples, out_path, truth_cosmo=None,
     ax.grid(alpha=0.3)
 
     ax = axes[4]
-    band(ax, mid, ratio, "C0", "rms ratio sample/true over the prior's")
-    band(ax, mid, diff, "C1", "rms of (sample − truth) / true rms")
-    band(ax, mid, corr, "C2", "correlation of a sample with the truth")
-    ax.plot(mid, corr_mean, color="C2", ls="--", label="correlation of the posterior mean")
+    ax.plot(mid, corr_mean, "o-", color="C0", ms=4, label="posterior mean")
     if chi_lo is not None:
         ax.axvspan(chi_lo, chi_hi, color="0.85", zorder=0, label="galaxy coverage")
     if getattr(model, "cmb_enabled", False):
@@ -448,14 +433,15 @@ def plot_initial_conditions(model, truth, samples, out_path, truth_cosmo=None,
                        label=f"κ shells ({kappa_lo:.0f}–{kappa_hi:.0f})" if x == kappa_lo else None)
     ax.axhline(1.0, color="k", lw=0.8, alpha=0.5)
     ax.set_xlabel("distance from the observer [Mpc/h]")
-    ax.set_ylim(-0.05, 1.6)
+    ax.set_ylabel("correlation with the truth")
+    ax.set_ylim(-0.05, 1.05)
     ax.legend(fontsize=8)
-    ax.set_title("Reconstruction vs radius (median, 16-84 %)", fontsize=11)
+    ax.set_title(f"Reconstruction vs radius, cell {box[0] / shape[0]:.0f} Mpc/h", fontsize=11)
     ax.grid(alpha=0.3)
 
     fig.suptitle(
         f"Initial conditions — {Path(out_path).parent.parent.name}, posterior from {what}; "
-        f"Cartesian plane z=0 through the observer, Gaussian smoothing {IC_SMOOTHING_MPC:.0f} Mpc/h; "
+        f"Cartesian plane z=0 through the observer at full resolution; "
         f"dashed circles = galaxy radial range",
         fontsize=11,
     )
@@ -470,15 +456,11 @@ def plot_initial_conditions(model, truth, samples, out_path, truth_cosmo=None,
               f"posterior median {np.median(np.asarray(amp_rec)[:, lo].mean(1)):.3f}; "
               f"cross-correlation {np.median(np.asarray(coh)[:, lo].mean(1)):.3f}")
     half = 0.5 * (edges[1] - edges[0])
-    q_ratio, q_diff, q_corr = _quantiles(ratio), _quantiles(diff), _quantiles(corr)
-    print(f"  {'radius Mpc/h':>13} {'rms/true/prior':>15} {'rms(diff)/true':>15} "
-          f"{'r(sample) median [16, 84]':>27} {'r(mean)':>8}")
+    print(f"  {'radius Mpc/h':>13} {'r(mean)':>8}")
     for i, c in enumerate(mid):
         inside = ("  <-- galaxies" if chi_lo is not None
                   and c - half >= chi_lo and c + half <= chi_hi else "")
-        print(f"  {c - half:5.0f}-{c + half:5.0f} {q_ratio[0, i]:15.2f} {q_diff[0, i]:15.2f} "
-              f"{q_corr[0, i]:11.3f} [{q_corr[1, i]:6.3f}, {q_corr[2, i]:6.3f}] "
-              f"{corr_mean[i]:8.3f}{inside}")
+        print(f"  {c - half:5.0f}-{c + half:5.0f} {corr_mean[i]:8.3f}{inside}")
 
 
 def plot_kappa_maps(model, truth, positions, out_path, fixed=None, truth_has_los=False,

@@ -37,7 +37,6 @@ from desi_cmb_fli.utils import restore_model_state_from_truth  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from analyze_run import (  # noqa: E402
-    IC_SMOOTHING_MPC,
     _field_samples,
     _fixed_latents,
     _load_field_state,
@@ -188,8 +187,8 @@ def main():
     p.add_argument("--labels", nargs="*", default=None, help="one legend label per run")
     p.add_argument("--out", default=None, help="output png (default: <first run>/figures/...)")
     p.add_argument("--nbins", type=int, default=18, help="number of radial shells")
-    p.add_argument("--smoothing", type=float, default=IC_SMOOTHING_MPC,
-                   help="Gaussian smoothing of both fields, Mpc/h")
+    p.add_argument("--smoothing", type=float, default=100.0,
+                   help="Gaussian smoothing of both fields, Mpc/h: the common scale of runs on different grids")
     p.add_argument("--burn_in", type=float, default=0.5,
                    help="fraction of the recorded batches dropped (analyze_run's default)")
     args = p.parse_args()

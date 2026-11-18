@@ -31,6 +31,8 @@ from kappa_lattice_template import OM_FID, S8_FID, covariance, data_vector, load
 from scipy.interpolate import RectBivariateSpline  # noqa: E402
 from scipy.ndimage import gaussian_filter  # noqa: E402
 
+from desi_cmb_fli.bricks import samp2base  # noqa: E402
+
 OUT = Path(__file__).resolve().parents[1] / "figures" / "kappa_lattice_template"
 BLUE, ORANGE, AQUA, YELLOW, INK, MUTED = (
     "#2a78d6",
@@ -60,11 +62,11 @@ def mcmc(run):
         key=lambda f: int(re.findall(r"_(\d+)\.npz", f)[0]),
     )
     fs = fs[len(fs) // 2 :]
-    return [
-        np.concatenate([np.load(f)[p + "_"] for f in fs], 1).ravel() * c[p]["scale_fid"]
-        + c[p]["loc_fid"]
-        for p in ("Omega_m", "sigma8")
-    ]
+    lat = {
+        p + "_": np.concatenate([np.load(f)[p + "_"] for f in fs], 1) for p in ("Omega_m", "sigma8")
+    }
+    base = samp2base(lat, c)  # truncated priors: not an affine map
+    return [np.asarray(base[p]).ravel() for p in ("Omega_m", "sigma8")]
 
 
 def mass_levels(w, masses=(0.95, 0.68)):
@@ -174,7 +176,7 @@ def fig_contours(g, runs):
     )
 
 
-def fig_template(g, cfg_path, geometries):
+def fig_template(g, cfg_path, geometries, mark=None):
     import healpy as hp
     import jax.numpy as jnp
 
@@ -211,56 +213,50 @@ def fig_template(g, cfg_path, geometries):
         cbar=True,
         unit="κ",
         format="%.4f",
-        title=f"Model template E[κ] at the truth, ℓ ≤ 64\nbox {g['box']:.0f}, spacing {g['spacing']:.1f} Mpc/h",
+        title=f"template, d = {g['spacing']:.1f} Mpc/h",
     )
-    colors = {7500: BLUE, 6000: ORANGE, 5000: AQUA}
-    ax = fig.add_subplot(1, 3, 2)
-    for p in pts:
-        ax.plot(
-            p["d"],
-            p["sn"],
-            "o",
-            ms=8,
-            color=colors.get(round(p["box"] / 500) * 500, YELLOW),
-            mec="white",
-            mew=1.5,
-        )
-    ax.axhline(1, color=MUTED, lw=1, ls="--")
-    for b in sorted({round(p["box"]) for p in pts}, reverse=True):
-        ax.plot([], [], "o", color=colors.get(round(b / 500) * 500, YELLOW), ms=8, label=f"box {b}")
-    ax.legend(frameon=False, fontsize=8)
-    ax.set_xlabel("particle spacing d [Mpc/h]")
-    ax.set_ylabel("template S/N, ℓ ≤ 64")
-    ax.set_title("Template signal-to-noise against the covariance", fontsize=10, color=INK)
-    ax.grid(alpha=0.2)
-    ax = fig.add_subplot(1, 3, 3)
     d = np.array([p["d"] for p in pts])
     damp = np.array([p["damp"] for p in pts])
+    sn = np.array([p["sn"] for p in pts])
+    here = np.isclose(d, mark, atol=0.1) if mark else np.zeros(len(d), bool)
     sigma = float(np.sqrt(np.mean(-2 * np.log(damp) / (2 * np.pi / d) ** 2)))
-    for p in pts:
+    for i, (y, label) in enumerate(
+        ((sn, "template S/N, ℓ ≤ 64"), (damp, "template / undisplaced lattice"))
+    ):
+        ax = fig.add_subplot(1, 3, i + 2)
         ax.plot(
-            p["d"],
-            p["damp"],
+            d[~here],
+            y[~here],
             "o",
             ms=8,
-            color=colors.get(round(p["box"] / 500) * 500, YELLOW),
+            color=BLUE,
             mec="white",
             mew=1.5,
+            label="model geometries",
         )
-    dd = np.linspace(15, 40, 200)
-    ax.plot(
-        dd,
-        np.exp(-0.5 * (2 * np.pi / dd) ** 2 * sigma**2),
-        color=INK,
-        lw=2,
-        label=rf"empirical fit $\exp[-(2\pi/d)^2\sigma^2/2]$, $\sigma$ = {sigma:.1f} Mpc/h"
-        + "\n(the form only: the linear displacements are smaller, pipeline 7.15)",
-    )
-    ax.legend(frameon=False, fontsize=8)
-    ax.set_xlabel("particle spacing d [Mpc/h]")
-    ax.set_ylabel("template / undisplaced lattice")
-    ax.set_title("Template over the undisplaced-lattice map", fontsize=10, color=INK)
-    ax.grid(alpha=0.2)
+        ax.plot(
+            d[here],
+            y[here],
+            "o",
+            ms=10,
+            color=ORANGE,
+            mec="white",
+            mew=1.5,
+            label="analysis (280³, 5000 Mpc/h)",
+        )
+        if i == 1:
+            dd = np.linspace(15, 40, 200)
+            ax.plot(
+                dd,
+                np.exp(-0.5 * (2 * np.pi / dd) ** 2 * sigma**2),
+                color=INK,
+                lw=1.5,
+                label=rf"$\exp[-(2\pi/d)^2\sigma^2/2]$, $\sigma$ = {sigma:.1f} Mpc/h",
+            )
+        ax.legend(frameon=False, fontsize=8, loc="upper left")
+        ax.set_xlabel("particle spacing d [Mpc/h]")
+        ax.set_ylabel(label)
+        ax.grid(alpha=0.2)
     fig.subplots_adjust(left=0.02, right=0.98, bottom=0.14, top=0.86, wspace=0.32)
     fig.savefig(OUT / "kappa_template_map_and_spacing.png", dpi=150)
     (OUT / "kappa_template_map_and_spacing.json").write_text(
@@ -277,6 +273,7 @@ def main():
         "--grid", required=True, help="glob of kappa_lattice_template.py measure outputs"
     )
     ap.add_argument("--runs", nargs="+", default=[], help="label=run_dir of κ-only runs")
+    ap.add_argument("--mark_spacing", type=float, default=None, help="particle spacing to mark")
     ap.add_argument(
         "--geometries", default=None, help="glob of analyse --json outputs, one per geometry"
     )
@@ -286,7 +283,7 @@ def main():
     if args.runs:
         fig_contours(g, dict(r.split("=", 1) for r in args.runs))
     if args.geometries:
-        fig_template(g, args.config, args.geometries)
+        fig_template(g, args.config, args.geometries, args.mark_spacing)
     print(f"Saved in {OUT}")
 
 

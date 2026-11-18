@@ -194,6 +194,11 @@ def analyse(args):
     from scipy.interpolate import RectBivariateSpline
 
     g = load_grid(args.grid)
+    if (
+        args.nell
+    ):  # another experiment's noise: the stored N is the raw N_ell at nside 32 (full sky)
+        t = np.loadtxt(args.nell)
+        g["N"] = np.interp(np.arange(len(g["N"])), t[:, 0], t[:, 1])
     ell_u, sel = g["l"], g["l"] >= 2
     fid = min(
         range(len(g["points"])),
@@ -207,6 +212,7 @@ def analyse(args):
         "box": g["box"],
         "particle_spacing": g["spacing"],
         "fiducial_point": g["points"][fid],
+        "nell": args.nell or "the grid's",
     }
 
     def sn(m):
@@ -214,8 +220,11 @@ def analyse(args):
 
     lmax = int(ell_u.max())
     bands = [(2, 47), (2, 64), (65, 128), (129, 256), (2, lmax)]
-    out["S/N"] = {f"l {a}-{min(b, lmax)}": sn(sel & (ell_u >= a) & (ell_u <= b))
-                  for a, b in bands if a <= lmax}
+    out["S/N"] = {
+        f"l {a}-{min(b, lmax)}": sn(sel & (ell_u >= a) & (ell_u <= b))
+        for a, b in bands
+        if a <= lmax
+    }
     z = g["zero"][fid]
     out["template/undisplaced"] = float(
         np.sum(T[sel] * z[sel] / C[sel]) / np.sum(z[sel] ** 2 / C[sel])
@@ -348,6 +357,7 @@ def main():
     )
     a.add_argument("--draw_seed", type=int, default=0)
     a.add_argument("--json", default=None)
+    a.add_argument("--nell", default=None, help="N_ell file (l, N) replacing the grid's noise in C")
     args = ap.parse_args()
     {"measure": measure, "analyse": analyse}[args.cmd](args)
 

@@ -150,8 +150,6 @@ def _plot_pk(k_arr, pk_mean, pk_std, pk_th, k_nyq, label_meas, label_th,
 
     ax_pk.axvline(k_nyq, color="red", lw=1, ls=":", alpha=0.7,
                   label=f"$k_{{Nyq}}={k_nyq:.3f}$")
-    ax_pk.axvline(0.5 * k_nyq, color="orange", lw=1, ls=":", alpha=0.7,
-                  label=f"$0.5 k_{{Nyq}}={0.5*k_nyq:.3f}$")
     ax_pk.axvspan(k_nyq, np.sqrt(3) * k_nyq, color="red", alpha=0.07,
                   label="corner modes")
 
@@ -159,14 +157,12 @@ def _plot_pk(k_arr, pk_mean, pk_std, pk_th, k_nyq, label_meas, label_th,
     ax_pk.set_title(title, fontsize=10)
     ax_pk.legend(fontsize=9, loc="lower left")
     ax_pk.grid(True, alpha=0.2)
-    ax_pk.set_ylim(bottom=1e0)
 
     ax_rat.semilogx(k_arr, ratio, "o-", color="steelblue", ms=4)
     ax_rat.axhline(1.0, color="k", lw=1.2)
     ax_rat.axhline(1.05, color="k", lw=0.5, ls="--")
     ax_rat.axhline(0.95, color="k", lw=0.5, ls="--")
     ax_rat.axvline(k_nyq, color="red", lw=1, ls=":", alpha=0.7)
-    ax_rat.axvline(0.5 * k_nyq, color="orange", lw=1, ls=":", alpha=0.7)
     ax_rat.axvspan(k_nyq, np.sqrt(3) * k_nyq, color="red", alpha=0.07)
     ax_rat.fill_between(k_arr, ratio - pk_std / pk_th, ratio + pk_std / pk_th,
                         color="steelblue", alpha=0.25)
@@ -432,12 +428,11 @@ def _main_abacus(args, cfg_dict, output_dir):
                        color="steelblue", alpha=0.25)
     ax_pk.loglog(k_arr, pk_model_mean, "s-", color="steelblue", lw=2, ms=3,
                  label=f"Model ({n_real} real.), "
-                 + ("run posterior means" if args.bias_run else "config truth"))
+                 + ("run posterior means" if args.bias_run
+                    else "biases set on the command line" if args.set_bias else "config truth"))
 
     ax_pk.axvline(k_nyq, color="red", lw=1, ls=":", alpha=0.6,
                   label=f"$k_{{Nyq}}={k_nyq:.3f}$")
-    ax_pk.axvline(0.5 * k_nyq, color="orange", lw=1, ls=":", alpha=0.6,
-                  label=f"$0.5 k_{{Nyq}}={0.5*k_nyq:.3f}$")
     ax_pk.axvspan(k_nyq, np.sqrt(3) * k_nyq, color="red", alpha=0.07,
                   label="corner modes")
 
@@ -451,7 +446,6 @@ def _main_abacus(args, cfg_dict, output_dir):
     ax_pk.set_ylabel(r"$P_{gg}(k)\;[({\rm Mpc}/h)^3]$", fontsize=12)
     ax_pk.legend(fontsize=9, loc="lower left")
     ax_pk.grid(True, alpha=0.2)
-    ax_pk.set_ylim(bottom=1e0)
 
     ratio_arr = pk_abacus / pk_model_mean
     ax_rat.semilogx(k_arr, ratio_arr, "o-", color="steelblue", ms=4)
@@ -463,10 +457,12 @@ def _main_abacus(args, cfg_dict, output_dir):
     ax_rat.axhline(1.05, color="k", lw=0.5, ls="--", alpha=0.5)
     ax_rat.axhline(0.95, color="k", lw=0.5, ls="--", alpha=0.5)
     ax_rat.axvline(k_nyq,       color="red",    lw=1, ls=":", alpha=0.6)
-    ax_rat.axvline(0.5 * k_nyq, color="orange", lw=1, ls=":", alpha=0.6)
     ax_rat.axvspan(k_nyq, np.sqrt(3) * k_nyq, color="red", alpha=0.07)
     ax_rat.set_xlabel(r"$k\;[h/{\rm Mpc}]$", fontsize=12)
     ax_rat.set_ylabel("Abacus / Model", fontsize=10)
+    fig.text(0.01, 0.005, "model biases: " + ", ".join(
+        f"{k} {float(cond_params[k]):.3f}" for k in model.groups.get("bias", []) if k in cond_params),
+        fontsize=7, color="0.3")
     ax_rat.set_ylim(0.7, 1.5)
     ax_rat.grid(True, alpha=0.2)
 
