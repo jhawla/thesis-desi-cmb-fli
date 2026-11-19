@@ -1786,9 +1786,9 @@ class FieldLevelModel(Model):
             pos_rsd = pos + rsd(cosmology, vel, rsd_los, a_part, _bshape, _mshape, dvel=fog_dvel)
             pos_rsd = deterministic("rsd_pos", pos_rsd)
 
-            # CIC paint weighted by Lagrangian bias expansion weights. The painted field is
-            # counts-per-final-cell (mean = ptcl/final cells); divide by that fixed factor to
-            # recover the 1 + delta_g overdensity (identity when ptcl_oversamp=1).
+            # CIC paint weighted by Lagrangian bias expansion weights, on the paint grid (crop=False).
+            # The painted field is counts per paint cell (mean = ptcl/paint cells); divide by that
+            # fixed factor to recover 1 + delta_g (identity when the two grids are equal).
             ptcl_per_cell = float(np.prod(self.ptcl_shape) / np.prod(self.paint_shape))
             gxy_paint = (
                 self.paint_and_deconv(

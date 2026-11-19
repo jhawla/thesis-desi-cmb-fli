@@ -58,6 +58,7 @@ cmb_lensing:
   kl_rcond: 1e-2  # pixel_exact: keep eigenmodes with lambda > kl_rcond*lambda_max (default 1e-6; lower=more complete but more fragile in float32)
   chi_high_z_max: 3750  # where the map's matter stops (Mpc/h); unset = the CMB (real data). AbacusSummit HUGE: 3750, the half box (full-sky light cone to z = 2.18)
   observer_mode: center # center, face, or corner. Use 'corner' for AbacusSummit base-box (octant footprint); 'center' for full-sky closure / huge-box.
+  observer_position: null  # explicit [x, y, z] of the observer in Mpc/h; null = set by observer_mode
   # mask: data/abacus_kappa_mask_00047.npy # External HEALPix footprint mask (npy/FITS). For AbacusSummit base-box abacus runs, set to data/abacus_kappa_mask_00047.npy (built by scripts/make_abacus_kappa_mask.py).
 
 # Truth parameters (closure test only — ignored in abacus/real-data modes)
@@ -132,6 +133,7 @@ latents:
 # MCMC configuration
 mcmc:
   num_warmup: 8192
+  mesh_warmup_steps: 8192  # STEP 1 of run_inference.py: warm-up steps of the field alone, cosmology and biases fixed
 
   # Fix some scalar latents to their truth/fiducial value (only the rest are inferred).
   fixed_params: [Omega_m, sigma8]
