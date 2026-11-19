@@ -803,7 +803,7 @@ model's *total* κ (one gain per multipole, `1 + C^BM/C^MM`, the former mean) mu
 alike, those held whole too; κ alone does not see the difference, but in the joint the galaxies fix
 the matter of their shells, which that gain amplified by β_ℓ ≈ 1–4 %, and C_κg of the joint mean was
 over-predicted by as much (§7.19). The mean is built where the cut already transforms the shells
-(`cut_shells`): the shells that are cut or carry a gain (`GAIN_ROW_TOL` 10⁻² at the fiducial,
+(`cut_shells`): the shells that are cut or carry a gain (`GAIN_ROW_TOL` 10⁻³ at the fiducial,
 `model.cmb_gain_rows`) are transformed once (`map2alm`, `iter=0`); `kappa_pred` sums the tapered
 shells, the mean adds `w_s (g_s − 1)` of each, so an uncut shell goes through the round trip by its
 gain only; the gain is 1 above `cmb_lmax`, outside the observable. Both `diagonal` and `pixel_exact`
@@ -1110,7 +1110,6 @@ measures and the conventions that make its output comparable with the model.
 | `validate_kappa_from_ic.py` | the κ model at the true Abacus ICs against the AbacusLensing map, no sampling: the model's mean map (§3.2) against it: per ℓ bin coherence, transfer, amplitude A per band, error power against `N_ℓ` and `C_ℓ^LOS`, the coherence `√(1 − C^LOS/C^tt)` of a model exact but for its covariance term, and `(C^mm + C^LOS)/C^tt` (1 for a consistent model); `--shell_kmax` list, `--maps` for the pole maps (§7.9); the nside-16384 map is read once on a compute node and cached in `data/cache/` | `figures/spectra_diagnostic/kappa_from_abacus_ic_*.{png,npz}`, `figures/maps/` |
 | `validate_galaxy_from_ic.py` | the galaxy model at the true Abacus ICs against the Abacus counts, no sampling, a standard check of every grid: per k band and per shell of χ the coherence r, the transfer P_dm/P_mm and the whitened residual power (d − m)/√(n̄S) off the Nyquist planes of the final grid, against 20 closure draws with the noise law of the Newton JSON (`s_e`, `s_ed`, the likelihood's; mean ± 1σ), so that an exact model with that noise falls in their band; then the biases refitted per shell (`b1_alpha` held), whose χ² gain measures the redshift evolution the bias lacks; and, with no bias fit, the shape of the effective bias against the matter of the same ICs (all biases and `b1_alpha` at 0), b_eff(k)/b_eff(top quarter of k), against the closure's: the transfer depends on where the bias fit lands in the `b1`–`bn2`–`bnpar` degeneracy, the b_eff shape does not (§7.19, ph202). The Nyquist planes are left out of the residual: there the paint chain on the survey geometry lowers the data's noise below the per-cell noise of the closure (§7.19) | `figures/galaxy_ic_test/<config>.{png,json}` |
 | `plot_galaxy_ic_test.py` | the paper's `fig:gxy_ic` from the JSONs of `validate_galaxy_from_ic.py` (all cells) and of the Newton minimum (its noise fit): transfer, whitened residual (off the Nyquist planes), b_eff shape against k with the closure band (model + fitted noise), k_N marked | `figures/galaxy_ic_test/fig_gxy_ic.png` |
-| `plot_shell_cut.py` | the paper's `fig:shell_cut` from the `.npz` of `validate_kappa_from_ic.py --shell_kmax 0 <cut>`: the model's κ power plus its covariance term over the map's, with and without the per-shell cut | `figures/spectra_diagnostic/fig_shell_cut.png` (from `kappa_from_abacus_ic_box5000_m160_ph202_cut_nocut.npz`) |
 | `validate_joint_from_ic.py` | the joint model at the true Abacus ICs (Abacus cosmology, the biases of a Newton or profile JSON): C_κg of the AbacusLensing map × LRG catalogue over C_κg of the model's mean κ × model galaxies per ℓ band, cosmic variance cancelling, Gaussian errors with the κ and galaxy errors independent of the model; the mixed crosses (model κ × Abacus galaxies, Abacus κ × model galaxies) say on which side a departure sits. Its galaxy maps are projected from the galaxies at every k, beyond the cube the likelihood holds: above ℓ ≈ 160 that ratio reads the per-shell cut, not the likelihood; the figure (the paper's `fig:joint_ic`) shows both spectra and the ratio, also with the final-grid count meshes projected along each ray, the galaxies the likelihood holds (§7.19) | `figures/joint_ic_test/<config>.{png,json}` |
 | `kappa_stiffness.py` | largest Hessian eigenvalue of −log p in the field (power iteration on reverse-over-reverse Hessian-vector products), its eigenvector's share near the observer, cost and peak memory, per `shell_weights:shell_kmax[:noise]` variant; the MCLMC step size is capped by it | `figures/conditioning/` |
 | `kappa_lattice_template.py` | `measure`: E_z[κ] by antithetic pairs `(κ(z) + κ(−z))/2` on an (`Omega_m`, `sigma8`) list, packed like the likelihood, with the field power, the undisplaced-lattice κ, `N_ℓ` and the out-of-model term at each point's cosmology; `analyse`: S/N, projection of a run's data, Gaussian posterior with and without the template, of the run's data or `RUN:noiseless` (its noiseless map averaged over the noise), `--condition_om` for `sigma8` at given `Omega_m` (§7.15, §7.17) | `data/cache/template/`, `figures/kappa_lattice_template/` |
@@ -2776,8 +2775,10 @@ galaxies' 1.000 and 0.992; the κ transfer 1.006 / 0.980 / 1.008 / 0.997 / 0.994
 1.001 / 0.998 (ph201) over ℓ 20–40 / 40–70 / 70–110 / 110–160 / 160–257, the coherence unchanged; the part of the
 matter left out that the shells explain, c·C_MB, is 0.7 / 1.4 / 2.8 / 2.3 % of C^BB in ℓ 2–64 / 65–128 / 129–192 /
 193–256. κ alone at the true ICs, mesh 160, with the shell gains (`validate_kappa_from_ic.py`,
-`figures/spectra_diagnostic/kappa_from_abacus_ic_box5000_m160{,_ph202}_gain.{png,npz}`, replacing those of the single
-gain): A 1.003 ± 0.015 / 0.996 ± 0.012 / 1.002 ± 0.013 / 0.990 ± 0.017 (ph201) and 0.988 / 1.008 / 0.989 / 0.998
+`figures/spectra_diagnostic/kappa_from_abacus_ic_box5000_m160_gain.{png,npz}` for ph201 and
+`kappa_from_abacus_ic_box5000_m160_ph202_cut_nocut.{png,npz}` for ph202 with and without the cut, the paper's
+`fig:kappa_from_ic`; without the cut A 0.989 / 0.982 / 0.814 / 0.579, the coherence below its curve and the error
+power above `C^LOS` from ℓ ≈ 150, (C^mm + C^LOS)/C^tt up to 1.3 at ℓ ≈ 250): A 1.003 ± 0.015 / 0.996 ± 0.012 / 1.002 ± 0.013 / 0.990 ± 0.017 (ph201) and 0.988 / 1.008 / 0.989 / 0.998
 (ph202) in ℓ 2–64 / 65–128 / 129–192 / 193–256, within 0.005 of the single gain's, the coherence and the error power
 on their curves.
 
@@ -3173,8 +3174,9 @@ spectra (05, `quick_pk_spectra.py`), the angular spectra (05, `quick_cl_spectra.
 seed 77), the maps (04, `plot_2D_maps.py`), the Fisher contours (06, `fisher_cosmo.py --b1_alpha`), the
 lensing fraction (`plot_lensing_fraction.py`), the two-point comparison (§7.20: `fig:twopt` 06 and
 `fig:twopt_abacus` 05, `plot_twopt_overlay.py`; `fig:twopt_cl` 05, C. Payerne's figures in `figures/twopt_payerne/`).
-With no file yet: `fig:shell_cut` (02: the model's κ power at 280³ / nside 128 with and without the per-shell cut,
-`validate_kappa_from_ic.py`), `fig:lattice` (02: the lattice template and its S/N against the particle spacing, from
+The κ IC test with and without the per-shell cut is one figure (`fig:kappa_from_ic`, 05, cited from 02 for the
+cut; `validate_kappa_from_ic.py --shell_kmax 0 0.1508`), and the joint IC test `fig:joint_ic` (05,
+`validate_joint_from_ic.py`). With no file yet: `fig:lattice` (02: the lattice template and its S/N against the particle spacing, from
 `figures/kappa_lattice_template/`), `fig:tents` (02, a schematic),
 `fig:cosmo` (06: the triangle of `compare_runs.py` with the Fisher ellipses of `fisher_cosmo.py` overlaid, to add); `fig:noise` (03) lacks the signal and `C_ℓ^out`;
 `docs/figures/fli_architecture.png` (02) lacks the out-of-model term and the per-shell cut. Records,
