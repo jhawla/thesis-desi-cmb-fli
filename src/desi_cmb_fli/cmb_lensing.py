@@ -5,12 +5,12 @@ Pipeline overview
 -----------------
 LPT -> particle positions (cell units)
   -> single-pass bilinear scatter onto (n_shells, npix) HEALPix rows
-     -> delta on HEALPix mask (normalised on footprint)
+     -> delta per pixel (per-shell volume of the bilinear weights, bilinear_weight_norm)
         -> convergence_Born_spherical (Born integral)
            -> kappa_hp : (n_pix_mask,)
 
 Observation:
-  AbacusSummit kappa_*.asdf -> hp.ud_grade -> full-sky map + noise on cmb_mask
+  AbacusSummit kappa_*.asdf -> bilinear_resample_healpix -> full-sky map + noise on cmb_proj_mask
 
 Likelihood:
     Native dist.Normal over the packed masked pseudo-a_lm (see FieldLevelModel).
@@ -378,8 +378,8 @@ def convergence_Born_spherical(
     shell_weights : {'nearest', 'linear'}
         'nearest': each particle goes entirely to the shell containing it.
         'linear': its weight is split linearly between the two shells whose
-        centres bracket its radius, ramping up from zero over the half shell
-        below the first edge (uniform shells only), so ``kappa`` is continuous
+        centres bracket its radius, the first tent ramping up from zero over one
+        d_r below its centre (uniform shells only), so ``kappa`` is continuous
         in the particle radii, inner edge included.
     per_shell : bool, optional
         If True, return each shell's contribution, shape (n_shells, npix), instead of their sum

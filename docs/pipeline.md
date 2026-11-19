@@ -426,7 +426,7 @@ to the covariance, and a lower cut makes the out-of-model gain grow and the cohe
 §7.19). `shell_kmax: 0` switches the
 cut off, and without `full_los_correction`, which carries the removed power, it defaults to off and a
 `shell_kmax > 0` is refused. A shell with
-ℓ_res below the band edge 2·nside gets the cosine taper of jax-fli: 1 up to ℓ_cut − ℓ_cut//4, 0 from
+ℓ_res below the band edge 2·nside gets the cosine taper of jax-fli: 1 up to ℓ_cut − max(ℓ_cut//4, 1), 0 from
 ℓ_cut = ⌊ℓ_res⌋; a shell that resolves no multipole is removed whole (jax-fli floors ℓ_cut at 4
 instead). The shells cut are those with r_eff < 2·nside/`shell_kmax`: at fixed init grid, a higher
 nside cuts more of them, out to the galaxy shell at nside 128 (§7.19). The Born projector
@@ -523,8 +523,9 @@ fine, then Fourier-crop). `proj_oversamp` is the spherical analogue: the particl
 `nside × proj_oversamp` (a power of two), the transform runs at that sphere's own
 `lmax = 2·nside·proj_oversamp` — jax_healpy's `map2alm` supports no other ratio — and only the (ℓ, m)
 pairs of the observable band are selected, so the extra modes hold the sub-pixel power instead of
-folding it in. The mask and the MASTER coupling matrix stay on the observable sphere; the shell
-in-box mask and the ray entry/exit distances are recomputed on the refined one. The refined counts
+folding it in. The MASTER coupling matrix stays on the observable sphere; the model's map is masked
+on the refined sphere (`cmb_proj_mask`: the in-box mask times the external mask at that nside), and
+the shell in-box mask and the ray entry/exit distances are recomputed there. The refined counts
 array is small beside the evolution grids and the spherical transform is not where a log-density
 gradient spends its time, so a modest refinement costs a few percent of the gradient — but the
 transform's own cost climbs steeply with `nside`, so that balance is worth re-checking before
@@ -719,8 +720,9 @@ data map holds and the Born shells do not, as Gaussian variance; below). Two mod
   that basis the covariance is exactly diagonal ($\Lambda_k$), so the site is a single
   `Normal(U_k^\top\kappa_{pred}, \sqrt{\Lambda_k T})`. The full mask coupling is retained exactly within
   the supported subspace; only numerically-null modes are dropped (lossless). This supersedes
-  `diagonal` on a cut sky (which is over-confident there). Requires **fixed cosmology and
-  `cl_out_mode: fixed`** (constant covariance). `kl_rcond` (default `1e-6`) sets the cutoff: it keeps
+  `diagonal` on a cut sky (which is over-confident there). Its covariance is computed once at the
+  fiducial (constant covariance): the code refuses `cl_out_mode` other than `fixed` with
+  `full_los_correction`, and a sampled cosmology leaves the covariance at the fiducial. `kl_rcond` (default `1e-6`) sets the cutoff: it keeps
   cond ≈ `1/rcond` — safe in float32 down to ~`1e-6`; larger (e.g. `1e-2`, conditioning ~10²) is more
   conservative/robust (drops the least-concentrated Slepian modes) without biasing the calibration.
 
@@ -822,7 +824,7 @@ The gains come from the same pass over the kernels as the term (`C^BB`, `C^{BM_s
 multipole, linear Limber on the model's spectrum), so they follow `cl_out_mode`: at the sampled
 cosmology under `exact`, cached at the fiducial under `fixed`; the halofit and exact-over-Limber ratios
 of the term are not applied to them, ratios of spectra of the same matter. The variance keeps `C^out`:
-the part the shells explain, `c · C_MB`, is 0.7–2.8 % of it over ℓ 2–256 at the final configuration
+the part the shells explain, `c · C_MB`, is 0.7–2.8 % of `C^BB` over ℓ 2–256 at the final configuration
 (§7.19), left in the variance, which errs on the safe side. Without any gain the model's κ is too faint
 where its shells are held in part, which the IC test reads as an amplitude above one that grows with
 the number of shells inside their taper (§7.19). A κ run started before a change of the mean changes

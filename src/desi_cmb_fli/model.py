@@ -99,7 +99,7 @@ default_config = {
     "cmb_n_shells": 189,  # Number of radial shells for Born integration
     "cmb_chi_matter_min": 0.0,  # where the observed map's matter starts (Mpc/h): the Born shells start here
     "cmb_shell_weights": "nearest",  # 'nearest' or 'linear' radial shell assignment of the particles
-    "cmb_shell_kmax": None,  # per-shell multipole cut at ell = shell_kmax * r_eff (h/Mpc); None = init-grid Nyquist, 0 = none
+    "cmb_shell_kmax": None,  # per-shell multipole cut at ell = shell_kmax * r_eff (h/Mpc); None = init-grid Nyquist with full_los_correction, else none; 0 = none
     "cmb_proj_oversamp": 1,  # Born projection sphere refined by this factor (anti-aliasing); a_lm band unchanged
     "cmb_observer_mode": "face",  # 'face' or 'center'
     "cmb_observer_position": None,  # Optional explicit [x, y, z] in Mpc/h
