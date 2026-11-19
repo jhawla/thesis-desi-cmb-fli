@@ -2916,6 +2916,18 @@ linear-Fisher σ (0.0215), and its two keys agree (0.775, 0.772). Abacus against
 0.8447–0.8487): no over-fit with the noise held. Abacus `b2` 0.71 / 0.80 against 0.46 / 0.49 for the ph201
 closure, whose data carry the start-point `b2` 0.37; `b3` −1.35 / −1.30 against −0.94 / −0.92.
 
+*The ph201 closure offset is compatible with the realisation* (checks of 2026-11-19, no sampling). The ph201
+field is a fair draw of the model's prior: the prior spectrum at the truth (ACE, `Omega_m` 0.3152, `sigma8`
+0.8114) over the spectrum the Abacus ICs were drawn from (the CLASS table at `CLASS_Redshift` grown with the
+header `GrowthTable`) is 1.000 ± 0.002 at k 0.002–0.24, the σ8 of that input spectrum 0.8113, and the ICs' power
+in the 5000 cube is within 1 % of it (§7.17); so no closure on Abacus ICs differs from one on a prior field by
+its spectrum. The width of the posterior in the chains on the two prior fields (second halves, four chains
+pooled) is 0.020, the linear Fisher's 0.0215; on it the ph201 closure sits −1.9σ from the truth, with a
+Monte-Carlo error on its two-key mean of ≈ 0.01 (keys of one field differ by up to 0.02). One field in three at
+1.9σ is not an anomaly. The κ-only closure on the same ICs is low as well at nside 32 (§7.17: `sigma8`
+−1.5σ, −2.2σ at the true `Omega_m`); at nside 128 its `sigma8` is −1.2σ, at the true `Omega_m` the truth's. More prior fields or noise draws on ph201 would decide it; the ph202 runs are
+the next evidence.
+
 **The second sky, ph202, at mesh 100** (job 61093492, `logs/ph202_prep/`, not in the repository; the data of
 `abacus/abacus_gxyonly_cosmo_box5000_m100_ph202.yaml`). At the true ICs with the order-3 biases refitted,
 χ²/N (n̄S) 0.9372 (ph201: 0.8473 at order 3): `b1` 1.197, `b1_alpha` 1.019, `b2` 0.351, `b_{s²}`
@@ -3052,8 +3064,9 @@ the production step and path length before production runs):
    not separated from the scatter of one realisation, from the prior volume of the biases or from the sampler.
    Measured since (§7.19, third-order biases at the production step): closures on initial fields drawn from
    the prior centre on the truth (0.808 over four chains), the closure on the ph201 ICs sits at 0.773, and Abacus
-   against it is 0.000 and −0.011 on two keys. Open: whether the ph201 offset is the realisation (more prior
-   fields, and the ph201 closure with other noise draws) and the −0.011 key (more keys). Every such test
+   against it is 0.000 and −0.011 on two keys. The ph201 offset is compatible with the realisation (−1.9σ of
+   the posterior width, the ph201 field a fair prior draw, §7.19); more prior fields or noise draws, which
+   would decide it, are not run: the ph202 runs are the next evidence. Open: the −0.011 key (more keys). Every such test
    is read on pairs of chains of one key over at least 37 batches at the production step (the production
    chains took ≈ 25 batches to reach their level). The production runs that follow are on ph202, the main
    sky of the paper, chosen before any ph202 result: `abacus/abacus_gxyonly_cosmo_box5000_m100_ph202_noiseheld.yaml`
