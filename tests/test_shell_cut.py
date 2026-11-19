@@ -202,7 +202,7 @@ def test_the_covariance_term_is_the_exact_projection_where_limber_fails():
     a_r = np.asarray(jc.background.a_of_chi(cosmo, jnp.asarray(r)))
     ell = np.array([2, 5, 10, 60])
     ratio = limber_ratio_outside_model(cosmo, ell, r, a_r, 50.0, "nearest", 1100.0, 2000.0,
-                                       taper=np.zeros((1, 61)))
+                                       taper=np.zeros((1, 61)), cache_dir=None)
     chi = np.linspace(1000.0, 2000.0, 801)
     a = jc.background.a_of_chi(cosmo, jnp.asarray(chi))
     chi_s = jc.background.radial_comoving_distance(cosmo, 1.0 / 1101.0)[0]
@@ -224,6 +224,30 @@ def test_the_covariance_term_is_the_exact_projection_where_limber_fails():
         projection.append(ratio[i] / halofit)
     assert projection[0] > 1.5 and projection[1] > 1.1
     assert abs(projection[-1] - 1.0) < 0.02
+
+
+def test_the_line_of_sight_ratio_is_computed_once_per_set_of_inputs(tmp_path, monkeypatch):
+    import desi_cmb_fli.cmb_lensing as cl
+
+    calls = []
+
+    def fake(cosmo, ell, *rest):
+        calls.append(1)
+        return np.full(len(ell), float(len(calls)))
+
+    monkeypatch.setattr(cl, "_limber_ratio_outside_model", fake)
+    cosmo = get_cosmology(Omega_m=0.315192, sigma8=0.811355)
+    args = {"ell": np.arange(4), "r_shells": np.array([1025.0]), "a_shells": np.array([0.7]),
+            "d_r": 50.0, "shell_weights": "nearest", "z_source": 1100.0, "chi_max": 2000.0,
+            "taper": np.zeros((1, 4)), "cache_dir": tmp_path}
+    first = cl.limber_ratio_outside_model(cosmo, **args)
+    np.testing.assert_array_equal(cl.limber_ratio_outside_model(cosmo, **args), first)
+    assert len(calls) == 1
+    cl.limber_ratio_outside_model(cosmo, **(args | {"chi_max": 2500.0}))
+    cl.limber_ratio_outside_model(cosmo, **(args | {"taper": np.ones((1, 4))}))
+    cl.limber_ratio_outside_model(get_cosmology(Omega_m=0.3, sigma8=0.811355), **args)
+    assert len(calls) == 4
+    assert sorted(p.suffix for p in tmp_path.iterdir()) == [".npy"] * 4
 
 
 def test_the_gain_of_each_shell_is_the_regression_of_the_left_out_matter_on_the_shells():

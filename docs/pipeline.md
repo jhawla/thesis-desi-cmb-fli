@@ -788,7 +788,12 @@ low-χ end of the per-shell cut at ℓ ≤ 256 (nside 128). It enters both modes
 cosmology and both ratios stay at the fiducial. The exact-over-Limber ratio matters when the box is
 smaller than the map's depth: a slab of matter behind the box is radially thin against χ/ℓ at low ℓ,
 where Limber under-predicts it (§7.15). The term is computed and cached at init, so a κ run started
-before the ratio does not resume.
+before the ratio does not resume. The ratio (13 of the 15 min of a model build, §7.19) is cached on
+disk, `data/cache/limber_ratio_<digest>.npy` (git-ignored), under a digest of every input: the
+background cosmology as the leaves of the `Cosmology` pytree, ℓ, the shells (radii, scale factors,
+width, profile, taper), `z_source`, `χ_max` and the integration grids; a configuration computes it
+once, and `_LIMBER_RATIO_CACHE_VERSION` is bumped when the computation changes
+(`tests/test_shell_cut.py`).
 
 **Mean of the data map given the model's, shell by shell (`cmb_lensing.compute_out_terms`,
 `_shell_gains`, `cut_shells`).** The matter left out is not independent of the model's: `B_ℓ` overlaps
@@ -2272,7 +2277,8 @@ Configs: `abacus/abacus_{gxyonly,kappaonly_so,joint_so}_cosmo_box5000_m160.yaml`
   same bench on a CPU node fails at compile (LLVM out of section memory at 24 GB resident, both codes). The model
   build takes ≈ 15 min on CPU: 13 of them are the exact-over-Limber ratio of the out-of-model term
   (`exact_over_limber`, SciPy's `spherical_jn` on a 2388 × 1480 (k, χ) grid at each ℓ ≤ 256, ≈ 3 s per ℓ), the
-  rest the background emulator (83 s); the shell gains themselves take 0.6 s (`logs/slow_init/`, CPU job 61567732).
+  rest the background emulator (83 s); the shell gains themselves take 0.6 s (CPU job 61567732). The ratio is
+  now read from its disk cache after the first build of a configuration (§3.2).
 - Cost (`bench_gradient.py --box 5000 --mesh 160 --particles 280`, `JAX_ENABLE_X64=1`, one A100 80 GB):
   one joint gradient at nside 128 1.309 s, peak 37.1 GiB, compile 336 s (nside 32: 0.821 s, 36.1 GiB;
   float32 the same, 0.819 s), against 0.29 s at mesh 54 (median batch of the mesh-54 joint, 500

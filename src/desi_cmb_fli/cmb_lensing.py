@@ -17,6 +17,7 @@ Likelihood:
 """
 
 import functools
+import os
 from pathlib import Path
 
 import jax
@@ -28,9 +29,9 @@ import numpy as np
 
 NYQUIST_FRACTION = 0.5
 
-# Where the reduced randoms meshes are cached: data/cache in the repository (git-ignored; scratch
-# holds run directories only, docs/hpc.md). Set abacus_galaxy.randoms_cache_dir in the config to
-# override, or to null to disable caching.
+# Where the reduced randoms meshes and the line-of-sight ratio of the out-of-model term are cached:
+# data/cache in the repository (git-ignored; scratch holds run directories only, docs/hpc.md). Set
+# abacus_galaxy.randoms_cache_dir in the config to move the randoms', or to null to disable it.
 _DEFAULT_RANDOMS_CACHE_DIR = Path(__file__).resolve().parents[2] / "data" / "cache"
 
 
@@ -920,16 +921,45 @@ def exact_over_limber(cosmo, ell, chi, kern_a, kern_b=None, rsd_bias_a=None, rsd
 
 def limber_ratio_outside_model(
     cosmo, ell, r_shells, a_shells, d_r, shell_weights, z_source, chi_max, taper=None,
-    n_per_shell=40, n_beyond=200, k_max=0.5,
+    n_per_shell=40, n_beyond=200, k_max=0.5, cache_dir=_DEFAULT_RANDOMS_CACHE_DIR,
 ):
     """What the linear Limber C_ell of ``compute_cl_outside_model`` misses, at a concrete cosmology
     (docs/pipeline.md 3.2): the exact over Limber C_ell of its kernel (``exact_over_limber``) times
     its halofit over linear Limber C_ell (``nonlinear_power`` against the model's linear spectrum).
-    Computed once, on the CPU: on a GPU its compiled halofit holds memory outside the client's pool
-    for the rest of the process (docs/hpc.md)."""
+    Computed on the CPU: on a GPU its compiled halofit holds memory outside the client's pool for
+    the rest of the process (docs/hpc.md). Cached in ``cache_dir`` (None: not cached) under a
+    digest of every input; bump ``_LIMBER_RATIO_CACHE_VERSION`` when the computation changes."""
+    args = (ell, r_shells, a_shells, d_r, shell_weights, z_source, chi_max, taper, n_per_shell,
+            n_beyond, k_max)
+    path = None if cache_dir is None else _limber_ratio_cache_path(cache_dir, cosmo, args)
+    if path is not None and path.exists():
+        return np.load(path)
     with jax.default_device(jax.devices("cpu")[0]):
-        return _limber_ratio_outside_model(cosmo, ell, r_shells, a_shells, d_r, shell_weights,
-                                           z_source, chi_max, taper, n_per_shell, n_beyond, k_max)
+        ratio = np.asarray(_limber_ratio_outside_model(cosmo, *args))
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.stem}.{os.getpid()}.tmp.npy")
+        np.save(tmp, ratio)
+        os.replace(tmp, path)  # atomic: concurrent jobs never read a partial file
+    return ratio
+
+
+_LIMBER_RATIO_CACHE_VERSION = 1
+
+
+def _limber_ratio_cache_path(cache_dir, cosmo, args):
+    """Content-addressed path of ``limber_ratio_outside_model``: the cosmology as the leaves of
+    the ``Cosmology`` pytree, every other input by value and shape."""
+    import hashlib
+
+    digest = hashlib.sha256(f"version {_LIMBER_RATIO_CACHE_VERSION}".encode())
+    for x in (*jax.tree_util.tree_leaves(cosmo), *args):
+        if x is None or isinstance(x, str):
+            digest.update(repr(x).encode())
+        else:
+            x = np.ascontiguousarray(np.asarray(x, dtype=np.float64))
+            digest.update(repr(x.shape).encode() + x.tobytes())
+    return Path(cache_dir) / f"limber_ratio_{digest.hexdigest()[:16]}.npy"
 
 
 def _limber_ratio_outside_model(cosmo, ell, r_shells, a_shells, d_r, shell_weights, z_source,
