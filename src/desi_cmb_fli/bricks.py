@@ -342,6 +342,7 @@ def get_cosmology(**cosmo) -> Cosmology:
         "bn2",
         "bnpar",
         "bfog",
+        "b2_slope",
         "b3",
         "bds2",
         "bs3",
@@ -607,6 +608,7 @@ def lagrangian_weights(
     b3=None,
     bds2=None,
     bs3=None,
+    b2_slope=1.0,
 ):
     """
     Return Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
@@ -619,8 +621,9 @@ def lagrangian_weights(
 
     With ``a_b1`` set, the linear Eulerian bias evolves as
     ``1 + b1(a) = (1 + b1) (D(a_b1) / D(a))**b1_alpha``, and ``b2``, ``bs2`` follow it through the
-    quenched-galaxy relations (``quenched_bias_relation``): ``b_X(a) = b_X + f_X(b1(a)) − f_X(b1)``.
-    ``b1``, ``b2``, ``bs2`` are the biases at ``a_b1`` (docs/pipeline.md 2.4).
+    quenched-galaxy relations (``quenched_bias_relation``): ``b_X(a) = b_X + f_X(b1(a)) − f_X(b1)``,
+    the ``b2`` change times ``b2_slope`` (1: the relation). ``b1``, ``b2``, ``bs2`` are the biases at
+    ``a_b1`` (docs/pipeline.md 2.4).
 
     With ``b3``, ``bds2``, ``bs3`` given (``model.bias_order: 3``), the third-order terms of montecosmo,
     ``b3 (delta^3 - 3 <delta^2> delta)/6 + bds2 delta (s^2 - <s^2>) + bs3 3 det(s)``, each at its
@@ -653,7 +656,7 @@ def lagrangian_weights(
     if a_b1 is not None:
         b1_a = (1 + b1) * (a2g(cosmo, jnp.asarray(a_b1)) / growths) ** b1_alpha - 1
         (b2_a, bs2_a), (b2_ref, bs2_ref) = quenched_bias_relation(b1_a), quenched_bias_relation(b1)
-        b1, b2, bs2 = b1_a, b2 + b2_a - b2_ref, bs2 + bs2_a - bs2_ref
+        b1, b2, bs2 = b1_a, b2 + b2_slope * (b2_a - b2_ref), bs2 + bs2_a - bs2_ref
     weights = weights + b1 * delta_part
 
     # Apply primordial non-Gaussianity scale-dependent bias terms

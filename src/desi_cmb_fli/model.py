@@ -93,6 +93,9 @@ default_config = {
     # integral constraint on the lightcone. Off => n̄ fixed (snapshot). One latent ngbar_<b> per z-shell.
     "gxy_fog": False,  # Finger-of-God damping counterterm bfog: the redshift-space galaxy field
     # g + (bfog/2) d_par^2 g on the paint grid (needs RSD and particles; docs/pipeline.md 2.4)
+    "b2_slope_free": False,  # True: b2(z) follows b1(z) through b2_slope times the quenched relation's
+    # slope (latent b2_slope; False: the relation, slope 1). Needs bias_evolution 'redshift' on the cone
+    # (docs/pipeline.md 2.4)
     # CMB lensing parameters
     "cmb_enabled": False,  # Enable CMB lensing in forward model and likelihood
     "cmb_lensing_obs": None,  # Observed convergence map (set during conditioning)
@@ -220,6 +223,14 @@ default_config = {
             "scale_fid": 1.0,
             "loc_fid": 0.0,
         },
+        "b2_slope": {  # sampled with b2_slope_free; 1 is the quenched-galaxy relation
+            "group": "bias",
+            "label": "\\lambda_{b_2}",
+            "loc": 1.0,
+            "scale": 1.0,
+            "scale_fid": 0.1,
+            "loc_fid": 1.0,
+        },
         "fNL": {
             "group": "png",
             "label": "{f}_\\mathrm{NL}",
@@ -294,6 +305,7 @@ MODEL_CONFIG_KEYS = {
     "gxy_stoch_noise",
     "gxy_ngbar_free",
     "gxy_fog",
+    "b2_slope_free",
     "png_type",
     "bias_evolution",
     "bias_order",
@@ -405,6 +417,8 @@ def get_model_from_config(config_or_path):
         model_config["gxy_ngbar_free"] = bool(cfg["model"]["gxy_ngbar_free"])
     if "gxy_fog" in cfg["model"]:
         model_config["gxy_fog"] = bool(cfg["model"]["gxy_fog"])
+    if "b2_slope_free" in cfg["model"]:
+        model_config["b2_slope_free"] = bool(cfg["model"]["b2_slope_free"])
     if "bias_evolution" in cfg["model"]:
         model_config["bias_evolution"] = str(cfg["model"]["bias_evolution"])
     if "bias_order" in cfg["model"]:
@@ -807,6 +821,7 @@ class FieldLevelModel(Model):
     gxy_stoch_noise: bool = field(default=default_config["gxy_stoch_noise"])
     gxy_ngbar_free: bool = field(default=default_config["gxy_ngbar_free"])
     gxy_fog: bool = field(default=default_config["gxy_fog"])
+    b2_slope_free: bool = field(default=default_config["b2_slope_free"])
     bias_evolution: str = field(default=default_config["bias_evolution"])
     bias_order: int = field(default=default_config["bias_order"])
     b1_sigma8: bool = field(default=default_config["b1_sigma8"])
@@ -867,6 +882,9 @@ class FieldLevelModel(Model):
                              "and evolution 'lpt' or 'nbody'.")
         # The bias evolves on the light cone only (a snapshot has a single a)
         self.bias_evolves = self.bias_evolution == "redshift" and self.a_obs is None
+        if self.b2_slope_free and (not self.bias_evolves or self.evolution == "kaiser"):
+            raise ValueError("b2_slope_free scales the redshift evolution of b2: it needs bias_evolution "
+                             "'redshift' on the light cone and evolution 'lpt' or 'nbody'.")
         self.latents = self._validate_latents()
         self.groups = self._groups(base=True)
         self.groups_ = self._groups(base=False)
@@ -2314,6 +2332,7 @@ class FieldLevelModel(Model):
             or (name == "b1_alpha" and not self.bias_evolves)
             or (name in ("b3", "bds2", "bs3") and self.bias_order < 3)
             or (name == "bfog" and not self.gxy_fog)
+            or (name == "b2_slope" and not self.b2_slope_free)
         )
 
     ###########

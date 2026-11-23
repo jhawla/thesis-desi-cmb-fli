@@ -270,6 +270,42 @@ def test_quenched_bias_relation():
     )
 
 
+def test_b2_slope():
+    """b2_slope scales the quenched-relation change of b2 along the cone: slope 1 is the relation, and
+    the weights are linear in the slope with the b2 operator times that change; the model samples
+    b2_slope with b2_slope_free only and refuses it without redshift evolution (docs/pipeline.md 2.4)."""
+    import pytest
+
+    from desi_cmb_fli.model import FieldLevelModel, default_config
+
+    cosmo = planck18()
+    mesh_shape = np.array([4, 4, 4])
+    pos = jnp.indices(mesh_shape, dtype=float).reshape(3, -1).T
+    a = jnp.linspace(0.45, 0.75, pos.shape[0])
+    init_mesh = jnp.fft.rfftn(jr.normal(jr.PRNGKey(2), shape=mesh_shape))
+    delta = jnp.fft.irfftn(init_mesh).reshape(-1)
+    b1, b2, bs2, a_b1 = 1.2, 0.3, -0.2, 0.56
+
+    def weights(**kw):
+        return lagrangian_weights(cosmo, a, pos, np.array([100.0] * 3), b1, b2, bs2, 0.0, init_mesh,
+                                  b1_alpha=1.0, a_b1=a_b1, **kw)
+
+    assert jnp.allclose(weights(b2_slope=1.0), weights(), rtol=1e-6, atol=1e-6)
+    g = a2g(cosmo, a)
+    b1_a = (1 + b1) * (a2g(cosmo, a_b1) / g) ** 1.0 - 1
+    db2 = quenched_bias_relation(b1_a)[0] - quenched_bias_relation(b1)[0]
+    d2 = delta**2
+    expected = 0.7 * db2 * (d2 - d2.mean()) * g**2 / 2
+    assert jnp.allclose(weights(b2_slope=1.7) - weights(), expected, rtol=1e-5, atol=1e-6)
+
+    kw = {"mesh_shape": (16, 16, 16), "box_shape": (320.0, 320.0, 320.0)}
+    assert "b2_slope" not in FieldLevelModel(**(default_config | kw)).groups["bias"]
+    assert "b2_slope" in FieldLevelModel(**(default_config | kw | {"b2_slope_free": True})).groups["bias"]
+    for bad in ({"bias_evolution": "none"}, {"a_obs": 0.6}):
+        with pytest.raises(ValueError, match="b2_slope_free"):
+            FieldLevelModel(**(default_config | kw | {"b2_slope_free": True} | bad))
+
+
 def test_lagrangian_weights_higher_order():
     """Test lagrangian_weights with higher-order bias terms."""
     cosmo = planck18()

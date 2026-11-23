@@ -207,6 +207,10 @@ Under `redshift`:
   galaxy-formation model (the paper's scatter, and the relations' own level does not fit the Abacus
   LRGs, §7.19), and with the cut-off of the operators (their fields are smoothed at 1 Mpc/h, ours cut at the
   init-grid Nyquist); the change across the shell is what the data need.
+  With `model.b2_slope_free: true` the slope of `b₂`'s change is a latent, `b₂(a) = b₂ + λ₂ [f₂(b₁(a)) −
+  f₂(b₁)]` (`b2_slope`, prior N(1, 1); `b_{s²}` keeps the relation): it replaces the relation's fixed
+  slope for `b₂`, which the Abacus LRGs exceed (§7.19), so that `b1_alpha`, which sets `b₁(a)`, does not
+  absorb the difference. It needs the redshift evolution on the light cone (refused otherwise).
   `b∇²`, `bnpar` and the PNG terms (`b_φ` from `b₁`, i.e. at `a_fid`) do not evolve.
 DESI full-shape analyses avoid the question with narrow redshift bins and free biases per bin; the
 evolution above is the counterpart for a single broad light-cone shell.
@@ -3274,7 +3278,17 @@ is the true-IC `b1_alpha` takes part of it: the free-IC posterior's `b1_alpha` (
 true-IC fit, 1σ below it with λ2 free, and conditioned on that fit (`bn2` −2.40, `b1_alpha` 1.053) the posterior's
 `Omega_m` is 0.3157 ± 0.0032. At a fixed field `Omega_m` is read from the redshift evolution, which the bias law
 shares: free with λ it slides to 0.280 ± 0.004 (Δχ² −35 beyond λ alone; 0.3116 ± 0.0039 with λ = 1), as with the
-curvature of §7.14.
+curvature of §7.14. With the damping in the model (`logs/gxy_ph202/rsd_bias_gn.py`, CPU job 61854003, the
+`gxy_fog` config at its Newton minimum): λ2 = 1.221 ± 0.030, λs = 1.04 ± 0.23, Δχ² −116, `b1_alpha` 1.080 → 1.056,
+the gain at 2100–2300 Mpc/h (+25, +34, +18 per 100 Mpc/h), the distances where the free-IC chains beat the truth
+(above); slopes for the third order on the change of b1(z), `b_X(z) = b_X + λ_X (b1(z) − b1)`, add Δχ² −12.7 for
+three parameters (λ3 −0.16 ± 0.17, λds −0.32 ± 0.16, λs3 +0.46 ± 0.34): the third-order biases need no evolution, as
+`b3(b1)` found above. In the model (`b2_slope_free` with `gxy_fog`, `galaxy_likelihood_profile.py --mode newton`
+on `abacus/abacus_gxyonly_cosmo_box5000_m100_ph202_fog.yaml`, CPU job 61857131): `b2_slope` 1.218, `b1_alpha`
+1.056, A_min 1.0023 ± 0.0021, the noise refitted 0.8994 / 0.2141 (held 0.8999 / 0.2137). The velocity factor with
+the damping: V0 0.980 ± 0.0075 (Δχ² −8.3, A 1.0069); a filter
+exp(−σ_v² k²/2) on the LPT velocity beside it leaves V0 at 0.980 (σ_v² 9.8 ± 7.9 (Mpc/h)², Δχ² −0.8): the galaxies'
+deficit is not the scale dependence a velocity smoothing gives.
 
 *`b2`.* With the field free `b2` is 0.77 against 0.40 at the true ICs (ph202), 0.71–0.80 against the closure's
 0.46–0.49 on the same ICs (ph201): `b2 sigma8²` 0.48 against 0.26, far beyond what the lower `sigma8` asks of the

@@ -18,6 +18,7 @@ model:
   gxy_stoch_noise: true  # galaxy noise std s_e (1 + s_ed max(delta_m, -1)) sqrt(n̄S): s_e, s_ed inferred (true) or 1, 0 (false), pipeline 3.1
   bias_evolution: redshift  # redshift: on the light cone b1 evolves with b1_alpha, b2 and bs2 follow b1 (quenched-galaxy relations, arXiv:2412.06886); none: constant biases (pipeline 2.4)
   gxy_ngbar_free: false
+  b2_slope_free: true  # the LRGs' b2(z) grows faster than the quenched relation (slope 1.22 at the true ICs, Delta chi2 -116, pipeline 7.19)
   gxy_fog: true  # Finger-of-God damping counterterm bfog (pipeline 2.4): the ph202 run without it (noiseheld config) has sigma8 low, Omega_m high (pipeline 7.19)
   lightcone: true
   a_obs: null
@@ -129,6 +130,11 @@ latents:
     scale: 100.0
     scale_fid: 5.4
     loc_fid: 16.4
+  b2_slope:  # start at the true-IC fit with the damping (1.22 +- 0.03); unit: 4x its true-IC width, as bnpar's ratio
+    loc: 1.0
+    scale: 1.0
+    scale_fid: 0.12
+    loc_fid: 1.22
   bfog:  # (Mpc/h)^2; start at the true-IC fit 16.6; unit 4: its true-IC width 0.9 times the free-IC/true-IC width ratio of bnpar, 4.5 (pipeline 7.19)
     loc: 0.0
     scale: 100.0
