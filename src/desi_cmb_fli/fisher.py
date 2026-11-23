@@ -444,7 +444,7 @@ def chain_fisher(chains, burn_in=0.5):
 
 COSMO_PARAMS = ("Omega_m", "sigma8", "b1", "bn2", "bnpar")
 FD_STEPS = {"Omega_m": 0.005, "sigma8": 0.005, "b1": 0.01, "bn2": 2.0, "fNL": 1.0, "b1_alpha": 0.05,
-            "bnpar": 5.0}
+            "bnpar": 5.0, "bfog": 2.0}
 
 
 def bias_reference_z(bg, survey):
@@ -498,8 +498,9 @@ def galaxy_fisher_3d_cosmo(
     steps=None, n_chi=160, n_k=240, n_mu=48,
 ):
     """3-D redshift-space galaxy Fisher on ``params`` by central differences, cosmology included,
-    with the Finger-of-God term of the model: P = (b + f mu^2 + bnpar k^2 mu^2)^2 P_lin (the velocity
-    ``bnpar D grad delta_L`` projected on the line of sight adds bnpar k_par^2 delta).
+    with the Finger-of-God terms of the model: P = (b + f mu^2 + bnpar k^2 mu^2)^2 (1 - bfog k^2 mu^2 / 2)^2
+    P_lin (the velocity ``bnpar D grad delta_L`` projected on the line of sight adds bnpar k_par^2 delta;
+    the damping counterterm ``g + bfog/2 d_par^2 g`` of ``gxy_fog``).
 
     As at the field level, the galaxies sit at their fiducial comoving distances (the data are
     painted once): volume, n(chi) and the k grid are those of the fiducial background, and a
@@ -524,7 +525,8 @@ def galaxy_fisher_3d_cosmo(
         bg = bgs(theta)
         Z = bg.z_of_chi(chi)[:, None, None]
         rsd_mu2 = (bg.growth_rate(Z) + theta.get("bnpar", 0.0) * K**2) * MU**2 if rsd else 0.0
-        return (_galaxy_bias(bg, theta, K, Z) + rsd_mu2) ** 2 * bg.plin(K, Z)
+        fog = 1 - 0.5 * theta.get("bfog", 0.0) * K**2 * MU**2 if rsd else 1.0
+        return ((_galaxy_bias(bg, theta, K, Z) + rsd_mu2) * fog) ** 2 * bg.plin(K, Z)
 
     P = power(fid)
     dP = _central_differences(power, fid, params, steps)

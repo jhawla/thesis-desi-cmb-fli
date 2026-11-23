@@ -212,7 +212,7 @@ def load_and_process_run(run_dir, burn_in=0.0, exclude_chains=None):
             truth_vals = full_cfg.get("truth_params", {})
 
     # Identify available scalar parameters (avoid showing fixed bias params in CMB-only)
-    priority_params = ["Omega_m", "sigma8", "fNL", "fNL_bp", "fNL_bpd", "b1", "b1_alpha", "b2", "bs2", "bn2", "bnpar", "s_e", "s_ed"]
+    priority_params = ["Omega_m", "sigma8", "fNL", "fNL_bp", "fNL_bpd", "b1", "b1_alpha", "b2", "bs2", "bn2", "bnpar", "bfog", "s_e", "s_ed"]
     if model.galaxies_enabled:
         available_params = [p for p in priority_params if p in physical_samples]
         extra_params = [p for p in physical_samples.keys() if p not in available_params]
@@ -258,15 +258,14 @@ def _truth_values(cfg):
 
 
 def _fixed_latents(run_dir, model):
-    """The scalar latents the run held fixed (``mcmc.fixed_params``), at the values
-    run_inference.py conditioned on. The sampler state does not carry them, and a predict() on
+    """The scalar latents the run held fixed (``mcmc.fixed_params``), at their ``loc_fid`` as
+    run_inference.py conditioned on them. The sampler state does not carry them, and a predict() on
     the state alone would draw them from their priors."""
     cfg = utils.yload(Path(run_dir) / "config" / "config.yaml")
     fixed = list(cfg.get("mcmc", {}).get("fixed_params", []))
     if not fixed:
         return {}
-    src = _truth_values(cfg)
-    base = {p: float(src.get(p, model.loc_fid[p])) for p in fixed}
+    base = {p: float(model.loc_fid[p]) for p in fixed}
     latents = model.reparam(base, inv=True)
     return {p + "_": jnp.asarray(latents[p + "_"]) for p in fixed}
 
@@ -314,19 +313,45 @@ def _quantiles(x):
     return np.nanpercentile(np.asarray(x), [50, 16, 84], axis=0)
 
 
+def band_mask(shape, box, kmax):
+    """The Fourier cube |k_i| <= kmax on the rfftn grid of ``shape``: the band of a final grid of
+    Nyquist frequency kmax, the modes its galaxy likelihood holds."""
+    k = [2 * np.pi * np.fft.fftfreq(shape[d], d=box[d] / shape[d]) for d in range(2)]
+    kz = 2 * np.pi * np.fft.rfftfreq(shape[2], d=box[2] / shape[2])
+    tol = 1e-9 * kmax
+    return jnp.asarray((np.abs(k[0])[:, None, None] <= kmax + tol)
+                       & (np.abs(k[1])[None, :, None] <= kmax + tol)
+                       & (np.abs(kz)[None, None, :] <= kmax + tol))
+
+
+def final_band(model):
+    """Nyquist frequency of the run's final grid (pi / cell)."""
+    return float(np.pi * np.min(np.asarray(model.mesh_shape) / np.asarray(model.box_shape)))
+
+
+def field_regions(rad, chi_gxy):
+    """Masks in front of, inside and behind the galaxy shell; the whole box without galaxies."""
+    if chi_gxy is None:
+        return {"whole box": np.ones_like(rad, bool)}
+    lo, hi = chi_gxy
+    return {"in front of the galaxies": rad < lo, "galaxy shell": (rad >= lo) & (rad <= hi),
+            "behind the galaxies": rad > hi}
+
+
 def plot_initial_conditions(model, truth, samples, out_path, truth_cosmo=None,
                             what="posterior samples"):
     """True initial field against its posterior: posterior mean and spread in the plane through the
-    observer, posterior of the power and of the coherence, correlation of the posterior mean with the
-    truth per radius, all at the resolution of the field.
+    observer, posterior of the power and of the coherence per region, correlation of the posterior
+    mean with the truth per radius; the real-space panels in the band of the final grid.
 
     ``samples`` yields (Fourier field, cosmology) pairs (``_field_samples``). The power and the
     coherence are distributions over the samples of a per-sample curve (median, 16-84 %); each
     field's power is over the linear spectrum of its own cosmology (``truth_cosmo`` for the truth),
     all expected at 1: with the cosmology free, a sample carries the spectrum of its own Omega_m,
-    sigma8. Per radius, the correlation of the posterior mean with the truth is
-    sqrt(Var(mean) / Var(truth)), the fraction of the true field's variance the data recover at the
-    cell scale; the agreement between chains answers convergence and is not shown.
+    sigma8. The coherence is per region (in front of, inside, behind the galaxy shell). Per radius,
+    the correlation of the posterior mean with the truth is sqrt(Var(mean) / Var(truth)), the
+    fraction of the true field's variance the data recover, in the band |k_i| <= k_N of the final
+    grid (docs/pipeline.md §6); the agreement between chains answers convergence and is not shown.
     """
     if "init_mesh" not in truth:
         print("truth.npz has no init_mesh (no abacus_ic in the config): skipping.")
@@ -351,30 +376,38 @@ def plot_initial_conditions(model, truth, samples, out_path, truth_cosmo=None,
         return np.asarray(lin_power_interp(get_cosmology(**cosmo))(jnp.asarray(k)))
 
     true_real = jnp.fft.irfftn(true_k)
-    true_f = np.asarray(true_real)
+    true_full = np.asarray(true_real)
+    k_band = final_band(model)
+    in_band = band_mask(shape, box, k_band)
+    true_f = np.asarray(jnp.fft.irfftn(true_k * in_band))
 
     rad = np.asarray(radius_mesh(model.box_center, box, np.asarray(shape), curved_sky=True))
+    chi_lo, chi_hi = ((float(x) for x in np.asarray(truth["chi_range_gxy"]))
+                      if "chi_range_gxy" in truth else (None, None))
+    regions = field_regions(rad, None if chi_lo is None else (chi_lo, chi_hi))
     edges = np.arange(0.0, float(rad.max()) + 200.0, 200.0)
     # A shell can be empty once the observer sits on a face or a corner of the box.
     shells = [(0.5 * (r0 + r1), m) for r0, r1 in zip(edges[:-1], edges[1:], strict=False)
               if (m := (rad >= r0) & (rad < r1)).sum() >= 2]
     mid = np.array([c for c, _ in shells])
 
-    amp_true, amp_rec, coh = None, [], []
-    f1, f2, n = np.zeros(shape), np.zeros(shape), 0
+    amp_true, amp_rec, coh = None, [], {name: [] for name in regions}
+    f1, f2, f1_full, n = np.zeros(shape), np.zeros(shape), np.zeros(shape), 0
     for rec_k, cosmo in itertools.chain([first], samples):
-        ks, pow_rec, trans, c = (np.asarray(x) for x in model.powtranscoh(true_real,
-                                                                          jnp.fft.irfftn(rec_k)))
+        rec_real = jnp.fft.irfftn(rec_k)
+        ks, pow_rec, trans, _ = (np.asarray(x) for x in model.powtranscoh(true_real, rec_real))
         if amp_true is None:
             amp_true = np.sqrt(pow_rec / trans**2 / prior_pow(truth_cosmo, ks))
         amp_rec.append(np.sqrt(pow_rec / prior_pow(cosmo, ks)))
-        coh.append(c)
-        rec_f = np.asarray(jnp.fft.irfftn(rec_k))
-        f1, f2, n = f1 + rec_f, f2 + rec_f**2, n + 1
-    # Full resolution: the posterior mean holds only what the data constrain, and its correlation
-    # with the truth is sqrt(Var(mean) / Var(truth)), the fraction of the true field recovered.
+        for name, m in regions.items():
+            coh[name].append(np.asarray(model.powtranscoh(true_real * m, rec_real * m)[3]))
+        rec_f = np.asarray(jnp.fft.irfftn(rec_k * in_band))
+        f1, f2, f1_full, n = f1 + rec_f, f2 + rec_f**2, f1_full + np.asarray(rec_real), n + 1
+    # The posterior mean holds only what the data constrain, and its correlation with the truth is
+    # sqrt(Var(mean) / Var(truth)), the fraction of the true field recovered, here in the band.
     mean_f = f1 / n
     corr_mean = np.array([np.corrcoef(true_f[m], mean_f[m])[0, 1] for _, m in shells])
+    corr_full = np.array([np.corrcoef(true_full[m], f1_full[m])[0, 1] for _, m in shells])
     std_f = np.sqrt(np.maximum(f2 / n - mean_f**2, 0.0))
 
     # Slice the plane that contains the observer, in observer-centred coordinates, so that the
@@ -384,8 +417,6 @@ def plot_initial_conditions(model, truth, samples, out_path, truth_cosmo=None,
     sl = int(np.clip(np.argmin(np.abs(coord[2])), 0, shape[2] - 1))
     lim = float(np.percentile(np.abs(true_f[:, :, sl]), 99.5))
     extent = [coord[0][0], coord[0][-1], coord[1][0], coord[1][-1]]
-    chi_lo, chi_hi = ((float(x) for x in np.asarray(truth["chi_range_gxy"]))
-                      if "chi_range_gxy" in truth else (None, None))
 
     fig, axes = plt.subplots(1, 5, figsize=(25, 4.8),
                              gridspec_kw={"width_ratios": [1, 1, 1, 1.15, 1.15]})
@@ -413,12 +444,14 @@ def plot_initial_conditions(model, truth, samples, out_path, truth_cosmo=None,
     ax.plot(ks, amp_true, color="k",
             label=r"truth $\sqrt{P_{\rm true}/P_{\rm lin}(\theta_{\rm true})}$")
     band(ax, ks, amp_rec, "C0", r"posterior $\sqrt{P_{\rm rec}/P_{\rm lin}(\theta_{\rm sample})}$")
-    band(ax, ks, coh, "C1", r"posterior cross-correlation $r(k)$ with the truth")
+    for i, (name, c) in enumerate(coh.items()):
+        band(ax, ks, c, f"C{i + 1}", f"posterior $r(k)$ with the truth, {name}")
+    ax.axvline(k_band, color="k", ls=":", lw=1.0, label=f"final-grid $k_N$ = {k_band:.3f}")
     ax.axhline(1.0, color="k", lw=0.8, alpha=0.5)
     ax.set_xscale("log")
     ax.set_xlabel("k [h/Mpc]")
     ax.set_ylim(0, 1.35)
-    ax.legend(fontsize=9)
+    ax.legend(fontsize=7)
     ax.set_title("Each field over its own prior (expected at 1)", fontsize=11)
     ax.grid(alpha=0.3)
 
@@ -436,13 +469,13 @@ def plot_initial_conditions(model, truth, samples, out_path, truth_cosmo=None,
     ax.set_ylabel("correlation with the truth")
     ax.set_ylim(-0.05, 1.05)
     ax.legend(fontsize=8)
-    ax.set_title(f"Reconstruction vs radius, cell {box[0] / shape[0]:.0f} Mpc/h", fontsize=11)
+    ax.set_title(f"Reconstruction vs radius, $|k_i| \\leq$ {k_band:.3f} h/Mpc", fontsize=11)
     ax.grid(alpha=0.3)
 
     fig.suptitle(
         f"Initial conditions — {Path(out_path).parent.parent.name}, posterior from {what}; "
-        f"Cartesian plane z=0 through the observer at full resolution; "
-        f"dashed circles = galaxy radial range",
+        f"Cartesian plane z=0 through the observer, fields in the band of the final grid "
+        f"($|k_i| \\leq$ {k_band:.3f} h/Mpc); dashed circles = galaxy radial range",
         fontsize=11,
     )
     fig.tight_layout()
@@ -454,13 +487,18 @@ def plot_initial_conditions(model, truth, samples, out_path, truth_cosmo=None,
     if lo.any():
         print(f"  k < 0.02 h/Mpc, each field over its own prior: truth {amp_true[lo].mean():.3f}, "
               f"posterior median {np.median(np.asarray(amp_rec)[:, lo].mean(1)):.3f}; "
-              f"cross-correlation {np.median(np.asarray(coh)[:, lo].mean(1)):.3f}")
+              "cross-correlation " + ", ".join(
+                  f"{name} {np.median(np.asarray(c)[:, lo].mean(1)):.3f}" for name, c in coh.items()))
+    for name, m in regions.items():
+        print(f"  {name}: posterior mean vs truth r {np.corrcoef(true_f[m], mean_f[m])[0, 1]:.3f} in the "
+              f"band ({np.corrcoef(true_full[m], f1_full[m])[0, 1]:.3f} at the cell), the band holding "
+              f"{true_f[m].var() / true_full[m].var():.3f} of the truth's variance")
     half = 0.5 * (edges[1] - edges[0])
-    print(f"  {'radius Mpc/h':>13} {'r(mean)':>8}")
+    print(f"  {'radius Mpc/h':>13} {'r band':>8} {'r cell':>8}")
     for i, c in enumerate(mid):
         inside = ("  <-- galaxies" if chi_lo is not None
                   and c - half >= chi_lo and c + half <= chi_hi else "")
-        print(f"  {c - half:5.0f}-{c + half:5.0f} {corr_mean[i]:8.3f}{inside}")
+        print(f"  {c - half:5.0f}-{c + half:5.0f} {corr_mean[i]:8.3f} {corr_full[i]:8.3f}{inside}")
 
 
 def plot_kappa_maps(model, truth, positions, out_path, fixed=None, truth_has_los=False,

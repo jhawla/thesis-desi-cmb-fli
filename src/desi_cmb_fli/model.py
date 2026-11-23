@@ -36,6 +36,7 @@ from desi_cmb_fli.bricks import (
     lagrangian_weights,
     lattice_aliases,
     lin_power_mesh,
+    los_second_derivative,
     regular_pos,
     rsd,
     samp2base,
@@ -90,6 +91,8 @@ default_config = {
     # biases, b1_alpha not sampled (docs/pipeline.md 2.4)
     "gxy_ngbar_free": False,  # Free per-radial-shell mean density (montecosmo ngbars); marginalises the
     # integral constraint on the lightcone. Off => n̄ fixed (snapshot). One latent ngbar_<b> per z-shell.
+    "gxy_fog": False,  # Finger-of-God damping counterterm bfog: the redshift-space galaxy field
+    # g + (bfog/2) d_par^2 g on the paint grid (needs RSD and particles; docs/pipeline.md 2.4)
     # CMB lensing parameters
     "cmb_enabled": False,  # Enable CMB lensing in forward model and likelihood
     "cmb_lensing_obs": None,  # Observed convergence map (set during conditioning)
@@ -106,7 +109,7 @@ default_config = {
     "cmb_mask": None,  # Optional external survey mask (npy/FITS or array)
     "cmb_z_source": 1100.0,  # CMB last scattering surface
     "cl_out_mode": "exact",  # out-of-model C_l: 'exact' (follows the cosmology) or 'fixed'
-    "cmb_likelihood_mode": "diagonal",  # 'diagonal' (fast, exact on full sky) | 'pixel_exact' (exact cut-sky via KL eigenmodes)
+    "cmb_likelihood_mode": "diagonal",  # 'diagonal' (fast, exact covariance on the full sky up to the transform) | 'pixel_exact' (exact cut-sky via KL eigenmodes)
     "cmb_kl_rcond": 1e-6,  # pixel_exact: keep eigenmodes with lambda > rcond*lambda_max (supported Slepian subspace; 1e-6 keeps cond~1e6, safe in float32; lower=more complete but more fragile)
     # Primordial non-Gaussianity
     "png_type": None,  # None (Gaussian), 'fNL' (derive b_phi/b_phi_delta from bias), 'fNL_bias'
@@ -209,6 +212,14 @@ default_config = {
             "scale_fid": 1.0,
             "loc_fid": 0.0,
         },
+        "bfog": {  # (Mpc/h)^2, sampled with gxy_fog
+            "group": "bias",
+            "label": "{b}_\\mathrm{FoG}",
+            "loc": 0.0,
+            "scale": 1e2,
+            "scale_fid": 1.0,
+            "loc_fid": 0.0,
+        },
         "fNL": {
             "group": "png",
             "label": "{f}_\\mathrm{NL}",
@@ -282,6 +293,7 @@ MODEL_CONFIG_KEYS = {
     "galaxies_enabled",
     "gxy_stoch_noise",
     "gxy_ngbar_free",
+    "gxy_fog",
     "png_type",
     "bias_evolution",
     "bias_order",
@@ -391,6 +403,8 @@ def get_model_from_config(config_or_path):
         model_config["gxy_stoch_noise"] = bool(cfg["model"]["gxy_stoch_noise"])
     if "gxy_ngbar_free" in cfg["model"]:
         model_config["gxy_ngbar_free"] = bool(cfg["model"]["gxy_ngbar_free"])
+    if "gxy_fog" in cfg["model"]:
+        model_config["gxy_fog"] = bool(cfg["model"]["gxy_fog"])
     if "bias_evolution" in cfg["model"]:
         model_config["bias_evolution"] = str(cfg["model"]["bias_evolution"])
     if "bias_order" in cfg["model"]:
@@ -792,6 +806,7 @@ class FieldLevelModel(Model):
     galaxies_enabled: bool = field(default=default_config["galaxies_enabled"])
     gxy_stoch_noise: bool = field(default=default_config["gxy_stoch_noise"])
     gxy_ngbar_free: bool = field(default=default_config["gxy_ngbar_free"])
+    gxy_fog: bool = field(default=default_config["gxy_fog"])
     bias_evolution: str = field(default=default_config["bias_evolution"])
     bias_order: int = field(default=default_config["bias_order"])
     b1_sigma8: bool = field(default=default_config["b1_sigma8"])
@@ -847,6 +862,9 @@ class FieldLevelModel(Model):
             raise ValueError(
                 "bias_order 3 weights particles: use evolution 'lpt' or 'nbody', not 'kaiser'."
             )
+        if self.gxy_fog and (self.evolution == "kaiser" or self.los is None):
+            raise ValueError("gxy_fog damps the painted redshift-space field: it needs RSD (los set) "
+                             "and evolution 'lpt' or 'nbody'.")
         # The bias evolves on the light cone only (a snapshot has a single a)
         self.bias_evolves = self.bias_evolution == "redshift" and self.a_obs is None
         self.latents = self._validate_latents()
@@ -1735,7 +1753,7 @@ class FieldLevelModel(Model):
             # bnpar (Finger-of-God) is not a lagrangian_weights term: it enters as a velocity
             # contribution projected onto the LOS in rsd().
             bnpar = bias.get("bnpar", 0.0)
-            bias_w = {k: v for k, v in bias.items() if k != "bnpar"}
+            bias_w = {k: v for k, v in bias.items() if k not in ("bnpar", "bfog")}
 
             # Lagrangian bias expansion weights, computed from the evol-grid Gaussian field
             # (anti-aliased products) and read at the initial particle positions.
@@ -1796,6 +1814,21 @@ class FieldLevelModel(Model):
                 )
                 / ptcl_per_cell
             )
+            if self.gxy_fog:
+                # Finger-of-God damping counterterm along the observer's line of sight, before the
+                # selection: (1 - bfog k^2 mu^2 / 2) locally (docs/pipeline.md 2.4)
+                los_paint, _ = tophysical_mesh(
+                    _center,
+                    _bshape,
+                    self.paint_shape,
+                    cosmology,
+                    a_obs=self.a_obs,
+                    curved_sky=self.curved_sky,
+                    los=self.los,
+                )
+                gxy_paint = gxy_paint + 0.5 * bias.get("bfog", 0.0) * los_second_derivative(
+                    gxy_paint, los_paint, _bshape
+                )
             gxy_mesh = deterministic("gxy_mesh", band_limit(gxy_paint, self._sim_mesh))
         else:
             # CMB-only: create dummy gxy_mesh for API consistency
@@ -2280,6 +2313,7 @@ class FieldLevelModel(Model):
             or (group == "syst" and not self.gxy_ngbar_free)
             or (name == "b1_alpha" and not self.bias_evolves)
             or (name in ("b3", "bds2", "bs3") and self.bias_order < 3)
+            or (name == "bfog" and not self.gxy_fog)
         )
 
     ###########

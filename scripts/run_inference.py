@@ -19,12 +19,12 @@ import yaml
 
 # JAX's default (BFC) pool, reserved at start as one block of 90 % of the GPU: grown on demand it
 # splits into regions it never returns, and a later program's buffer no longer fits; the shell may
-# override both (e.g. XLA_PYTHON_CLIENT_ALLOCATOR=cuda_async), docs/hpc.md
+# override both (e.g. XLA_PYTHON_CLIENT_ALLOCATOR=cuda_async), docs/pipeline.md 7.19
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "true")
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.90")
 # XLA must not fold the Fourier kernels back into grid-sized constants of the compiled programs,
 # and must not build CUDA graphs, which accumulate over a warm-up's steps; both load outside that
-# pool (docs/hpc.md)
+# pool (docs/pipeline.md 7.19)
 if "--xla_disable_hlo_passes=constant_folding" not in os.environ.get("XLA_FLAGS", ""):
     os.environ["XLA_FLAGS"] = (
         os.environ.get("XLA_FLAGS", "") + " --xla_disable_hlo_passes=constant_folding"
@@ -409,15 +409,9 @@ if cmb_enabled and "kappa_obs_packed" in truth:
     condition_dict["kappa_obs"] = truth["kappa_obs_packed"]
 
 fixed_params = list(cfg.get("mcmc", {}).get("fixed_params", []))
-fixed_dict = {}
-if fixed_params:
-    _truth_src = (
-        cfg.get("truth_params", {}) if observation_mode == ObservationMode.CLOSURE
-        else cfg.get("abacus_truth_params", {})
-    )
-    for _p in fixed_params:
-        fixed_dict[_p] = float(_truth_src.get(_p, model.loc_fid[_p]))
-    print(f"\n🔒 Fixing parameters to their truth/fiducial value: {fixed_dict}")
+fixed_dict = {p: float(model.loc_fid[p]) for p in fixed_params}  # held at loc_fid (docs/pipeline.md 5)
+if fixed_dict:
+    print(f"\n🔒 Fixing parameters to their loc_fid: {fixed_dict}")
 
 fixed_latent_keys = [p + "_" for p in fixed_params]
 
@@ -455,9 +449,8 @@ if not RESUME_MODE:
         # Use galaxy overdensity for initialization
         delta_obs = model.obs_to_delta(truth["obs"])
         rngs = jr.split(jr.key(45), num_chains)
-        scale_field = 2/3
+        scale_field = 2 / 3  # docs/pipeline.md 5
 
-        # Define a wrapper to handle the method call cleanly with pmap
         def init_fn(rng, delta):
             return model.kaiser_post(rng, delta, scale_field=scale_field)
 

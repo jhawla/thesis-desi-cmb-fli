@@ -323,3 +323,14 @@ def test_the_finger_of_god_term_is_bnpar_k2_mu2():
     k6 = 38 / (15 * np.pi) * KMAX**7 - KMIN**7 / 7
     expected = shell_volume(s) * 4 / b**2 * 2 / 5 * k6 / (8 * np.pi**2)
     np.testing.assert_allclose(F[0, 0], expected, rtol=3e-3)
+
+
+def test_the_fog_damping_is_bnpar_up_to_b_over_2_without_growth_rate():
+    """No growth rate: (b + bnpar k^2 mu^2)(1 - bfog k^2 mu^2 / 2) at 0 gives dP/dbfog = -(b/2) dP/dbnpar,
+    so F_bfog = (b/2)^2 F_bnpar and the two are degenerate (the growth rate is what separates them)."""
+    s, fid = survey(1e14), {**FID, "bn2": 0.0, "bnpar": 0.0, "bfog": 0.0}
+    F = fi.galaxy_fisher_3d_cosmo(toy_cache(), fid, s, KMAX, params=("bnpar", "bfog"), kmin=KMIN,
+                                  n_chi=400, n_k=3000)
+    b = 1 + fid["b1"]
+    np.testing.assert_allclose(F[1, 1], (b / 2) ** 2 * F[0, 0], rtol=1e-6)
+    np.testing.assert_allclose(F[0, 1], -(b / 2) * F[0, 0], rtol=1e-6)

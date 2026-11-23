@@ -13,6 +13,11 @@ sample (the fields run_inference.py records per batch and chain, after burn-in; 
 each chain for runs that predate them) and shown as its posterior median and 16-84 %, beside the
 correlation of the posterior mean, which has less amplitude than the truth wherever the data do not
 constrain the field.
+
+Both fields are compared in one band for every run, the Fourier cube |k_i| <= k_N of the galaxy
+runs' final grid (``--band``): the modes a galaxy likelihood holds, so that a gain is read at the
+scales a galaxy analysis claims (docs/pipeline.md §6). The coherence r(k) is per region (in front of,
+inside, behind the galaxy shell), at every scale.
 """
 
 import argparse
@@ -41,16 +46,10 @@ from analyze_run import (  # noqa: E402
     _fixed_latents,
     _load_field_state,
     _quantiles,
+    band_mask,
+    field_regions,
+    final_band,
 )
-
-
-def _smoothing_kernel(shape, box, scale_mpc):
-    """Gaussian low-pass at ``scale_mpc``, on the rfftn grid of ``shape``."""
-    kx = 2 * np.pi * np.fft.fftfreq(shape[0], d=box[0] / shape[0])
-    ky = 2 * np.pi * np.fft.fftfreq(shape[1], d=box[1] / shape[1])
-    kz = 2 * np.pi * np.fft.rfftfreq(shape[2], d=box[2] / shape[2])
-    k2 = kx[:, None, None] ** 2 + ky[None, :, None] ** 2 + kz[None, None, :] ** 2
-    return jnp.asarray(np.exp(-0.5 * k2 * scale_mpc**2))
 
 
 def load_run(run_dir):
@@ -76,20 +75,23 @@ def load_run(run_dir):
         "cmb": bool(getattr(model, "cmb_enabled", False)),
         "chi_min": float(getattr(model, "cmb_chi_matter_min", 0.0)),
         "chi_max": float(getattr(model, "chi_boundary", box[2])),
+        "k_band": final_band(model) if getattr(model, "galaxies_enabled", False) else None,
     }
 
 
-def measure(run, edges, smoothing, burn_in, chi_gxy, min_cells=200):
-    """Per posterior sample: the Pearson r between true and sampled field per radial shell, the
-    whole-box coherence, and the residual rms inside and outside the galaxy shell; the posterior
-    mean of the smoothed field. ``chi_gxy`` is the galaxy shell of the comparison, the same for every
+def measure(run, edges, k_band, burn_in, chi_gxy, min_cells=200):
+    """Per posterior sample: the Pearson r between true and sampled field per radial shell in the
+    band |k_i| <= k_band, the coherence per region, and the residual rms inside and outside the galaxy
+    shell; the posterior mean of the band-limited field. ``chi_gxy`` is the galaxy shell of the comparison, the same for every
     run. Samples are streamed, never held together."""
     model, true_k = run["model"], jnp.asarray(run["truth"]["init_mesh"])
     samples, run["what"] = _field_samples(run["dir"], model, run["positions"], run["fixed"],
                                           burn_in)
-    smooth = _smoothing_kernel(run["shape"], run["box"], smoothing)
-    true_r = np.asarray(jnp.fft.irfftn(true_k * smooth))
+    in_band = band_mask(run["shape"], run["box"], k_band)
+    true_full = jnp.fft.irfftn(true_k)
+    true_r = np.asarray(jnp.fft.irfftn(true_k * in_band))
     rmesh = run["rmesh"]
+    regions = field_regions(rmesh, chi_gxy)
     sels = [(rmesh >= lo) & (rmesh < hi) for lo, hi in zip(edges[:-1], edges[1:], strict=False)]
     m_in = (rmesh >= chi_gxy[0]) & (rmesh <= chi_gxy[1]) if chi_gxy else np.ones_like(rmesh, bool)
     m_out = (~m_in) & (rmesh < (run["chi_max"] if run["cmb"] else rmesh.max()))
@@ -99,18 +101,20 @@ def measure(run, edges, smoothing, burn_in, chi_gxy, min_cells=200):
         den = np.sqrt((a**2).sum() * (b**2).sum())
         return float((a * b).sum() / den) if den > 0 else np.nan
 
-    run.update(true=true_r, corr=[], coh=[], rms_in=[], rms_out=[])
+    run.update(true=true_r, corr=[], coh={name: [] for name in regions}, rms_in=[], rms_out=[])
     total, n = np.zeros_like(true_r), 0
     for rec_k, _ in samples:
         if tuple(np.shape(rec_k)) != tuple(np.shape(true_k)):
             print(f"{run['name']}: truth init_mesh {np.shape(true_k)} and the sampled field "
                   f"{np.shape(rec_k)} are on different grids; skipping.")
             return False
-        rec_r = np.asarray(jnp.fft.irfftn(rec_k * smooth))
+        rec_r = np.asarray(jnp.fft.irfftn(rec_k * in_band))
         run["corr"].append([corr(true_r[m], rec_r[m]) if m.sum() >= min_cells else np.nan
                             for m in sels])
-        ks, *_, coh = model.powtranscoh(jnp.fft.irfftn(true_k), jnp.fft.irfftn(rec_k))
-        run["coh"].append(np.asarray(coh))
+        rec_full = jnp.fft.irfftn(rec_k)
+        for name, m in regions.items():
+            ks, *_, coh = model.powtranscoh(true_full * m, rec_full * m)
+            run["coh"][name].append(np.asarray(coh))
         run["rms_in"].append(float(np.std((rec_r - true_r)[m_in])))
         run["rms_out"].append(float(np.std((rec_r - true_r)[m_out])))
         total, n = total + rec_r, n + 1
@@ -121,7 +125,7 @@ def measure(run, edges, smoothing, burn_in, chi_gxy, min_cells=200):
     return True
 
 
-def plot_slices(runs, out_path, smoothing):
+def plot_slices(runs, out_path, k_band):
     """The same comparison seen directly: one plane through the observer, the truth against each
     run's posterior mean and its residual. The mean is the posterior's best estimate; it has less
     amplitude than the truth wherever the data do not constrain the field, which the radial
@@ -165,8 +169,8 @@ def plot_slices(runs, out_path, smoothing):
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.03)
     axes[0].set_ylabel("y [Mpc/h]")
     axes[0].legend(fontsize=7, loc="upper right")
-    fig.suptitle(f"Initial field in the plane through the observer, Gaussian smoothing "
-                 f"{smoothing:.0f} Mpc/h — posterior means. "
+    fig.suptitle(f"Initial field in the plane through the observer, band $|k_i| \\leq$ "
+                 f"{k_band:.3f} h/Mpc — posterior means. "
                  f"Solid: galaxy shell. Dotted: Born integration range.", fontsize=10)
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
@@ -187,8 +191,9 @@ def main():
     p.add_argument("--labels", nargs="*", default=None, help="one legend label per run")
     p.add_argument("--out", default=None, help="output png (default: <first run>/figures/...)")
     p.add_argument("--nbins", type=int, default=18, help="number of radial shells")
-    p.add_argument("--smoothing", type=float, default=100.0,
-                   help="Gaussian smoothing of both fields, Mpc/h: the common scale of runs on different grids")
+    p.add_argument("--band", type=float, default=None,
+                   help="band |k_i| <= BAND (h/Mpc) of both fields, the same for every run (default: the "
+                        "final-grid Nyquist frequency of the galaxy runs, the smallest if they differ)")
     p.add_argument("--burn_in", type=float, default=0.5,
                    help="fraction of the recorded batches dropped (analyze_run's default)")
     args = p.parse_args()
@@ -212,12 +217,18 @@ def main():
     edges = np.linspace(0.0, rmax, args.nbins + 1)
     centres = 0.5 * (edges[:-1] + edges[1:])
     chi_gxy = next((r["chi_gxy"] for r in runs if r["chi_gxy"] is not None), None)
-    runs = [r for r in runs if measure(r, edges, args.smoothing, args.burn_in, chi_gxy)]
+    k_band = args.band or min((r["k_band"] for r in runs if r["k_band"] is not None),
+                              default=min(final_band(r["model"]) for r in runs))
+    print(f"band of the comparison: |k_i| <= {k_band:.4f} h/Mpc")
+    runs = [r for r in runs if measure(r, edges, k_band, args.burn_in, chi_gxy)]
     if not runs:
         print("Nothing to compare.")
         return
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    region_names = list(runs[0]["coh"])
+    fig, axes = plt.subplots(1, 1 + len(region_names), figsize=(7 + 5 * len(region_names), 5),
+                             squeeze=False)
+    axes = axes[0]
     colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
     print("\ncorrelation with the truth per shell: a posterior sample, median [16, 84 %]; "
@@ -240,9 +251,10 @@ def main():
         axes[0].fill_between(centres, lo, hi, color=color, alpha=0.2, lw=0)
         axes[0].plot(centres, r["corr_mean"], "--", color=color,
                      label=f"{r['label']}: posterior mean")
-        med, lo, hi = _quantiles(r["coh"])
-        axes[1].semilogx(r["ks"], med, "-", color=color, label=r["label"])
-        axes[1].fill_between(r["ks"], lo, hi, color=color, alpha=0.2, lw=0)
+        for ax, name in zip(axes[1:], region_names, strict=True):
+            med, lo, hi = _quantiles(r["coh"][name])
+            ax.semilogx(r["ks"], med, "-", color=color, label=r["label"])
+            ax.fill_between(r["ks"], lo, hi, color=color, alpha=0.2, lw=0)
 
     chi_gxy = next((r["chi_gxy"] for r in runs if r["chi_gxy"] is not None), None)
     if chi_gxy is not None:
@@ -256,20 +268,22 @@ def main():
 
     axes[0].set_xlabel(r"$\chi$ from the observer [Mpc/h]")
     axes[0].set_ylabel(r"corr(true, reconstructed)")
-    axes[0].set_title(f"Initial field, per radial shell (Gaussian smoothing {args.smoothing:.0f} "
-                      f"Mpc/h)\nposterior median and 16-84 % of a sample, and the posterior mean")
+    axes[0].set_title(f"Initial field, per radial shell ($|k_i| \\leq$ {k_band:.3f} h/Mpc)\n"
+                      f"posterior median and 16-84 % of a sample, and the posterior mean")
     axes[0].axhline(0.0, color="k", lw=0.8, alpha=0.5)
     axes[0].set_ylim(-0.1, 1.05)
     axes[0].legend(fontsize=8)
     axes[0].grid(alpha=0.3)
 
-    axes[1].set_xlabel(r"$k$ [h/Mpc]")
-    axes[1].set_ylabel("coherence")
-    axes[1].set_title("Initial field, all scales (whole box), a posterior sample")
-    axes[1].axhline(0.0, color="k", lw=0.8, alpha=0.5)
-    axes[1].set_ylim(-0.1, 1.05)
-    axes[1].legend(fontsize=8)
-    axes[1].grid(alpha=0.3)
+    for ax, name in zip(axes[1:], region_names, strict=True):
+        ax.set_xlabel(r"$k$ [h/Mpc]")
+        ax.set_ylabel("coherence")
+        ax.set_title(f"Initial field, all scales, {name}: a posterior sample")
+        ax.axvline(k_band, color="k", ls=":", lw=1.0)
+        ax.axhline(0.0, color="k", lw=0.8, alpha=0.5)
+        ax.set_ylim(-0.1, 1.05)
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
 
     out = Path(args.out) if args.out else Path(args.runs[0]) / "figures" / "reconstruction_comparison.png"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -278,7 +292,7 @@ def main():
     plt.close(fig)
     print(f"\nSaved {out}")
 
-    plot_slices(runs, out.with_name(out.stem + "_slices" + out.suffix), args.smoothing)
+    plot_slices(runs, out.with_name(out.stem + "_slices" + out.suffix), k_band)
 
 
 if __name__ == "__main__":

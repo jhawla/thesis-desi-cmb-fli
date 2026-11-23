@@ -449,3 +449,51 @@ def test_model_bias_order_latents_and_guard():
     assert m3.latents["b3"]["scale"] == 1e3 and m3.latents["b3"]["scale_fid"] == 1.0
     with pytest.raises(ValueError, match="bias_order"):
         FieldLevelModel(**(default_config | kw | {"bias_order": 3, "evolution": "kaiser"}))
+
+
+def test_los_second_derivative_of_a_plane_wave():
+    """n_i n_j d_i d_j cos(k.x) = -(n.k)^2 cos(k.x), for one line of sight and for radial ones,
+    on a box with unequal cells."""
+    from desi_cmb_fli.bricks import los_second_derivative
+
+    n, box = 32, np.array([320.0, 320.0, 640.0])
+    grid = np.stack(np.meshgrid(*[np.arange(n) * b / n for b in box], indexing="ij"), -1)
+    kv = 2 * np.pi * np.array([2.0, -1.0, 3.0]) / box
+    wave = np.cos(grid @ kv)
+    radial = grid - box / 2 + 1.7
+    radial = radial / np.linalg.norm(radial, axis=-1, keepdims=True)
+    for los in (np.array([0.0, 0.6, 0.8]), radial):
+        out = los_second_derivative(jnp.asarray(wave, jnp.float32), jnp.asarray(los, jnp.float32), box)
+        expected = -((los * kv).sum(-1)) ** 2 * wave
+        np.testing.assert_allclose(np.asarray(out), expected, atol=1e-5 * (kv @ kv))
+
+
+def test_model_fog_counterterm():
+    """gxy_fog samples bfog (not without it) and is refused without RSD or particles; with one line
+    of sight the galaxy field is the field without the term times (1 - bfog k_par^2 / 2), mode by
+    mode, and bfog = 0 is the model without it (docs/pipeline.md 2.4)."""
+    import pytest
+
+    from desi_cmb_fli.model import FieldLevelModel, default_config
+
+    kw = {"mesh_shape": (16, 16, 16), "box_shape": (320.0, 320.0, 320.0), "curved_sky": False,
+          "los": (0.0, 0.0, 1.0)}
+    off = FieldLevelModel(**(default_config | kw))
+    on = FieldLevelModel(**(default_config | kw | {"gxy_fog": True}))
+    assert "bfog" not in off.groups["bias"] and "bfog" in on.groups["bias"]
+    for bad in ({"los": None}, {"evolution": "kaiser"}):
+        with pytest.raises(ValueError, match="gxy_fog"):
+            FieldLevelModel(**(default_config | kw | {"gxy_fog": True} | bad))
+
+    scalars = off.loc_fid | {"Omega_m": 0.3, "sigma8": 0.8, "b1": 1.0, "bnpar": 3.0}
+    init = off.predict(samples=scalars, frombase=True, hide_base=False)["init_mesh"]
+
+    def field_k(model, **extra):
+        out = model.predict(samples=scalars | extra | {"init_mesh": init}, frombase=True, hide_det=False)
+        return np.fft.rfftn(np.asarray(out["gxy_mesh"], np.float64))
+
+    g_off, g0, g10 = field_k(off), field_k(on, bfog=0.0), field_k(on, bfog=10.0)
+    kz = 2 * np.pi * np.fft.rfftfreq(16, 320.0 / 16)
+    tol = 1e-5 * np.abs(g_off).max()
+    np.testing.assert_allclose(g0, g_off, atol=tol)
+    np.testing.assert_allclose(g10, g_off * (1 - 5.0 * kz**2), atol=tol)

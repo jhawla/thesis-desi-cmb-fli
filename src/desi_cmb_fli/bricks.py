@@ -341,6 +341,7 @@ def get_cosmology(**cosmo) -> Cosmology:
         "bs2",
         "bn2",
         "bnpar",
+        "bfog",
         "b3",
         "bds2",
         "bs3",
@@ -772,6 +773,24 @@ def rsd(cosmo: Cosmology, vel, los, a, box_shape, mesh_shape, dvel=0.0):
 
     dpos = (vel * los).sum(-1, keepdims=True) * los
     return phys2cell_vel(dpos, box_shape, mesh_shape)
+
+
+def los_second_derivative(mesh, los, box_shape):
+    """
+    Second derivative of ``mesh`` along the line of sight, n_i n_j d_i d_j mesh, in (h/Mpc)^2.
+
+    ``los`` is one unit 3-vector or a mesh of them (..., 3); along radial lines of sight this is
+    d^2/dr^2. The derivatives are spectral (one rfftn, six irfftn).
+    """
+    shape = mesh.shape
+    kvec = [ki * (m / bl) for ki, m, bl in zip(rfftk(shape), shape, box_shape, strict=True)]
+    mesh_k = jnp.fft.rfftn(mesh)
+    out = jnp.zeros(shape, dtype=mesh.dtype)
+    for i in range(3):
+        for j in range(i, 3):
+            nn = (1.0 if i == j else 2.0) * los[..., i] * los[..., j]
+            out = out + nn * jnp.fft.irfftn(-kvec[i] * kvec[j] * mesh_k, s=shape)
+    return out
 
 
 def naive_mu2_delta(delta_k, los, mesh_shape):

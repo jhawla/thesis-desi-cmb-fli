@@ -59,12 +59,22 @@ truth_params:
   bn2: 0.0
   fNL: 0.0
 latents:
-  b3:  # preconditioning unit at the posterior width measured at the true ICs (b3, bds2, bs3 curvature, pipeline 7.19)
-    scale_fid: 0.02
+  # Sampler unit (scale_fid) and start (loc_fid) of each inferred scalar at the free-IC posterior of the ph202 galaxies
+  # alone (run_20261119_042045_61543513, batches 20-39), the priors (loc, scale) unchanged: a unit narrower than the
+  # posterior is learnt too narrow by the warm-up and the scalars mix slowly (pipeline 5, 7.19). Omega_m, sigma8, b1
+  # keep their loc_fid, which also sets the Kaiser preconditioner and b1_sigma8.
+  b3:
+    loc_fid: -1.35
+    scale_fid: 0.31
   bds2:
-    scale_fid: 0.017
+    loc_fid: -0.38
+    scale_fid: 0.17
   bs3:
-    scale_fid: 0.037
+    loc_fid: -1.04
+    scale_fid: 0.59
+  b1_alpha:
+    loc_fid: 1.036
+    scale_fid: 0.017
   fNL:
     loc: 0.0
     scale: 10000.0
@@ -80,59 +90,59 @@ latents:
     scale: 10000.0
     scale_fid: 300.0
     loc_fid: 0.0
-  Omega_m:
+  Omega_m:  # joint: the mesh-100 Fisher widths (pipeline 8)
     loc: 0.315192
     scale: 0.15
-    scale_fid: 0.05
+    scale_fid: 0.0031
     loc_fid: 0.315192
     low: 0.2
     high: 0.55
   sigma8:
     loc: 0.811355
     scale: 0.15
-    scale_fid: 0.05
+    scale_fid: 0.0044
     loc_fid: 0.811355
     low: 0.5
     high: 1.2
-  b1:
+  b1:  # unit of the sampled (1 + b1) sigma8 / sigma8_fid - 1
     loc: 1.15
     scale: 100.0
-    scale_fid: 0.01
+    scale_fid: 0.025
     loc_fid: 1.15
   b2:
     loc: 0.0
     scale: 100.0
-    scale_fid: 0.03
-    loc_fid: 0.0
+    scale_fid: 0.083
+    loc_fid: 0.77
   bs2:
     loc: 0.0
     scale: 100.0
-    scale_fid: 0.1
-    loc_fid: 0.0
+    scale_fid: 0.061
+    loc_fid: -0.24
   bn2:
     loc: 0.0
     scale: 1000.0
-    scale_fid: 1.0
-    loc_fid: 0.0
+    scale_fid: 2.8
+    loc_fid: 6.0
   bnpar:
     loc: 0.0
     scale: 100.0
-    scale_fid: 1.0
-    loc_fid: 0.0
+    scale_fid: 5.4
+    loc_fid: -12.1
   # Galaxy noise (gxy_stoch_noise): informative prior from the Abacus LRG residual at the true ICs, the
   # maximum-likelihood s_e, s_ed (0.901, 0.221 ph201; 0.900, 0.214 ph202, at mesh 100), width the spread of
   # the noise level across redshift shells; free, s_e and s_ed fall and the chains over-fit (pipeline 3.1, 7.19)
   s_e:  # fit at the true ICs, final grids and noise-free selection, order 3 (galaxy_likelihood_profile.py --mode newton, pipeline 7.19): ph202 0.900, 0.214; ph201 0.901, 0.221
-    loc: 0.9
+    loc: 0.8999
     scale: 0.03
-    loc_fid: 0.9
+    loc_fid: 0.8999
   s_ed:
-    loc: 0.214
+    loc: 0.2137
     scale: 0.03
-    loc_fid: 0.214
+    loc_fid: 0.2137
 mcmc:
   num_warmup: 8192
-  fixed_params:  # Omega_m and sigma8 inferred; fNL at its truth; the noise held at its ph202 fit (abacus_truth_params), as the galaxies alone (_noiseheld): under its prior s_e collapses (pipeline 3.1, 7.19)
+  fixed_params:  # Omega_m and sigma8 inferred; fNL at its truth; the noise held at its ph202 fit (loc_fid), as the galaxies alone (_noiseheld): under its prior s_e collapses (pipeline 3.1, 7.19)
   - fNL
   - s_e
   - s_ed
@@ -146,8 +156,6 @@ mcmc:
     thinning: 5
 observation_mode: abacus
 abacus_truth_params:
-  s_e: 0.8999  # ph202 fit at the true ICs (galaxy_likelihood_profile.py --mode newton, pipeline 7.19), the held noise
-  s_ed: 0.2137
   Omega_m: 0.315192
   sigma8: 0.811355
   fNL: 0.0

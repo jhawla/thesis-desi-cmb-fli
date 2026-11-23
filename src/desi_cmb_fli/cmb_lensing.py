@@ -30,7 +30,7 @@ import numpy as np
 NYQUIST_FRACTION = 0.5
 
 # Where the reduced randoms meshes and the line-of-sight ratio of the out-of-model term are cached:
-# data/cache in the repository (git-ignored; scratch holds run directories only, docs/hpc.md). Set
+# data/cache in the repository (git-ignored; scratch holds run directories only). Set
 # abacus_galaxy.randoms_cache_dir in the config to move the randoms', or to null to disable it.
 _DEFAULT_RANDOMS_CACHE_DIR = Path(__file__).resolve().parents[2] / "data" / "cache"
 
@@ -927,7 +927,7 @@ def limber_ratio_outside_model(
     (docs/pipeline.md 3.2): the exact over Limber C_ell of its kernel (``exact_over_limber``) times
     its halofit over linear Limber C_ell (``nonlinear_power`` against the model's linear spectrum).
     Computed on the CPU: on a GPU its compiled halofit holds memory outside the client's pool for
-    the rest of the process (docs/hpc.md). Cached in ``cache_dir`` (None: not cached) under a
+    the rest of the process. Cached in ``cache_dir`` (None: not cached) under a
     digest of every input; bump ``_LIMBER_RATIO_CACHE_VERSION`` when the computation changes."""
     args = (ell, r_shells, a_shells, d_r, shell_weights, z_source, chi_max, taper, n_per_shell,
             n_beyond, k_max)

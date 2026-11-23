@@ -21,6 +21,7 @@ model:
   bias_order: 2  # Lagrangian bias expansion: 2 = b1, b2, bs2, bn2 (+ bnpar, b1_alpha); 3 adds b3, bds2, bs3 (montecosmo's third order; lpt/nbody only), pipeline 2.4
   b1_sigma8: true  # the sampler moves (1 + b1) sigma8 / sigma8_fid instead of b1 (same prior on b1, same posterior; b1 and sigma8 decorrelate); false: b1, as runs before this key, pipeline 5
   gxy_ngbar_free: false  # Free per-z-shell mean density -> marginalise the integral constraint
+  gxy_fog: false  # true: Finger-of-God damping counterterm bfog sampled, the redshift-space galaxy field g + (bfog/2) d_par^2 g on the paint grid (needs RSD and lpt/nbody), pipeline 2.4
   lightcone: true
   # a_obs: 0.5556 # snapshot
   a_obs: null # lightcone
@@ -129,13 +130,18 @@ latents:
     scale: 100.0
     scale_fid: 1.0
     loc_fid: 0.0
+  bfog:  # (Mpc/h)^2, with model.gxy_fog only; > 0 damps (sigma_FoG^2 to leading order), pipeline 2.4
+    loc: 0.0
+    scale: 100.0
+    scale_fid: 1.0
+    loc_fid: 0.0
 
 # MCMC configuration
 mcmc:
   num_warmup: 8192
   mesh_warmup_steps: 8192  # STEP 1 of run_inference.py: warm-up steps of the field alone, cosmology and biases fixed
 
-  # Fix some scalar latents to their truth/fiducial value (only the rest are inferred).
+  # Hold some scalar latents at their loc_fid (only the rest are inferred).
   fixed_params: [Omega_m, sigma8]
 
   # Sampling

@@ -1,4 +1,4 @@
-"""Run storage (docs/hpc.md, "Storage"): runs are written on scratch, the fast file system, and kept
+"""Run storage (docs/hpc.md, "Outputs and storage"): runs are written on scratch, the fast file system, and kept
 on CFS, which is not purged."""
 
 import os
@@ -25,7 +25,7 @@ def keep_run(run_dir, kept=None):
         kept.mkdir(parents=True, exist_ok=True)
         subprocess.run(["rsync", "-a", str(run_dir), f"{kept}/"], check=True)
     except (OSError, subprocess.CalledProcessError) as err:
-        print(f"WARNING: run not copied to {kept} ({err}); copy it by hand (docs/hpc.md, Storage)")
+        print(f"WARNING: run not copied to {kept} ({err}); copy it by hand (docs/hpc.md)")
         return None
     print(f"Run kept: {kept / run_dir.name}")
     return kept / run_dir.name
