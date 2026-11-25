@@ -228,7 +228,7 @@ evolution above is the counterpart for a single broad light-cone shell.
 operator taken at its particle's `a` like `b₂` (factor `D(a)³` on the `a = 1` field):
 `b3 (δ³ − 3⟨δ²⟩δ)/6 + bds2 δ (s² − ⟨s²⟩) + bs3 · 3 det s`, with `s_ij = (k_i k_j/k² − δ_ij/3) δ` the
 traceless tidal tensor (the sign convention of `b_{s²}` and of montecosmo) and det by the Sarrus rule;
-priors N(0, 10³), `scale_fid` 1, as montecosmo. One deliberate difference: the renormalised `s²` inside the
+priors N(0, 1000²) (standard deviation 10³, the notation N(μ, σ²) of this file), `scale_fid` 1, as montecosmo. One deliberate difference: the renormalised `s²` inside the
 `bds2` term is the one of `b_{s²}` here, minus the particle mean of `s²`, where montecosmo subtracts its
 Gaussian expectation `2⟨δ²⟩/3`; `δ³` and `det s` have zero Gaussian mean and are not shifted, as there.
 `b3` does not follow `b₁(a)`: tying it to the quenched-galaxy `b3(b1)` gains nothing at the true ICs
@@ -1726,10 +1726,11 @@ Gauss–Newton, `Omega_m` acting at fixed field through D(a), f and the LPT, giv
 power law with α free does not move them by more than their σ. A curvature of the linear bias, `1 + b1(a) = (1 +
 b1)(D_fid/D)^α exp(C2 ln²(D_fid/D))`, takes the bend (C2 −2.49 ± 0.08 and −2.30 ± 0.08, χ² −1100) but opens a
 valley in `Omega_m` at fixed field: along the Gauss–Newton path χ² changes by about 2 between `Omega_m` 0.336 and
-0.348, and the iterations wander there (last 0.344 and 0.341, not converged). The redshift shape the galaxies give `Omega_m` at fixed field is the shape a free bias
-curvature takes, so the power law stays: it leaves the bend in the residual (the per-shell refits of
-`validate_galaxy_from_ic.py`, χ² gains 114–214 per shell on ph202) and the cosmology at the truth. With the field
-free the valley is not there: in the light-cone P+B Fisher of the damped model (`logs/bispec_fisher/bispec_fisher_curv.py`,
+0.348, and the iterations wander there (last 0.344 and 0.341, not converged). The redshift shape the galaxies give
+`Omega_m` at fixed field is the shape a free bias curvature takes; the power law alone leaves the bend in the residual
+(the per-shell refits of `validate_galaxy_from_ic.py`, χ² gains 114–214 per shell on ph202). With the field
+free the valley is not there, which is why the curvature is in the model (`b1_curv_free`, §2.4, every production
+run): in the light-cone P+B Fisher of the damped model (`logs/bispec_fisher/bispec_fisher_curv.py`,
 the curvature as `exp((α + C2 ln(D_fid/D)) ln(D_fid/D))`), C2 free leaves σ(`Omega_m`) 0.00326 and σ(`sigma8`) 0.0177
 unchanged, takes the measured hump (C2 −2.77 ± 0.15) and brings the hump's `Omega_m` shift from +0.0011 to 0.0000 (the
 fixed-field leverage is not the free field's, as for the `b2` slope, §7.19). Real LRGs,
