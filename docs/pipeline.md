@@ -1302,7 +1302,7 @@ right amplitude but its own fluctuation; the two together bound what is reconstr
 | closure `Omega_m`–`sigma8` triplet | unbiased; κ gain on σ(`sigma8`) 62 % (Fisher 69 %), on σ(`Omega_m`) 13 % (Fisher 9 %); galaxy and joint widths within 11 % of the Fisher | §7.13 |
 | joint `Omega_m`–`sigma8`, Abacus, mesh 54 | box 5000, SO, `exact` term: −0.83σ / −1.97σ (Mahalanobis 1.98), the low `sigma8` mostly the noise draw of the κ map, a third the ICs, no model error; paired κ gain 19 % ± 1 % on σ(`Omega_m`) (Fisher 14 %), 79 % ± 0.3 % on σ(`sigma8`) (Fisher 79 %); the κ map at the coherence of the model at the true ICs | §7.17 |
 | galaxy likelihood against the grids | a particle lattice commensurate with the paint grid (280³ on 280³, 560³ on 280³) biases the amplitude at the true ICs (−0.0045 at mesh 100, −0.0056 at mesh 160); incommensurate grids agree; the model refuses the commensurate ones; the randoms' counting noise in the selection pulls the biases (noise-free selection); with both fixed and order-3 biases A_min 0.998 / 0.999 ± 0.002 (ph201 / ph202, mesh 100) | §2.5, §3.1, §7.16, §7.19 |
-| galaxy model at k ≤ 0.1 (meshes 100–160) | at order 2 the Abacus chains drift along `b_E·sigma8` ≈ const to a better fit than the truth (mesh-100 production run `sigma8` 0.723 ± 0.020, not converged), driven by the deterministic residual: its largest measured part is the third order at mesh 100, the initial modes 0.15 < k < 0.24 the 240³ field lacks at mesh 160. Mesh 100 with the third order, production step: Abacus follows the closure of the same chain key (+0.000, −0.011), closures on initial fields drawn from the prior centre on the truth (0.808 over four chains), the closure on the ph201 ICs sits at 0.773 | §7.19 |
+| galaxy model at k ≤ 0.1 (meshes 100–160) | at order 2 the Abacus chains drift along `b_E·sigma8` ≈ const to a better fit than the truth (mesh-100 production run `sigma8` 0.723 ± 0.020, not converged), driven by the deterministic residual: its largest part, at mesh 100 as at mesh 160, is the initial modes 0.15 < k < 0.24 the 240³ field lacks. Mesh 100 with the third order, production step: Abacus follows the closure of the same chain key (+0.000, −0.011), closures on initial fields drawn from the prior centre on the truth (0.808 over four chains), the closure on the ph201 ICs sits at 0.773 | §7.19 |
 | κ alone at nside 128 (ℓ ≤ 256), Abacus | widths at the Fisher, no trend; Mahalanobis 2.44 along the degeneracy, `sigma8` at the true `Omega_m` as the IC closure's (0.806 against 0.807): no model error in the κ amplitude | §7.19 |
 | joint at mesh 100 | `sigma8` held at ≈ 0.80 by κ while `Omega_m` (+2.4σ) and the biases drift; 27 of 60 batches, not converged | §7.19 |
 | κ gain on σ(`f_NL`) | Abacus none (0.992 ± 0.014); closure 9 % ± 3 % (density 1) to 17 % ± 3 % (0.03) | §7.1–7.3, to redo |
@@ -2883,9 +2883,9 @@ is not separated by these runs.
 the true ICs, the six biases refitted, one extension at a time; 407 567 cells): third-order biases −4463
 (k bands 0–0.025 / 0.025–0.05 / 0.05–0.075 / 0.075–0.1: −143, −1220, −2340, −749), velocity amplitude −60,
 2LPT amplitude −94, `bnpar3` −1, all four −4639, the quenched relation off +3683. Against the initial modes
-beyond the 240³ cutoff (`T_uv` of the 160³ templates brought to 100³ by a Fourier crop, interior cells only:
-−158 × (160/100)³ ≈ −650, a lower bound) and the box faces (≲ 1500): the third order is the largest measured
-gap at this grid. With it the amplitude profile is flatter (χ²(A = 0.95) − χ²(min) +151 against +308 without):
+beyond the 240³ cutoff (−8104, measured with the mesh-100 template in "The ph202 galaxies-alone run read again"
+below; the crop of the 160³ templates gave −650, a lower bound) and the box faces (≲ 1500): the initial scales are
+the largest gap at this grid, the third order the second. With it the amplitude profile is flatter (χ²(A = 0.95) − χ²(min) +151 against +308 without):
 `b3` takes part of the field amplitude. At mesh 54 on the same init and particle grids the third order gains
 −847 over 65 092 cells, the same per cell, where the mesh-54 production runs are unbiased (§7.17).
 
@@ -3262,12 +3262,13 @@ seeds; white-noise rms 1.0001 / 1.0000 as their logs), gives 0.3133 and 0.3156 a
 0.3129 / 0.3142) and 0.3157 (0.3165 / 0.3148); on the ph201 ICs 0.3122 against the ph201 closure's 0.3095 (0.3092 /
 0.3097): the free-IC `Omega_m` follows the field's own preference to 0.0016 rms. The realisation, +0.0054 of the ph202
 offset, is established, and the closure on the ph202 ICs is not run (job 61687722 cancelled): its own noise draw would
-measure the rest less well than this. The other +0.0045 is 2.8 times that scatter. On ph201, Abacus against the
+measure the rest less well than this. The other +0.0045 is 2.8 times that scatter: it is the initial scales beyond
+the 240³ cutoff (*The initial scales beyond the cutoff*, below). On ph201, Abacus against the
 closure on the same ICs and keys (the paired order-3 runs above, batches 5–35): `Omega_m` +0.0034 / +0.0024, `b2`
 +0.25 / +0.29, `b1_alpha` −0.047 / −0.050, `bn2` −1.6, `sigma8` +0.000 / −0.011, Abacus there at its proxy (+0.0003).
 In the ph202 posterior, conditioned on the true-IC `bn2` and `b1_alpha`, `Omega_m` is 0.3151 ± 0.0032: the `bn2`
-excursion (+7.7, 2.7σ; on ph201 the Abacus-specific `bn2` shift has the other sign) is the realisation's ridge, free
-field shape against the k² bias, and `b1_alpha` carries the rest.
+excursion (+7.7, 2.7σ; on ph201 the Abacus-specific `bn2` shift has the other sign) goes with `Omega_m` (P+B
+correlation +0.65, below), and the initial scales beyond the cutoff raise both (below).
 
 *The bias evolution* (`logs/gxy_ph202/relation_gn.py`, CPU jobs 61849663, 61849862; Gauss–Newton at the true ICs,
 every other parameter free). The model ties `b2(z)`, `bs2(z)` to b1(z) through the quenched-galaxy relations (§2.4);
@@ -3296,11 +3297,108 @@ quadratic amplitude. Not the one-point shape of the noise (`shuffle` and `hetero
 0.680 / 0.676), not the relation's slope (λ2 moves the true-IC `b2` by +0.02), and not the bias running to the
 cutoff the free field holds coherently: with the true ICs low-passed at Λ (`logs/gxy_ph202/cutoff_gn.py`, CPU job
 61850208, everything refitted) `b2` is 0.400, 0.404, 0.391, 0.388, 0.367 for no cut and Λ = 0.15, 0.12, 0.10, 0.08
-h/Mpc (`bn2` −1.7 → +0.9, `bnpar` −14.6 → −28.8, A 0.9986 → 0.9939, χ² +3800, +12 200, +30 400, +426 000). Not
-understood. What remains is data structure the field reads as quadratic bias only when it is free (beyond 2LPT, or
-beyond the initial modes the model has; with a cutoff mismatch free-IC amplitudes come out low and fixed-IC ones
-right, arXiv:2212.07875): the test is a closure whose data are drawn from a finer or N-body evolution than the
-inference uses.
+h/Mpc (`bn2` −1.7 → +0.9, `bnpar` −14.6 → −28.8, A 0.9986 → 0.9939, χ² +3800, +12 200, +30 400, +426 000), and
+not the initial scales beyond the cutoff, which lower it (below). Not understood. What remains is data structure the
+field reads as quadratic bias only when it is free: the dynamics beyond 2LPT, or the LRGs' bias beyond the Lagrangian
+expansion; the test is a closure plus the counts of the N-body displacements and velocities against 2LPT from the
+same ICs and weights.
+
+*`Omega_m` at the true ICs with the damping and the slope* (`logs/gxy_ph202/relation_gn.py --om [--hold
+b2_slope=…]`, CPU jobs 61908390, 61909220; Gauss–Newton, the `gxy_fog` config, truth 0.3152): `b2_slope` free
+0.2927 ± 0.0039 (still moving, slope 1.266), held at 1.218 (its ph202 fit) 0.3003, at 1.2044 (its ph201 fit, 1.204 ±
+0.021) 0.2978, at 1 0.3241 ± 0.0042; each gains only 6–12 in χ² over the truth's `Omega_m`. At a fixed field
+`Omega_m` reads the redshift evolution, which moves with the slope's value (≈ −0.11 per unit) along a flat valley;
+the damping moves it by +0.003 to +0.004 (V = 1, `velocity_om_gn.py`, same configuration: 0.3162 → 0.3193 / 0.3206),
+and minima found by different scripts agree to about 0.005 in this valley. The free-field `Omega_m` follows the
+spectral shape instead (above), so these fits do not predict a run.
+
+*The model errors the free field sees: power spectrum and bispectrum* (`logs/bispec_fisher/bispec_fisher.py`, CPU
+jobs 61910782, 61911008, 61911437). Light-cone Fisher of the redshift-space power spectrum and tree-level bispectrum
+(redshift-space kernels of Scoccimarro et al.; the model's Lagrangian biases to Eulerian `b2E = b2L + 8/21 b1L`,
+`bs2E = bs2L − 2/7 b1L`; the damping on every leg; Gaussian covariances without the P–B cross term; legs to √3 k_N
+weighted by the cube fraction, as `galaxy_fisher_3d_cosmo`; test: equilateral matter Q = 4/7). Widths against
+`run_20261119_042045_61543513` (no damping, slope 1), P+B over the cube (P alone; run): `Omega_m` 0.0031 (0.0040;
+0.0045), `sigma8` 0.014 (0.021; 0.019), `b2` 0.057 (none; 0.083), `bs2` 0.067 (none; 0.061), `bn2` 2.2 (2.6; 2.8),
+`b1_alpha` 0.013 (0.015; 0.017); over the sphere |k| ≤ k_N 0.0043, 0.024, 0.096, 0.13, 5.8, 0.019. The run's
+cosmological widths are those of the power spectrum; `b2` and `bs2` are set by the bispectrum. First-order shifts
+are unreliable here, `Omega_m` being nearly degenerate with `b1` and `b1_alpha` (the b(z) hump gives +0.0048 at first
+order at the data point, +0.0011 at the converged fit, as `logs/bias_z/bz_shift.py`'s +0.0013;
+`logs/bispec_fisher/hump_check.py`); the shifts are converged Gauss–Newton fits of the run's model to the expected P
+and B of data that hold what it lacks (damping 16.1, V 0.980 from the true-IC fit with both, slope 1.221, the
+measured b(z) hump), P+B over the cube:
+
+| the run's model lacks | `Omega_m` | `sigma8` | `b1` | `b2` | `bs2` | `bn2` | `bnpar` | `b1_alpha` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| damping | −0.0009 | −0.019 | +0.052 | +0.033 | −0.007 | −0.0 | −19.2 | −0.011 |
+| V 0.980 | −0.0001 | −0.015 | +0.040 | +0.052 | +0.024 | −0.1 | +0.1 | −0.001 |
+| slope 1.221 | +0.0003 | −0.002 | +0.010 | −0.020 | +0.006 | +0.5 | +0.5 | +0.016 |
+| b(z) hump | +0.0013 | +0.001 | −0.025 | −0.057 | +0.006 | +0.5 | −0.4 | −0.143 |
+| all four | +0.0004 | −0.034 | +0.071 | +0.004 | +0.028 | +0.7 | −19.8 | −0.137 |
+| run − (realisation; true-IC fit) | +0.0045 | −0.028 | +0.124 | +0.38 | −0.092 | +5.8 | −31 | −0.042 |
+
+The last row takes the realisation's `Omega_m`, `sigma8` (0.3206, 0.8175) and the true-IC fit with damping and V for
+the biases. `sigma8` is accounted for: the missing damping (through the bispectrum only; the power spectrum alone
+gives +0.0003) and the 2LPT velocities. The hump's `b1_alpha` shift depends on how the outer shell (−5.9 %) is
+carried to the survey's edge. `Omega_m`, `b2` and `bn2` are not these four. The widest P+B direction in the run's
+scalar units is `b1` 0.67, `bnpar` 0.65, `b2` 0.29, `bn2` 0.19, at 5.6 units: the direction the chains did not mix.
+A free-field maximum a posteriori (Adam on the sampled latents, GPU job 61910407) does not stand in for these: the
+whitened field shrinks while `sigma8` rises, 0.79 → 1.04 and `Omega_m` 0.32 → 0.26 in 800 steps, the biases held at
+their true-IC values or not.
+
+*The initial scales beyond the cutoff* (`logs/uv_m100/uvtemplate_m100.py`, CPU job 61911541). `T_uv` = the counts of
+the true ICs at 384³ minus the same ICs cut to 240³, both through 480³ particles and the 260 paint grid, at the
+`gxy_fog` true-IC Newton biases; `T_ptcl` = the 240³ ICs through 480³ particles minus the run model (280³). The
+whitened Abacus residual (χ²/N 0.819) holds `T_uv` at amplitude α 0.908, Δχ² −8104; its power is 1.9 % of the
+residual's at k < 0.0125, rising to 4.5 % at 0.09–0.109, with α 0.78–1.06 in every band; `T_ptcl` gives −377.
+Chains (`logs/uv_m100/chain_m100.py`, GPU job 61911650; the `gxy_fog` config, one key, from the truth point, run
+61543513's step and L with a unit mass refined over 1024 steps, 30 batches of 250 steps, means of batches 8–29 with
+block errors): on the closure (the model at the truth plus its own noise) `Omega_m` 0.3210, `sigma8` 0.837, at the
+realisation; against it, same key:
+
+| data − closure | `Omega_m` | `sigma8` | `b1` | `b2` | `bs2` | `bn2` | `bfog` | `b2_slope` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| + `T_uv` | +0.0043 ± 0.0007 | +0.009 ± 0.001 | −0.004 | −0.044 ± 0.004 | +0.037 | +1.7 ± 0.2 | +11.4 ± 0.7 | +0.017 |
+| + `T_uv` + `T_ptcl` | +0.0037 ± 0.0006 | +0.008 | −0.006 | −0.043 | +0.038 | +1.1 | +13.8 | +0.013 |
+| Abacus | +0.0035 ± 0.0005 | +0.027 ± 0.001 | −0.051 ± 0.002 | +0.113 ± 0.005 | −0.125 | +1.8 ± 0.2 | +0.6 | +0.156 ± 0.015 |
+
+`T_uv` moves `Omega_m` by the ph202 offset beyond the realisation, and Abacus sits as far above its closure: the
+`Omega_m` excess is the initial scales the 240³ field lacks. The damping takes `T_uv` up (`bfog` +11.4), and `T_uv`
+lowers `b2`. Abacus raises `b2` and, with the damping in the model, `sigma8` above the closure along `b1·sigma8`, where
+the P+B Fisher of the damped model with V 0.98 expects −0.016: one key, along the slowest direction.
+
+*What of `T_uv` moves `Omega_m`* (`logs/noise_k2`, `logs/uv_zct`). A scale-dependent noise, montecosmo's
+`fourier_gauss` std `s_e + s_k2e k² + s_kmu2e k²μ²` written on the cut sky with the radial line of sight (covariance
+`P(1 + E)²P` about the cell-wise std, likelihood expanded to third order in `E` with the mask exact, traces by
+Hutchinson probes), recovers an injected noise (c2 6 → 5.60 ± 0.69, cmu2 4 → 3.69 ± 0.94; pulls over 12 draws mean
+≤ 0.27, scatter 1.0–1.2, also on a DESI-like footprint) and finds one in `T_uv` (closure + `T_uv`: `s_e` 0.911,
+`s_kmu2e` +2.50 ± 0.81; Abacus +2.41), but does not move the `Omega_m` shift. Chains as above, batches 8–24 (GPU job
+61923232), data − closure of the same key:
+
+| | `Omega_m` | `sigma8` | `b1_alpha` | `bn2` | `bfog` |
+| --- | --- | --- | --- | --- | --- |
+| + `T_uv`, white noise refit (`s_e` 0.911) | +0.0034 ± 0.0005 | +0.007 | +0.013 | +1.6 | +10.9 |
+| + `T_uv`, k² noise at its fit | +0.0035 ± 0.0005 | +0.008 | +0.013 | +1.5 | +11.2 |
+| Abacus, k² noise at its fit | +0.0034 ± 0.0008 | +0.025 | −0.008 | +1.6 | −2.3 |
+
+The noise's shape does not carry the shift (the likelihood was removed). At the true ICs (CPU jobs 61936252,
+61966278), the bias templates `∂m/∂b` take 616 of `T_uv`'s 9831 (counts-weight χ²), with constant coefficients
+(`bfog` +9.9, `bn2` +0.9, `b1_alpha` +0.015, `b2` −0.018: the chains' shifts); one coefficient set per radial
+shell (six, χ 1043–2418) adds 5, the coefficients constant within their errors (`bfog` 11.4 → 7.8 ± 2–3, `bn2`
+0.75–1.17 ± 1–2, `b1` 0 ± 0.002). The P Fisher of the light cone (exact best fit, data the closure plus those shell
+coefficients) gives `Omega_m` +0.0000, with counterterms linear in χ free or not: no z-dependent counterterm removes
+the shift. The remaining 94 % has a variance 0.0211 + 0.0040 δ_m + 0.0063 δ_m² per cell, which with the held noise
+is the noise law at `s_e` 0.912, `s_ed` 0.211 (held 0.214): not a density-modulated noise. Its correlation with the
+advected linear field is +0.015–0.019 at k < 0.0375 (α +0.0011 in `b1`) and −0.006 in the cube corners (α
+−0.0008); that transfer, `b1(k)` in the Fisher, gives `Omega_m` −0.0001. Its variance per cell falls along the cone (0.044 to 0.009 in units of n̄S from χ 1300 to 2320, n̄S
+nearly constant up to χ 2100: the growth); in the Fisher the data's noise with that profile against a model noise
+held, refit or linear in χ gives `Omega_m` ±0.0001. At the two-point level no part of `T_uv` reproduces the chains'
++0.0035. Split by the parity of the missing shell δ_s (`parity_tests.py`, CPU job 61967867: `T_uv` with δ_s
+and with −δ_s): the odd part (δ_s × resolved field) is 53 % of |`T_uv`|² and the templates take none of it; the even
+part (δ_s²) is 47 % and holds all of the bias shifts (595 of its 4634). The shell rephased (same amplitudes) gives the
+same bias shifts (602) and a remainder that correlates 0.07 with `T_uv`'s. Both parts' local variance follows the
+power of the resolved field at 0.04 < k < 0.151 smoothed to the final grid (quartiles 0.42–1.65 of its mean: variance
+0.80–1.24 of the shell's mean for the odd part, 0.83–1.25 for the even part, at χ < 2100). A finer model grid shrinks it slowly (CPU job 61966279): |`T_uv`|² 9831 with the ICs
+cut to 240³, 6004 at 288³, 3840 at 320³.
 
 ### 7.20 κ: field level against an independent two-point analysis (C. Payerne) — measured
 
@@ -3416,17 +3514,26 @@ the production step and path length before production runs):
    the redshift-space anisotropy falls below 2LPT's from k ≈ 0.02 (V 0.98 at 0.03–0.045, 0.96 at 0.045–0.063,
    0.92 at 0.063–0.08; 0.99 / 0.975 / 0.95 with a damping term free), the large-scale velocity amplitude being
    exact; the LRG host halos (0.7–1.5 % slower than the matter) and Abacus's growth rate (0.3 % lower) add to
-   it. The fix is a velocity model that holds at k 0.03–0.1 (a velocity transfer calibrated on N-body, or
-   the PM evolution of `nbody.py` for the displacements and velocities), or the RSD information cut to k ≲
-   0.03. `Omega_m`: the field's own band power predicts free-IC closures to 0.0016, so +0.0054 of the +0.0099
-   is the ph202 realisation; the other +0.0045 is 2.8 times that scatter, Abacus against its closure gives
-   +0.003 on ph201, and in the posterior it goes with `b1_alpha`, which the quenched `b2(b1)` relation pulls at
-   the true ICs (the LRGs' `b2` evolves 24 % faster). With the field free `b2` is 0.3–0.4 above its true-IC
-   value on both skies, not from the noise's one-point shape nor from the cutoff: not understood. Next: the
-   galaxies-alone ph202 run with the damping and the new units, which converges or shows where it does not;
-   the velocity model before the joint. Open: `b2` (a closure with data from a finer or N-body evolution than
-   the inference uses); the `b2(z)` law (the relation's slope as a free parameter, λ2 1.24 at the true ICs,
-   would replace the fixed quenched slope).
+   it. The model keeps the 2LPT velocities: a velocity smoothing does not remove the damped V0 0.980 (§7.19),
+   whose `sigma8` shift is a limitation stated in the paper; a velocity transfer calibrated on N-body, or the
+   PM evolution of `nbody.py`, is a perspective. `Omega_m`: the field's own band power predicts free-IC closures to 0.0016, so +0.0054 of the +0.0099
+   is the ph202 realisation; the other +0.0045 is the initial scales beyond the 240³ cutoff (`T_uv`, the largest
+   gap at mesh 100 as at mesh 160): added to a closure they move it by that much, and Abacus sits that much above its
+   closure (§7.19). Neither the scale-dependent noise of
+   the field-level EFT likelihood (arXiv:1808.02002, 2404.16929; montecosmo's `fourier_gauss`, written on the cut
+   sky and removed) nor z-dependent counterterms remove it, and no two-point part of `T_uv` reproduces it (§7.19).
+   Next, closure pairs on GPU with the same key, each telling what carries the shift: the closure minus `T_uv` and
+   plus half of it (linear in `T_uv`, i.e. its field-correlated part, or quadratic, i.e. its power), `T_uv` with
+   randomised phases (its power alone), and `T_uv` within the sphere k < k_N against the corners. The fallbacks are
+   a finer init grid (`T_uv` 61 % of its norm at 288³, 39 % at 320³, after a memory bench) and the galaxies at
+   mesh 54. Open: `b2`
+   (0.3–0.4 above its true-IC value on both skies with the field free; with the damping and the slope +0.11 above
+   the closure of the same key) and `sigma8` (+0.028 above that closure along `b1·sigma8`, one key), neither from
+   `T_uv` nor from the noise's one-point shape nor from the cutoff; next, the closure plus the counts of the N-body
+   displacements and velocities against 2LPT, and a second key. The galaxies-alone ph202 run with the damping
+   (job 61858820) is held until the `T_uv` shift is understood. The joint config
+   (`abacus/abacus_joint_so_cosmo_box5000_m100_ph202.yaml`) takes the galaxy model of that run (`gxy_fog`,
+   `b2_slope_free`, the starts and units of `bnpar`, `bfog`, `b2_slope`) before it runs.
    Not pursued at mesh 100: the noise level in the linear spectrum (a 1 % error moves `sigma8` by −0.0002), the
    one-point shape of the residual (`shuffle` follows the closure). The prior volume of the biases
    (flat priors on `b_n` at fixed `b_n·sigma8ⁿ` weigh `sigma8^{-n}`, a shift −n σ² of ln `sigma8`: −0.5 % for
@@ -3457,7 +3564,11 @@ the production step and path length before production runs):
    completeness as a continuous map and n(z) per imaging region (§3.1), to confirm with A. de Mattia; the
    galaxies with free `ngbars` (`gxy_ngbar_free`): the randoms of real data take the data's n(z), so the data
    hold no radial monopole of their sky (the radial integral constraint) and the per-bin densities marginalise
-   it, with no new mechanism (on ph202 they bring the transfer at k < 0.0045 from 0.88 to 0.97, §7.19). Diagnostics of every run: R̂ (split, and the drift the chains
+   it, with no new mechanism (on ph202 they bring the transfer at k < 0.0045 from 0.88 to 0.97, §7.19). The completeness
+   cut (`completeness_min` 0.3 on the relative selection S, which carries n(z): on the full-sky shell the low-S cells
+   are the n(z) tails; from the `f_NL` scan of §7.1 on the old geometry, kept for the ph202 runs): at the true ICs
+   the counts are predicted down to S → 0, but the residual variance exceeds the `s_e·√(n̄S)` law more as S falls
+   (§7.19); a lower cut, which the angular completeness of real data will ask for, needs that variance law first. Diagnostics of every run: R̂ (split, and the drift the chains
    share, §5), ESS, step size, warm-up figures, `analyze_run.py`, `compare_runs.py`,
    `compare_reconstruction.py`, `triplet_numbers.py`, paired gains against the Fisher. The mesh-54 runs
    with the current code (`gxy_stoch_noise: true` set in `abacus/abacus_{gxyonly,joint_so}_cosmo_box5000.yaml`,
@@ -3476,10 +3587,15 @@ the production step and path length before production runs):
    realisations of the galaxies at this configuration, if the P(k) analysis needs them: from the galaxies-alone
    config at the closure truth (no script yet), per realisation a new initial field and noise draw, the galaxy
    count mesh with its selection; the galaxy truth is the biases and noise of the galaxies-alone posterior at
-   that grid. To settle with A. de Mattia:
-   the data as the catalogue or as our count mesh and selection; the modes (k ≤ k_N, or the cube's to
-   its corners); the single light-cone shell z 0.4–1.1 with an evolving bias against redshift bins;
-   the bias, counterterm and noise parameters and their priors. Protocol fixed before either analysis runs: the two-point
+   that grid. A. de Mattia's first fits (2026-11-25; FOLPS EFT on P₀, P₂ from the same catalogues, full sky, the three
+   DESI bins 0.4–0.6–0.8–1.1 jointly with their own nuisances, 0.02 < k < k_max, `Omega_m` and total-matter `sigma8`
+   free, h, ω_b, n_s fixed; chains in `/pscratch/sd/a/adematti/claude/xcmb_field_level/fits/`, read by
+   `logs/arnaud_fs/read_fs.py`, figure `figures/fs_comparison/fs_vs_fieldlevel_omegam_sigma8.png`; `sigma8` × 1.00427 to
+   ours): k_max 0.2, ph201 `Omega_m` 0.3137 ± 0.0058, `sigma8` 0.832 ± 0.017, ph202 0.3327 ± 0.0063 (+2.8σ, best fit
+   0.3335), 0.833 ± 0.016; k_max 0.06, ph201 0.306 ± 0.014, 0.779 ± 0.046, ph202 0.313 ± 0.014, 0.770 ± 0.044. The ph202
+   sky pulls `Omega_m` up in the two-point analysis too. Asked: k_max 0.08 (the sphere with the final cube's number of
+   modes, k_N (6/π)^{1/3}), 0.10, 0.12, and a lower k_min. Still to settle: the bias, counterterm and noise parameters
+   and their priors against the field level's single evolving bias law. Protocol fixed before either analysis runs: the two-point
    analysis takes the full theory `C_ℓ^κκ(θ)` (the shells' part and `C_ℓ^out`, both times w_ℓ², both
    following the cosmology) with `N_ℓ` as its only fixed noise, as a standard analysis does; the field
    level runs `cl_out_mode: exact`, so that the out-of-model part enters it as it enters the two-point
