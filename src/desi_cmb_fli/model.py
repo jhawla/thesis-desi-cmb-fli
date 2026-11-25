@@ -93,6 +93,9 @@ default_config = {
     # integral constraint on the lightcone. Off => n̄ fixed (snapshot). One latent ngbar_<b> per z-shell.
     "gxy_fog": False,  # Finger-of-God damping counterterm bfog: the redshift-space galaxy field
     # g + (bfog/2) d_par^2 g on the paint grid (needs RSD and particles; docs/pipeline.md 2.4)
+    "b1_curv_free": False,  # True: the linear bias law (1 + b1)(D_fid/D)^(b1_alpha + b1_curv ln(D_fid/D)),
+    # latent b1_curv (False: the power law, b1_curv 0). Needs bias_evolution 'redshift' on the cone
+    # (docs/pipeline.md 2.4)
     "b2_slope_free": False,  # True: b2(z) follows b1(z) through b2_slope times the quenched relation's
     # slope (latent b2_slope; False: the relation, slope 1). Needs bias_evolution 'redshift' on the cone
     # (docs/pipeline.md 2.4)
@@ -223,6 +226,14 @@ default_config = {
             "scale_fid": 1.0,
             "loc_fid": 0.0,
         },
+        "b1_curv": {  # sampled with b1_curv_free: curvature of ln(1 + b1) in ln D, 0 is the power law
+            "group": "bias",
+            "label": "\\beta_{b_1}",
+            "loc": 0.0,
+            "scale": 10.0,
+            "scale_fid": 0.3,
+            "loc_fid": 0.0,
+        },
         "b2_slope": {  # sampled with b2_slope_free; 1 is the quenched-galaxy relation
             "group": "bias",
             "label": "\\lambda_{b_2}",
@@ -306,6 +317,7 @@ MODEL_CONFIG_KEYS = {
     "gxy_ngbar_free",
     "gxy_fog",
     "b2_slope_free",
+    "b1_curv_free",
     "png_type",
     "bias_evolution",
     "bias_order",
@@ -419,6 +431,8 @@ def get_model_from_config(config_or_path):
         model_config["gxy_fog"] = bool(cfg["model"]["gxy_fog"])
     if "b2_slope_free" in cfg["model"]:
         model_config["b2_slope_free"] = bool(cfg["model"]["b2_slope_free"])
+    if "b1_curv_free" in cfg["model"]:
+        model_config["b1_curv_free"] = bool(cfg["model"]["b1_curv_free"])
     if "bias_evolution" in cfg["model"]:
         model_config["bias_evolution"] = str(cfg["model"]["bias_evolution"])
     if "bias_order" in cfg["model"]:
@@ -822,6 +836,7 @@ class FieldLevelModel(Model):
     gxy_ngbar_free: bool = field(default=default_config["gxy_ngbar_free"])
     gxy_fog: bool = field(default=default_config["gxy_fog"])
     b2_slope_free: bool = field(default=default_config["b2_slope_free"])
+    b1_curv_free: bool = field(default=default_config["b1_curv_free"])
     bias_evolution: str = field(default=default_config["bias_evolution"])
     bias_order: int = field(default=default_config["bias_order"])
     b1_sigma8: bool = field(default=default_config["b1_sigma8"])
@@ -885,6 +900,11 @@ class FieldLevelModel(Model):
         if self.b2_slope_free and (not self.bias_evolves or self.evolution == "kaiser"):
             raise ValueError("b2_slope_free scales the redshift evolution of b2: it needs bias_evolution "
                              "'redshift' on the light cone and evolution 'lpt' or 'nbody'.")
+        if self.b1_curv_free and (not self.bias_evolves or self.evolution == "kaiser"):
+            raise ValueError(
+                "b1_curv_free bends the redshift evolution of b1: it needs bias_evolution "
+                "'redshift' on the light cone and evolution 'lpt' or 'nbody'."
+            )
         self.latents = self._validate_latents()
         self.groups = self._groups(base=True)
         self.groups_ = self._groups(base=False)
@@ -2333,6 +2353,7 @@ class FieldLevelModel(Model):
             or (name in ("b3", "bds2", "bs3") and self.bias_order < 3)
             or (name == "bfog" and not self.gxy_fog)
             or (name == "b2_slope" and not self.b2_slope_free)
+            or (name == "b1_curv" and not self.b1_curv_free)
         )
 
     ###########

@@ -11,7 +11,7 @@ consistent with the data has its minimum at A = 1 and at the true `Omega_m`.
 
 `--mode newton` finds the joint minimum in (A, biases) directly: the biases by L-BFGS at A = 1, then
 Gauss–Newton steps in A and the biases (the third-order `b3`, `b_{δs²}`, `b_{s³}` too when the config has
-`bias_order: 3`, the Finger-of-God damping `bfog` with `gxy_fog: true`, the `b2(z)` slope `b2_slope` with `b2_slope_free: true`), each with the model's Jacobian by forward-mode differentiation, until the step in A is
+`bias_order: 3`, the Finger-of-God damping `bfog` with `gxy_fog: true`, the `b2(z)` slope `b2_slope` with `b2_slope_free: true`, the curvature `b1_curv` of the `b1(z)` law with `b1_curv_free: true`), each with the model's Jacobian by forward-mode differentiation, until the step in A is
 below 1e-4; σ_A from Δχ² = 1; then the noise law of the configs (`s_e`, `s_ed`) fitted to the
 residual at the minimum. It is the check of a grid or a selection before a run (minutes on a CPU
 node; pipeline §2.5, §7.16): A_min within about σ_A of 1.
@@ -236,6 +236,9 @@ def newton(
     slope = bool(getattr(model, "b2_slope_free", False))
     if slope:
         names += ["b2_slope"]
+    curv = bool(getattr(model, "b1_curv_free", False))
+    if curv:
+        names += ["b1_curv"]
     fixed = {NAMES[i]: float(x0[i]) for i in range(len(NAMES)) if i not in free}
     sd = jnp.sqrt(jnp.maximum(nbar, 1e-10))
 
@@ -248,7 +251,7 @@ def newton(
     wj = jax.jit(white)
     tangent = jax.jit(lambda th, v: jax.jvp(white, (th,), (v,))[1])
     ow = jnp.where(mask, obs / sd, 0.0)
-    th = np.array([1.0] + [float(start[i]) for i in free] + [0.0] * (3 * third + fog) + [1.0] * slope)
+    th = np.array([1.0] + [float(start[i]) for i in free] + [0.0] * (3 * third + fog) + [1.0] * slope + [0.0] * curv)
     eye = np.eye(len(names), dtype=np.float32)
     hist = []
     for it in range(max_iter):

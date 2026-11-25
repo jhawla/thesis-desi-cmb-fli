@@ -9,8 +9,8 @@ of the closure draws (the model plus the fitted noise law, the likelihood's), to
 corner modes of the cube beyond the dotted line at k_N.
 
     python scripts/plot_galaxy_ic_test.py \\
-        --ic figures/galaxy_ic_test/abacus_gxyonly_cosmo_box5000_m100_ph202.json \\
-        --newton figures/galaxy_likelihood_profile/abacus_gxyonly_cosmo_box5000_m100_ph202_newton.json
+        --ic figures/galaxy_ic_test/abacus_gxyonly_cosmo_box5000_m100_ph202_fog.json \\
+        --newton figures/galaxy_likelihood_profile/abacus_gxyonly_cosmo_box5000_m100_ph202_fog_newton.json
 
 Writes figures/galaxy_ic_test/fig_gxy_ic.png.
 """

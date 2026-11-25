@@ -16,15 +16,15 @@ galaxies, Abacus κ × model galaxies), which say on which side a departure sits
 Galaxy maps from the galaxies themselves (`validation.galaxy_healpix_delta`: catalogue counts for
 Abacus with their pixel window and shot noise removed, bias-weighted particles spread bilinearly for
 the model), κ maps on the projection sphere (both carry its bilinear window, which cancels in the
-ratios), all band-limited to ℓ ≤ 2·cmb_nside on the κ mask. The figure shows both spectra and their
-ratio, the ratio also with the galaxy maps the likelihood holds: the final-grid count meshes of the
-data and of the model projected along each ray (the modes of the final cube only). Above ℓ ≈ 160 the
-per-shell cut of κ removes matter that galaxies beyond the cube still trace, which only the first
-version sees.
+ratios), all band-limited to ℓ ≤ 2·cmb_nside on the κ mask; and with the galaxy maps the likelihood
+holds: the final-grid count meshes of the data and of the model projected along each ray (the modes of
+the final cube only). The figure shows the second, the spectra and their ratio; the JSON holds both. Above
+ℓ ≈ 160 the per-shell cut of κ removes matter that galaxies beyond the cube still trace, which only the
+catalogue-projected version sees.
 
     python scripts/validate_joint_from_ic.py \\
         --config configs/inference/abacus/abacus_joint_so_cosmo_box5000_m100_ph202.yaml \\
-        --profile figures/galaxy_likelihood_profile/abacus_gxyonly_cosmo_box5000_m100_ph202_newton.json
+        --profile figures/galaxy_likelihood_profile/abacus_gxyonly_cosmo_box5000_m100_ph202_fog_newton.json
 
 Writes figures/joint_ic_test/<config stem>.{png,json}. CPU node (JAX_PLATFORMS=cpu) or GPU.
 """
@@ -194,6 +194,8 @@ def main():
         "kg_model": ref.tolist(),
         "kg_data": band(res["kg_data_data"]).tolist(),
         "kg_data_over_model_final_cube": (band(lp_dd) / ref_lp).tolist(),
+        "kg_model_final_cube": ref_lp.tolist(),
+        "kg_data_final_cube": band(lp_dd).tolist(),
         "sigma_final_cube": sigma_lp.tolist(),
     }
     for k, v in out.items():
@@ -203,19 +205,17 @@ def main():
     xerr = [centre - edges[:-1], edges[1:] - centre]
     fig, (ax, axr) = plt.subplots(2, 1, figsize=(5.5, 5.2), sharex=True,
                                   gridspec_kw={"height_ratios": [1.3, 1]})
-    ax.errorbar(centre, centre * np.asarray(out["kg_data"]), xerr=xerr, fmt="o", color=BLUE, ms=5,
+    # the figure shows the galaxies the joint likelihood holds; the catalogue-projected version is in the JSON
+    ax.errorbar(centre, centre * np.asarray(out["kg_data_final_cube"]), xerr=xerr, fmt="o", color=BLUE, ms=5,
                 lw=1.2, label="AbacusLensing × LRG")
-    ax.errorbar(centre, centre * np.asarray(out["kg_model"]), xerr=xerr, fmt="s", color=INK, ms=4,
+    ax.errorbar(centre, centre * np.asarray(out["kg_model_final_cube"]), xerr=xerr, fmt="s", color=INK, ms=4,
                 lw=1.0, mfc="none", label="model from the Abacus ICs")
     ax.set(ylabel=r"$\ell\,C_\ell^{\kappa g}$")
     ax.legend(frameon=False, fontsize=8)
     axr.axhline(1, color=INK, lw=0.8)
-    axr.errorbar(centre, out["kg_data_over_model"], yerr=sigma, xerr=xerr, fmt="o", color=BLUE, ms=5,
-                 lw=1.2, capsize=0, label="galaxy maps from the galaxies")
-    axr.errorbar(centre * 1.06, out["kg_data_over_model_final_cube"], yerr=sigma_lp, fmt="o", color=BLUE,
-                 mfc="white", ms=5, lw=1.0, capsize=0, label="galaxies on the likelihood's grid")
+    axr.errorbar(centre, out["kg_data_over_model_final_cube"], yerr=sigma_lp, xerr=xerr, fmt="o", color=BLUE,
+                 ms=5, lw=1.2, capsize=0)
     axr.set(xscale="log", xlabel=r"$\ell$", ylabel="Abacus / model")
-    axr.legend(frameon=False, fontsize=8)
     for a_ in (ax, axr):
         a_.grid(alpha=0.2)
     fig.tight_layout()

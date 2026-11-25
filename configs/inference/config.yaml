@@ -22,6 +22,7 @@ model:
   b1_sigma8: true  # the sampler moves (1 + b1) sigma8 / sigma8_fid instead of b1 (same prior on b1, same posterior; b1 and sigma8 decorrelate); false: b1, as runs before this key, pipeline 5
   gxy_ngbar_free: false  # Free per-z-shell mean density -> marginalise the integral constraint
   gxy_fog: false  # true: Finger-of-God damping counterterm bfog sampled, the redshift-space galaxy field g + (bfog/2) d_par^2 g on the paint grid (needs RSD and lpt/nbody), pipeline 2.4
+  b1_curv_free: false  # true: latent b1_curv bends the linear bias law, (1 + b1)(D_fid/D)^(b1_alpha + b1_curv ln(D_fid/D)) (0 = the power law); needs bias_evolution redshift on the light cone, pipeline 2.4
   b2_slope_free: false  # true: latent b2_slope scales how b2(z) follows b1(z) (1 = the quenched relation); needs bias_evolution redshift on the light cone, pipeline 2.4
   lightcone: true
   # a_obs: 0.5556 # snapshot
@@ -141,6 +142,11 @@ latents:
     scale: 1.0
     scale_fid: 0.1
     loc_fid: 1.0
+  b1_curv:  # with model.b1_curv_free only; curvature of ln(1 + b1) in ln D (0 = the power law), pipeline 2.4
+    loc: 0.0
+    scale: 10.0
+    scale_fid: 0.3
+    loc_fid: 0.0
 
 # MCMC configuration
 mcmc:

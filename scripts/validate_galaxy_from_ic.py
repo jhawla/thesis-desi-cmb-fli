@@ -5,7 +5,7 @@ The galaxy counterpart of `validate_kappa_from_ic.py`: the true ICs of the confi
 through the forward model (LPT, light cone, Lagrangian bias, RSD, paint, selection) at the Abacus
 cosmology and the biases of the galaxy profile at A = 1 (`--profile`, output of
 `galaxy_likelihood_profile.py --mode amplitude`) or of its joint minimum (`--mode newton`: the last
-iterate's biases, third order included, with the field kept at the true ICs), and the predicted counts m are compared with the
+iterate's biases, third order, `bfog`, `b2_slope`, `b1_curv` included and held in the shell refits, with the field kept at the true ICs), and the predicted counts m are compared with the
 Abacus counts d over the survey cells, per k band (to sqrt(3) k_N: the likelihood keeps the corner modes of the cube) and per radial
 shell. No sampling is involved.
 
@@ -130,7 +130,7 @@ def main():
         biases = {k: v for k, v in src["iterations"][-1]["theta"].items() if k != "A"}
     else:
         biases = next(p for p in src["profile"] if p["value"] == 1.0)["biases"]
-    names = [k for k in NAMES + ["b3", "bds2", "bs3"] if k in biases]
+    names = [k for k in NAMES + ["b3", "bds2", "bs3", "bfog", "b2_slope", "b1_curv"] if k in biases]
     theta0 = np.array([biases[k] for k in names])
     print(f"data loaded in {time.time() - t0:.0f} s; biases {biases}", flush=True)
 

@@ -183,12 +183,14 @@ def main():
     cmb = cfg["cmb_lensing"]
     truth = {**cfg["truth_params"], **cfg.get("abacus_truth_params", {})}
     fog = bool(cfg["model"].get("gxy_fog", False))  # the damping counterterm free when the run samples it
+    curv = bool(cfg["model"].get("b1_curv_free", False))  # the b1(z) curvature free when the run samples it
     params = (fi.COSMO_PARAMS + (("fNL",) if args.fnl else ()) + (("b1_alpha",) if args.b1_alpha else ())
-              + (("bfog",) if fog else ()))
+              + (("bfog",) if fog else ()) + (("b1_curv",) if curv else ()))
     fid = {p: float(truth.get(p, 0.0))
-           for p in ("Omega_m", "sigma8", "b1", "bn2", "bnpar", "fNL", "b1_alpha", "bfog")}
+           for p in ("Omega_m", "sigma8", "b1", "bn2", "bnpar", "fNL", "b1_alpha", "bfog", "b1_curv")}
     cfg["latents"].setdefault("b1_alpha", {"loc": 1.0, "scale": 1.0})
     cfg["latents"].setdefault("bfog", {"loc": 0.0, "scale": 100.0})
+    cfg["latents"].setdefault("b1_curv", {"loc": 0.0, "scale": 10.0})
     kappa = fi.kappa_geometry(cfg)
     kmax = np.pi / float(cfg["model"]["cell_size"])
     nell_tab = np.loadtxt(cmb.get("cmb_noise_nell") or fi.NELL_FILE)

@@ -343,6 +343,7 @@ def get_cosmology(**cosmo) -> Cosmology:
         "bnpar",
         "bfog",
         "b2_slope",
+        "b1_curv",
         "b3",
         "bds2",
         "bs3",
@@ -609,6 +610,7 @@ def lagrangian_weights(
     bds2=None,
     bs3=None,
     b2_slope=1.0,
+    b1_curv=0.0,
 ):
     """
     Return Lagrangian bias expansion weights as in [Modi+2020](http://arxiv.org/abs/1910.07097).
@@ -620,7 +622,8 @@ def lagrangian_weights(
     (before ``add_png``), so the primordial potential phi is recovered correctly.
 
     With ``a_b1`` set, the linear Eulerian bias evolves as
-    ``1 + b1(a) = (1 + b1) (D(a_b1) / D(a))**b1_alpha``, and ``b2``, ``bs2`` follow it through the
+    ``1 + b1(a) = (1 + b1) (D(a_b1) / D(a))**(b1_alpha + b1_curv ln(D(a_b1) / D(a)))`` (``b1_curv`` 0: a
+    power law), and ``b2``, ``bs2`` follow it through the
     quenched-galaxy relations (``quenched_bias_relation``): ``b_X(a) = b_X + f_X(b1(a)) − f_X(b1)``,
     the ``b2`` change times ``b2_slope`` (1: the relation). ``b1``, ``b2``, ``bs2`` are the biases at
     ``a_b1`` (docs/pipeline.md 2.4).
@@ -654,7 +657,8 @@ def lagrangian_weights(
     delta_read = cic_read(delta, pos)
     delta_part = delta_read * growths
     if a_b1 is not None:
-        b1_a = (1 + b1) * (a2g(cosmo, jnp.asarray(a_b1)) / growths) ** b1_alpha - 1
+        ratio = a2g(cosmo, jnp.asarray(a_b1)) / growths
+        b1_a = (1 + b1) * ratio ** (b1_alpha + b1_curv * jnp.log(ratio)) - 1
         (b2_a, bs2_a), (b2_ref, bs2_ref) = quenched_bias_relation(b1_a), quenched_bias_relation(b1)
         b1, b2, bs2 = b1_a, b2 + b2_slope * (b2_a - b2_ref), bs2 + bs2_a - bs2_ref
     weights = weights + b1 * delta_part

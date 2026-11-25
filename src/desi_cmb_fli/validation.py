@@ -771,7 +771,7 @@ def _exact_over_limber_curves(model, cosmo_val, ell_theory, bE, gxy_kernel, supp
 
 
 def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
-                      has_galaxies=True, observation_mode="closure", b1_alpha=0.0):
+                      has_galaxies=True, observation_mode="closure", b1_alpha=0.0, b1_curv=0.0):
     """The one curve per spectrum that the C_ell diagnostic compares with: Limber times the
     exact-over-Limber ratio of its kernels.
 
@@ -787,7 +787,8 @@ def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
       (``bilinear_window``): the model map gets it from the Born scatter, the Abacus map from the
       loader's ``bilinear_resample_healpix``.
     * gg and kappa-g: the survey's dN/dchi (``gxy_kernel``), Eulerian bias ``bE`` at the model's
-      ``a_fid`` evolving as ``bE (D(a_fid)/D(a))**b1_alpha`` (the model's linear bias), nonlinear
+      ``a_fid`` evolving as ``bE (D(a_fid)/D(a))**(b1_alpha + b1_curv ln(D(a_fid)/D(a)))`` (the model's
+      linear bias), nonlinear
       P(k), no k cut: the model's galaxies hold power beyond the init-grid Nyquist (the bias
       products and the 2LPT source reach twice it). In closure kappa-g carries the radial window
       of the Born shells (``kappa_radial_window``: where the shells start or stop inside the
@@ -840,7 +841,10 @@ def compute_cl_theory(model, cosmo_val, ell_theory, bE=2.0, gxy_kernel=None,
         occupied = r[nz > 0]
         chi0, chi1 = float(occupied.min()), float(occupied.max())
         g_fid = a2g(cosmo_val, jnp.asarray(model.a_fid))
-        bias_of_a = lambda a: bE * (g_fid / a2g(cosmo_val, a)) ** b1_alpha  # noqa: E731
+        def bias_of_a(a):
+            ratio = g_fid / a2g(cosmo_val, a)
+            return bE * ratio ** (b1_alpha + b1_curv * jnp.log(ratio))
+
         out["cl_gg"] = np.asarray(compute_theoretical_cl_gg(
             cosmo_val, ell_j, chi0, chi1, bE, n_steps=400, bias_of_a=bias_of_a, nz=(r, nz)))
         if model.cmb_enabled:
@@ -868,11 +872,13 @@ def plot_cl_figure(spectra_list, model, cosmo_params, observation_mode, outfile,
     ell_theory = np.geomspace(2.0, float(np.max(sp0["ell"])), 100)
     b1 = (cosmo_params or {}).get("b1", model.loc_fid.get("b1", 1.0))
     b1_alpha = (cosmo_params or {}).get("b1_alpha", model.loc_fid.get("b1_alpha", 0.0))
+    b1_curv = (cosmo_params or {}).get("b1_curv", model.loc_fid.get("b1_curv", 0.0))
     cosmo = {k: v for k, v in (cosmo_params or model.loc_fid).items() if k in ("Omega_m", "sigma8")}
     theory = compute_cl_theory(
         model, get_cosmology(**cosmo), ell_theory, bE=1.0 + float(b1),
         gxy_kernel=sp0.get("gxy_kernel"), has_galaxies=sp0.get("cl_gg_b") is not None,
         observation_mode=observation_mode, b1_alpha=float(b1_alpha),
+        b1_curv=float(b1_curv),
     )
 
     n = len(spectra_list)

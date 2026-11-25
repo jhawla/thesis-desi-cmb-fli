@@ -306,6 +306,53 @@ def test_b2_slope():
             FieldLevelModel(**(default_config | kw | {"b2_slope_free": True} | bad))
 
 
+def test_b1_curv():
+    """b1_curv bends the power-law evolution of the linear bias: 0 is the power law, and the b1 term of the
+    weights follows (1 + b1)(D(a_b1)/D(a))^(b1_alpha + b1_curv ln(D(a_b1)/D(a))) with b2, bs2 tied to it; the
+    model samples b1_curv with b1_curv_free only and refuses it without redshift evolution (docs/pipeline.md 2.4)."""
+    import pytest
+
+    from desi_cmb_fli.model import FieldLevelModel, default_config
+
+    cosmo = planck18()
+    mesh_shape = np.array([4, 4, 4])
+    pos = jnp.indices(mesh_shape, dtype=float).reshape(3, -1).T
+    a = jnp.linspace(0.45, 0.75, pos.shape[0])
+    init_mesh = jnp.fft.rfftn(jr.normal(jr.PRNGKey(3), shape=mesh_shape))
+    delta = jnp.fft.irfftn(init_mesh).reshape(-1)
+    b1, a_b1, alpha, c = 1.2, 0.56, 1.05, -2.5
+
+    def weights(b2=0.0, bs2=0.0, **kw):
+        return lagrangian_weights(cosmo, a, pos, np.array([100.0] * 3), b1, b2, bs2, 0.0, init_mesh,
+                                  b1_alpha=alpha, a_b1=a_b1, **kw)
+
+    assert jnp.allclose(weights(b1_curv=0.0), weights(), rtol=1e-6, atol=1e-6)
+    g = a2g(cosmo, a)
+    ratio = a2g(cosmo, a_b1) / g
+    b1_a = (1 + b1) * ratio ** (alpha + c * jnp.log(ratio)) - 1
+    b2_a, bs2_a = quenched_bias_relation(b1_a)
+    b2_r, bs2_r = quenched_bias_relation(b1)
+    # with b2 = b2(b1), bs2 = bs2(b1) at the reference, the weights hold b1(a), b2(b1(a)), bs2(b1(a)) at each a
+    w = weights(b2=float(b2_r), bs2=float(bs2_r), b1_curv=c)
+    w_ref = weights(b2=float(b2_r), bs2=float(bs2_r), b1_curv=0.0)
+    lin = (1 + b1) * ratio**alpha - 1
+    # the b1 term alone (b2, bs2 operators share the field's mean-subtracted squares, checked through linearity)
+    d_lin = (b1_a - lin) * delta * g
+    w_b2only = lagrangian_weights(cosmo, a, pos, np.array([100.0] * 3), 0.0, 1.0, 0.0, 0.0, init_mesh) - 1
+    w_bs2only = lagrangian_weights(cosmo, a, pos, np.array([100.0] * 3), 0.0, 0.0, 1.0, 0.0, init_mesh) - 1
+    lin_b2, lin_bs2 = quenched_bias_relation(lin)
+    expected = d_lin + (b2_a - lin_b2) * w_b2only + (bs2_a - lin_bs2) * w_bs2only
+    assert jnp.allclose(w - w_ref, expected, rtol=1e-4, atol=1e-5)
+    assert float(jnp.max(jnp.abs(w - w_ref))) > 1e-3  # the curvature acts
+
+    kw = {"mesh_shape": (16, 16, 16), "box_shape": (320.0, 320.0, 320.0)}
+    assert "b1_curv" not in FieldLevelModel(**(default_config | kw)).groups["bias"]
+    assert "b1_curv" in FieldLevelModel(**(default_config | kw | {"b1_curv_free": True})).groups["bias"]
+    for bad in ({"bias_evolution": "none"}, {"a_obs": 0.6}, {"evolution": "kaiser"}):
+        with pytest.raises(ValueError, match="b1_curv_free"):
+            FieldLevelModel(**(default_config | kw | {"b1_curv_free": True} | bad))
+
+
 def test_lagrangian_weights_higher_order():
     """Test lagrangian_weights with higher-order bias terms."""
     cosmo = planck18()
