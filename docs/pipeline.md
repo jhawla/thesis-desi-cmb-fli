@@ -1188,7 +1188,7 @@ measures and the conventions that make its output comparable with the model.
 | `galaxy_bias_regression.py` | linear bias and RSD amplitude of a run's counts against its true ICs per k band and shell (§7.14) | `figures/galaxy_bias_evolution/` |
 | `bench_gradient.py` | time and peak memory of one log-density gradient, particle grid or geometry overridden | stdout |
 | `triplet_numbers.py` | of a galaxies / κ / joint triplet: means, pulls, Mahalanobis, split R̂, the paired κ gain (chain i against chain i, at the joint's length) | `figures/results/*_triplet_numbers.json` |
-| `fisher_cosmo.py` | Fisher on (`Omega_m`, `sigma8`, `b1`, `b∇²`[, `b1_alpha`, `f_NL`]) of galaxies, κ and joint at a config's geometry, band, noise and priors; `--resolution_scan` over box and cell; `--mismatch FILE` the first-order shift F⁻¹b from a per-ℓ data/model κ power ratio, `b_a = f_sky Σ (2ℓ+1)/2 tr(C⁻¹∂_aC C⁻¹ΔC)` (§7.10) | `figures/fisher_diagnostic/` |
+| `fisher_cosmo.py` | Fisher on (`Omega_m`, `sigma8`, `b1`, `b∇²`[, `b1_alpha`, `f_NL`]; `bfog` with `gxy_fog`; `b1_curv` and `b1_alpha` with `b1_curv_free`, at the truth or else the config's start) of galaxies, κ and joint at a config's geometry, band, noise and priors; `--resolution_scan` over box and cell; `--mismatch FILE` the first-order shift F⁻¹b from a per-ℓ data/model κ power ratio, `b_a = f_sky Σ (2ℓ+1)/2 tr(C⁻¹∂_aC C⁻¹ΔC)` (§7.10) | `figures/fisher_diagnostic/` |
 | `density_scan.py` | measured paired gain on σ(`f_NL`) against the Fisher, per density of `scan/density_scan_runs.yaml`; `--noise_table` the gain per `N_ℓ` scaling (§7.2, §7.3) | `figures/results/density_scan.{png,json}` |
 | `compare_linear_power.py` | the model's linear P(k) (and Eisenstein–Hu) against the CLASS spectrum of the Abacus ICs; `--omega_m_scan` the emulator, the former EH × fiducial ratio and EH against CLASS as `Omega_m` moves, from the reference written by `linear_power_class_reference.py` (cosmodesi env, cosmoprimo) (§7.11) | `figures/spectra_diagnostic/linear_power_*` |
 | `plot_cmb_noise_comparison.py` | a run config's `N_ℓ` and `N_ℓ + C_ℓ^out` (its fiducial) with the likelihood band ℓ ≤ 2 nside (`fig:noise`); Planck PR4, ACT DR6, SO baseline `N_ℓ` and their ratio to ACT, same band (thesis) | `figures/spectra_diagnostic/cmb_noise_so.{png,npz}`, `cmb_noise_comparison.png` |
@@ -3553,9 +3553,10 @@ the production step and path length before production runs):
    against it is 0.000 and −0.011 on two keys. The ph201 offset is compatible with the realisation (−1.9σ of
    the posterior width, the ph201 field a fair prior draw, §7.19); more prior fields or noise draws, which
    would decide it, are not run: the ph202 runs are the next evidence. Open: the −0.011 key (more keys). Every such test
-   is read on pairs of chains of one key over at least 37 batches at the production step (the production
+   is read on pairs of chains of one key, on two keys at least (§5), over at least 37 batches at the production step (the production
    chains took ≈ 25 batches to reach their level). The production runs that follow are on ph202, the main
-   sky of the paper, chosen before any ph202 result: `abacus/abacus_gxyonly_cosmo_box5000_m100_ph202_noiseheld.yaml`
+   sky of the paper, chosen before any ph202 result: `abacus/abacus_gxyonly_cosmo_box5000_m100_ph202_fog.yaml` (the
+   `_noiseheld` config with the damping, the `b2` slope and the `b₁(z)` curvature)
    and `abacus/abacus_joint_so_cosmo_box5000_m100_ph202.yaml` (`bias_order: 3`, the masses of `b3`, `bds2`,
    `bs3` at the scale of the adapted second-order ones, `b1_sigma8`, the noise held at its fit to the ph202
    residual at the true ICs: under a prior of width 0.03 it collapses, §3.1, §7.19) and

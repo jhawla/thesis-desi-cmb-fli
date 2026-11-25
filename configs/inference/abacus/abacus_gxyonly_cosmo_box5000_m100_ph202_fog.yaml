@@ -142,11 +142,11 @@ latents:
     scale: 10.0
     scale_fid: 0.3
     loc_fid: -2.44
-  bfog:  # (Mpc/h)^2; start at the true-IC fit 16.6; unit 4: its true-IC width 0.9 times the free-IC/true-IC width ratio of bnpar, 4.5 (pipeline 7.19)
+  bfog:  # (Mpc/h)^2; start at the true-IC fit with the curvature 15.8; unit 4: its true-IC width 0.9 times the free-IC/true-IC width ratio of bnpar, 4.5 (pipeline 7.19)
     loc: 0.0
     scale: 100.0
     scale_fid: 4.0
-    loc_fid: 16.6
+    loc_fid: 15.8
   # Galaxy noise (gxy_stoch_noise): informative prior from the Abacus LRG residual at the true ICs, the
   # maximum-likelihood s_e, s_ed (0.901, 0.221 ph201; 0.900, 0.214 ph202, at mesh 100), width the spread of
   # the noise level across redshift shells; free, s_e and s_ed fall and the chains over-fit (pipeline 3.1, 7.19)
