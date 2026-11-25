@@ -683,7 +683,15 @@ model. The randoms carry the same interlaced, deconvolved window as the galaxies
 the predicted intensity `gxy_count · S` and the observed count are on one window; and the
 band-limited product predicts the covered sub-region directly, rather than a whole-cell average
 compared against a sub-region count. The code default stays 0.8; the HUGE reference runs use **0.3**
-(the scan that chose it is in §7.1). Below that, `b1` is the first parameter to move.
+(the scan that chose it is in §7.1). Below that, `b1` is the first parameter to move. On the full-sky ph202
+shell `S` includes n(z), and the low-S cells are its tails. At the true ICs (mesh 100, FoG config, the Newton minimum
+per cut, `logs/noise_k2/desi_mask_test.py`, `logs/completeness/`), the whitened residual variance per bin of S,
+against a white closure at 1: 1.06 (S 0.95–1), 1.05 (0.8–0.95), 1.12 (0.5–0.8), 1.19 (0.3–0.5), 1.17 (0.2–0.3), 1.38
+(0.1–0.2), 1.75 (0.05–0.1), 7.8 (< 0.05), its mean within 0.03: the counts are predicted down to S → 0, but the
+variance exceeds the `s_e√(n̄S)` law more as S falls. Cut at 0 / 0.1 / 0.3 / 0.8: A_min 0.9997 / 1.0013 / 1.0023 /
+1.0032 (± 0.002), `b1` 1.172 / 1.152 / 1.127 / 1.075 with `b1_alpha` 1.010 / 1.029 / 1.056 / 1.145, `b2` 0.53 / 0.47 /
+0.42 / 0.31, `s_e` 0.988 / 0.909 / 0.899 / 0.879: the amplitude holds, the bias law moves with the cut. A lower cut
+needs that variance law first (§8).
 
 **Free per-radial-bin mean density `ngbars` (`model.gxy_ngbar_free`, integral constraint).** On the
 lightcone the radial selection makes the survey mean density a per-bin unknown; fixing it exactly
@@ -3687,9 +3695,9 @@ the production step and path length before production runs):
    `f_NL` on real data needs the galaxies: κ alone sees `f_NL` only through the matter φ² channel (§6). Their
    imaging systematics come first (to discuss with H. Simon-Onfroy).
 
-Open, without a run planned: why montecosmo's Kaiser preconditioner differs from ours (its noise
-`s_e/(n̄·√⟨S²⟩/⟨S⟩)`, with `s_e` where the count variance has `s_e²`; no μ for a centred observer; §5, §7.19),
-to discuss with H. Simon-Onfroy, who designed it; the size of the lattice template's damping (§7.15); the lensing prefactor
+Open, without a run planned: the preconditioner stays ours as long as the runs mix (montecosmo's differs:
+its noise `s_e/(n̄·√⟨S²⟩/⟨S⟩)`, with `s_e` where the count variance has `s_e²`, no μ for a centred observer; ours
+measured 2× faster, §5, §7.19); the size of the lattice template's damping (§7.15); the lensing prefactor
 uses `Omega_m` where AbacusLensing uses `Ω_cb` (§4); the closure at the depth of a real map
 (`chi_matter_min: 0`, `chi_high_z_max` unset); a non-Gaussian or field-modulated κ residual, which a
 power spectrum and a transfer do not see (§2.6).
