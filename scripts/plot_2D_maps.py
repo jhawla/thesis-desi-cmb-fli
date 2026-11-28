@@ -293,12 +293,10 @@ def main():
             chi_max=float(getattr(model, "chi_boundary", np.linalg.norm(model.box_shape))),
         )
 
-        gxy_proj_mask = np.asarray(gxy_proj_mask, dtype=float)
-        gxy_proj = _project_masked_healpix(gxy_proj_mask / gxy_proj_mask.mean() - 1.0, model.cmb_mask,
-                                           model.cmb_nside)
+        gxy_proj = _project_masked_healpix(gxy_proj_mask, model.cmb_mask, model.cmb_nside)
 
         extent = [180, -180, -90, 90]
-        panels.append((gxy_proj, "projected galaxy counts", "RdBu_r", r"$N/\bar N - 1$", extent,
+        panels.append((gxy_proj, "projected galaxy counts", "viridis", "N (projected)", extent,
                        "lon [deg]", "lat [deg]"))
 
     if not panels:
