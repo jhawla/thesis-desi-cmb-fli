@@ -475,7 +475,8 @@ def plot_initial_conditions(model, truth, samples, out_path, truth_cosmo=None,
     fig.suptitle(
         f"Initial conditions — {Path(out_path).parent.parent.name}, posterior from {what}; "
         f"Cartesian plane z=0 through the observer, fields in the band of the final grid "
-        f"($|k_i| \\leq$ {k_band:.3f} h/Mpc); dashed circles = galaxy radial range",
+        f"($|k_i| \\leq$ {k_band:.3f} h/Mpc)"
+        + ("; dashed circles = galaxy radial range" if chi_lo is not None else ""),
         fontsize=11,
     )
     fig.tight_layout()

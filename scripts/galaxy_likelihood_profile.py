@@ -11,9 +11,11 @@ consistent with the data has its minimum at A = 1 and at the true `Omega_m`.
 
 `--mode newton` finds the joint minimum in (A, biases) directly: the biases by L-BFGS at A = 1, then
 Gauss–Newton steps in A and the biases (the third-order `b3`, `b_{δs²}`, `b_{s³}` too when the config has
-`bias_order: 3`, the Finger-of-God damping `bfog` with `gxy_fog: true`, the `b2(z)` slope `b2_slope` with `b2_slope_free: true`, the curvature `b1_curv` of the `b1(z)` law with `b1_curv_free: true`), each with the model's Jacobian by forward-mode differentiation, until the step in A is
-below 1e-4; σ_A from Δχ² = 1; then the noise law of the configs (`s_e`, `s_ed`) fitted to the
-residual at the minimum. It is the check of a grid or a selection before a run (minutes on a CPU
+`bias_order: 3`, the Finger-of-God damping `bfog` with `gxy_fog: true`, the `b2(z)` slope `b2_slope` with `b2_slope_free: true`, the curvature `b1_curv` of the `b1(z)` law with `b1_curv_free: true`), each with the model's Jacobian by forward-mode differentiation, until every step is
+below 1 % of its σ; σ_A from Δχ² = 1; then the noise law of the configs (`s_e`, `s_ed`) fitted to the
+residual at the minimum, and the biases solved again with A held at 1 (`biases_A1`, `chi2_A1`), the
+biases of the model at the true cosmology that the true-IC tests evaluate. With `gxy_ngbar_free` the ngbars are at their optimum (each radial shell of the predicted
+counts rescaled to the data's total there, `FieldLevelModel.profile_ngbars`). It is the check of a grid or a selection before a run (minutes on a CPU
 node; pipeline §2.5, §7.16): A_min within about σ_A of 1.
 
     python scripts/galaxy_likelihood_profile.py --config configs/inference/abacus/abacus_gxyonly_cosmo_box5000.yaml \\
@@ -117,10 +119,8 @@ def main():
         f = model.evolve(
             (get_cosmology(Omega_m=om, sigma8=s80), b, {"init_mesh": amp * init_true}, {"fNL": 0.0})
         )
-        intens = band_limit(f["gxy_paint"] * selec_paint, model._sim_mesh)
-        return jnp.where(
-            mask, (obs - model.gxy_count * intens) ** 2 / jnp.maximum(nbar, 1e-10), 0.0
-        )
+        mean = model.profile_ngbars(model.gxy_count * band_limit(f["gxy_paint"] * selec_paint, model._sim_mesh), obs)
+        return jnp.where(mask, (obs - mean) ** 2 / jnp.maximum(nbar, 1e-10), 0.0)
 
     vg = jax.jit(jax.value_and_grad(lambda th, om, amp: r2(th, om, amp).sum()))
     parts = jax.jit(
@@ -245,7 +245,7 @@ def newton(
     def white(th):
         b = {**fixed, **dict(zip(names[1:], th[1:], strict=True))}
         f = model.evolve((cosmo, b, {"init_mesh": th[0] * init_true}, {"fNL": 0.0}))
-        m = model.gxy_count * band_limit(f["gxy_paint"] * selec_paint, model._sim_mesh)
+        m = model.profile_ngbars(model.gxy_count * band_limit(f["gxy_paint"] * selec_paint, model._sim_mesh), obs)
         return jnp.where(mask, m / sd, 0.0)
 
     wj = jax.jit(white)
@@ -276,10 +276,25 @@ def newton(
             flush=True,
         )
         th = th + step
-        if it > 0 and abs(step[0]) < 1e-4:
+        if np.max(np.abs(step) / sigma) < 0.01:
             break
     last = hist[-1]
     print(f"A_min {last['theta']['A'] + last['step_A']:.4f} ± {last['sigma']['A']:.4f}", flush=True)
+    # The biases at the true amplitude A = 1: Gauss–Newton in the biases alone from the joint minimum.
+    tb = th.copy()
+    tb[0] = 1.0
+    sig_b = np.array([last["sigma"][n] for n in names[1:]])
+    for _ in range(4):
+        thj = jnp.asarray(tb, jnp.float32)
+        res = np.asarray(ow - wj(thj), np.float64).ravel()
+        jac = np.stack([np.asarray(tangent(thj, jnp.asarray(e)), np.float64).ravel() for e in eye[1:]])
+        step = np.linalg.solve(jac @ jac.T, jac @ res)
+        tb[1:] += step
+        if np.max(np.abs(step) / sig_b) < 0.01:
+            break
+    res = np.asarray(ow - wj(jnp.asarray(tb, jnp.float32)), np.float64).ravel()
+    biases_a1 = dict(zip(names[1:], map(float, tb[1:]), strict=True))
+    print(f"biases at A = 1: chi2 {res @ res:.1f}; {biases_a1}", flush=True)
     # The noise law of the configs, std = s_e (1 + s_ed max(delta_m, -1)) sqrt(nbar S), fitted to the
     # residual at the minimum by maximum likelihood over the survey cells (pipeline §3.1).
     thj = jnp.asarray(th, jnp.float32)
@@ -307,6 +322,8 @@ def newton(
                 "A_min": last["theta"]["A"] + last["step_A"],
                 "sigma_A": last["sigma"]["A"],
                 "noise_fit": {"s_e": float(noise[0]), "s_ed": float(noise[1])},
+                "biases_A1": biases_a1,
+                "chi2_A1": float(res @ res),
                 "iterations": hist,
             },
             indent=1,

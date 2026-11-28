@@ -1069,9 +1069,7 @@ def plot_warmup_diagnostics(model, state, init_params, truth, output_dir, show=F
             kpow_fid = (kptcs_warm_0[0],
                         lin_power_interp(cosmo_fid)(kptcs_warm_0[0]))
 
-            # Create diagnostic figure
-            fig = plt.figure(figsize=(12, 4))
-            fig.suptitle('Warmup Diagnostics: Initial Conditions Spectrum', fontsize=14)
+            plt.figure(figsize=(12, 4))
 
             def plot_kptcs(kptcs, label=None):
                 """Plot power/transfer/coherence (median of chains)."""

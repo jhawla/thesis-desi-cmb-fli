@@ -62,7 +62,7 @@ BLUE, INK = "#2a78d6", "#1f1f1e"
 def biases_from(path):
     src = json.loads(Path(path).read_text())
     if src.get("mode") == "newton":
-        return {k: v for k, v in src["iterations"][-1]["theta"].items() if k != "A"}
+        return src["biases_A1"]
     return next(p for p in src["profile"] if p["value"] == 1.0)["biases"]
 
 
@@ -157,8 +157,8 @@ def main():
     truth = {**cfg.get("truth_params", {}), **cfg.get("abacus_truth_params", {})}
     cosmo = get_cosmology(Omega_m=float(truth["Omega_m"]), sigma8=float(truth["sigma8"]))
     f = model.evolve((cosmo, biases, {"init_mesh": jnp.asarray(ic)}, {"fNL": 0.0}))
-    m3 = np.asarray(model.gxy_count * band_limit(f["gxy_paint"] * jnp.asarray(model.selec_paint),
-                                                 model._sim_mesh), float)
+    m3 = np.asarray(model.profile_ngbars(model.gxy_count * band_limit(f["gxy_paint"] * jnp.asarray(model.selec_paint),
+                                                                      model._sim_mesh), jnp.asarray(obs3)), float)
     cell = float(model.box_shape[0]) / obs3.shape[0]
     obsv = np.asarray(model.observer_position, float)
     chi_s = np.linspace(1080.0, 2460.0, 139)

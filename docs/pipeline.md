@@ -337,8 +337,11 @@ likelihood by two routes, with different rules.
 At construction the model applies the galaxy rules when galaxies are on, and warns when κ is on and
 `d` exceeds 25 Mpc/h (with the count that meets it). The rules say what is understood; the check of a
 grid or a selection before a run is the joint minimum in (A, biases) of the galaxy likelihood at the
-true ICs (`galaxy_likelihood_profile.py --mode newton`, minutes on a CPU node), within about its σ_A of
-A = 1 (§7.16).
+true ICs (`galaxy_likelihood_profile.py --mode newton`, minutes on a CPU node, Gauss–Newton until every
+step is below 1 % of its σ), within about its σ_A of A = 1 (§7.16). The true-IC tests
+(`validate_galaxy_from_ic.py`, `validate_joint_from_ic.py`) evaluate the model at A = 1 with the biases
+solved again at A = 1 (`biases_A1` of the Newton JSON): the joint minimum's biases go with A_min, and
+at A = 1 they would show A_min − 1 as an offset of the transfer.
 
 Flow in `FieldLevelModel.evolve`: init field → chreshape→evol → `add_png` + PNG re-band-limit → LPT
 displacement → paint+crop to final; `lagrangian_weights` comes **after** and is handed `init_mesh_evol_grid`, i.e. the **pre-`add_png`**
@@ -712,11 +715,16 @@ and `Var[obs] = α_b·n̄·S`; marginalising `α_b` over **fine** bins removes t
 subspace, so `f_NL` is measured from transverse/3-D modes only and is insensitive to a mis-traced
 `n̄(χ)`.
 
-The nuisance is only needed when the randoms mis-trace `n̄(χ)`. The base-box AbacusLensing randoms
-do (their `RAND_Z` is close to uniform in z and under-traces the outer comoving volume), so the
-base-box runs free them. The HUGE `lrg_huge` randoms track the data `n(z)` to 0.1 % (§4), so the
-HUGE reference runs keep `gxy_ngbar_free: false`; freeing them there leaves `f_NL` within a fraction
-of its error and widens it (§7.1).
+The nuisance is needed when the data hold no radial monopole of their sky while the model predicts one:
+an n(z) imposed on the catalogue, as the HUGE `lrg_huge` mocks' (their per-bin counts scatter at Poisson or
+below, §7.19), or randoms that take the data's n(z), as real data's (the radial integral constraint). It
+is needed too when the randoms mis-trace `n̄(χ)`, as the base-box AbacusLensing randoms do. The ph202
+cosmology configs free them: at the true ICs they lower χ² by 755 and move no cosmology-sensitive
+direction but the radial monopole (§7.19). The tests at the true ICs (`galaxy_likelihood_profile.py`,
+`validate_galaxy_from_ic.py`, `validate_joint_from_ic.py`) do not sample them; with `gxy_ngbar_free` they
+take them at their optimum, each shell of the predicted counts rescaled to the data's total there
+(`FieldLevelModel.profile_ngbars`). For `f_NL` on HUGE, freeing them left `f_NL` within a fraction of its
+error and widened it (§7.1).
 
 ### 3.2 CMB lensing likelihood
 
@@ -870,16 +878,20 @@ cut. The source planes of the AbacusLensing maps run to z = 2.4, which is not wh
 stops. Every run here, closure and Abacus, has `chi_matter_min: 292.6` (z = 0.10, where the
 AbacusSummit HUGE light cone stops) and `chi_high_z_max: 3750` — the closure configs copy the
 Abacus range. The matter below 292.6 and beyond 3750 Mpc/h is therefore in neither the data nor the
-covariance: data and likelihood agree, but the map is that of an experiment without that matter. Limber (non-linear P, Abacus cosmology, `scripts/plot_lensing_fraction.py`), fraction
-of the power from the observer to `χ_s`, ℓ bins 2–4 / 5–10 / 11–20 / 21–36 / 37–64 weighted by
+covariance: data and likelihood agree, but the map is that of an experiment without that matter. Limber (non-linear P, Abacus cosmology), fraction
+of the power from the observer to `χ_s`, at nside 32, ℓ bins 2–4 / 5–10 / 11–20 / 21–36 / 37–64 weighted by
 2ℓ+1, before the per-shell cut: model shells and data map (292.6 → 3750) 0.76 / 0.82 / 0.81 / 0.76 /
 0.68; in neither 0.24 / 0.18 / 0.19 / 0.24 / 0.32. The κ constraints and gains are those of a map
 without that matter, i.e. with a smaller variance than a real map at the same `N_ℓ`: at box 5000 with
 SO noise (`abacus/abacus_joint_so_cosmo_box5000.yaml`) the likelihood's `N_ℓ + w_ℓ² C_ℓ^out` (the
 model's term, `model.cl_out_cached`; 0.21 / 0.19 / 0.21 / 0.27 / 0.32 of the total power) is 0.69 /
 0.68 / 0.66 / 0.64 / 0.63 of what it would be with the matter in neither added through the same
-window. Figures
-`figures/lensing_fraction/lensing_fraction_vs_z.png` and `lensing_spectra_comparison.png`.
+window. Over the final band (`abacus/abacus_joint_so_cosmo_box5000_m100_ph202.yaml`, ℓ 2–256,
+`scripts/plot_lensing_fraction.py`, `figures/lensing_fraction/lensing_budget.{png,npz}`, the paper's
+`fig:los_fraction`): the box's matter holds 0.28 of the power from the observer to `χ_s`, the map's
+0.54, the LRG range 0.22; of the map's signal the model holds 0.43 (0.63 at ℓ 11–64, 0.28 at ℓ
+193–256), the matter beyond the box 0.49, the per-shell cut 0.07 (0.14 at ℓ 193–256), the shell end
+ramps 0.01 (the split from the kernels of the term, linear Limber).
 
 Noise (`cmb_lensing.cmb_noise_nell`, a file of columns ℓ, N_ℓ; `cmb_noise_scaling`, default 1.0,
 multiplies it to test sensitivity; the source is at `cmb_lensing.z_source`, 1089.28). The paper's runs
@@ -1179,6 +1191,7 @@ measures and the conventions that make its output comparable with the model.
 | `validate_kappa_from_ic.py` | the κ model at the true Abacus ICs against the AbacusLensing map, no sampling: the model's mean map (§3.2) against it: per ℓ bin coherence, transfer, amplitude A per band, error power against `N_ℓ` and `C_ℓ^LOS`, the coherence `√(1 − C^LOS/C^tt)` of a model exact but for its covariance term, and `(C^mm + C^LOS)/C^tt` (1 for a consistent model); `--shell_kmax` list, `--maps` for the pole maps (§7.9); the nside-16384 map is read once on a compute node and cached in `data/cache/` | `figures/spectra_diagnostic/kappa_from_abacus_ic_*.{png,npz}`, `figures/maps/` |
 | `validate_galaxy_from_ic.py` | the galaxy model at the true Abacus ICs against the Abacus counts, no sampling, a standard check of every grid: per k band and per shell of χ the coherence r, the transfer P_dm/P_mm and the whitened residual power (d − m)/√(n̄S) off the Nyquist planes of the final grid, against 20 closure draws with the noise law of the Newton JSON (`s_e`, `s_ed`, the likelihood's; mean ± 1σ), so that an exact model with that noise falls in their band; then the biases refitted per shell (`b1_alpha` held), whose χ² gain measures the redshift evolution the bias lacks; and, with no bias fit, the shape of the effective bias against the matter of the same ICs (all biases and `b1_alpha` at 0), b_eff(k)/b_eff(top quarter of k), against the closure's: the transfer depends on where the bias fit lands in the `b1`–`bn2`–`bnpar` degeneracy, the b_eff shape does not (§7.19, ph202). The Nyquist planes are left out of the residual: there the paint chain on the survey geometry lowers the data's noise below the per-cell noise of the closure (§7.19) | `figures/galaxy_ic_test/<config>.{png,json}` |
 | `plot_galaxy_ic_test.py` | the paper's `fig:gxy_ic` from the JSONs of `validate_galaxy_from_ic.py` (all cells) and of the Newton minimum (its noise fit): transfer, whitened residual (off the Nyquist planes), b_eff shape against k with the closure band (model + fitted noise), k_N marked | `figures/galaxy_ic_test/fig_gxy_ic.png` |
+| `plot_kappa_ic_test.py` | the paper's `fig:kappa_from_ic` from the `.npz` of `validate_kappa_from_ic.py` with and without the per-shell cut: power, coherence, error power over `N_ℓ`, (C^mm + C^out)/C^tt, each with its expectation dotted, bins of 4 multipoles | `figures/spectra_diagnostic/fig_kappa_ic.png` |
 | `validate_joint_from_ic.py` | the joint model at the true Abacus ICs (Abacus cosmology, the biases of a Newton or profile JSON): C_κg of the AbacusLensing map × LRG catalogue over C_κg of the model's mean κ × model galaxies per ℓ band, cosmic variance cancelling, Gaussian errors with the κ and galaxy errors independent of the model; the mixed crosses (model κ × Abacus galaxies, Abacus κ × model galaxies) say on which side a departure sits. Its galaxy maps are projected from the galaxies at every k, beyond the cube the likelihood holds: above ℓ ≈ 160 that ratio reads the per-shell cut, not the likelihood; the figure (the paper's `fig:joint_ic`) shows both spectra and the ratio, also with the final-grid count meshes projected along each ray, the galaxies the likelihood holds (§7.19) | `figures/joint_ic_test/<config>.{png,json}` |
 | `kappa_stiffness.py` | largest Hessian eigenvalue of −log p in the field (power iteration on reverse-over-reverse Hessian-vector products), its eigenvector's share near the observer, cost and peak memory, per `shell_weights:shell_kmax[:noise]` variant; the MCLMC step size is capped by it | `figures/conditioning/` |
 | `kappa_lattice_template.py` | `measure`: E_z[κ] by antithetic pairs `(κ(z) + κ(−z))/2` on an (`Omega_m`, `sigma8`) list, packed like the likelihood, with the field power, the undisplaced-lattice κ, `N_ℓ` and the out-of-model term at each point's cosmology; `analyse`: S/N, projection of a run's data, Gaussian posterior with and without the template, of the run's data or `RUN:noiseless` (its noiseless map averaged over the noise), `--condition_om` for `sigma8` at given `Omega_m` (§7.15, §7.17) | `data/cache/template/`, `figures/kappa_lattice_template/` |
@@ -1192,8 +1205,8 @@ measures and the conventions that make its output comparable with the model.
 | `density_scan.py` | measured paired gain on σ(`f_NL`) against the Fisher, per density of `scan/density_scan_runs.yaml`; `--noise_table` the gain per `N_ℓ` scaling (§7.2, §7.3) | `figures/results/density_scan.{png,json}` |
 | `compare_linear_power.py` | the model's linear P(k) (and Eisenstein–Hu) against the CLASS spectrum of the Abacus ICs; `--omega_m_scan` the emulator, the former EH × fiducial ratio and EH against CLASS as `Omega_m` moves, from the reference written by `linear_power_class_reference.py` (cosmodesi env, cosmoprimo) (§7.11) | `figures/spectra_diagnostic/linear_power_*` |
 | `plot_cmb_noise_comparison.py` | a run config's `N_ℓ` and `N_ℓ + C_ℓ^out` (its fiducial) with the likelihood band ℓ ≤ 2 nside (`fig:noise`); Planck PR4, ACT DR6, SO baseline `N_ℓ` and their ratio to ACT, same band (thesis) | `figures/spectra_diagnostic/cmb_noise_so.{png,npz}`, `cmb_noise_comparison.png` |
-| `plot_lensing_fraction.py` | Limber κ power along the line of sight at a config's geometry (default the box-5000 joint): fraction captured against depth, model shells, map, beyond the box, the model's out-of-model term `w_ℓ² C_ℓ^out`, `N_ℓ` of the config; per band, the share of a real map's out-of-model variance the likelihood holds (§3.2) | `figures/lensing_fraction/` |
-| `plot_2D_maps.py` | κ and galaxy-projection maps of one forward realisation (the galaxy panel ray-casts the mesh, display only) | `figures/maps/` |
+| `plot_lensing_fraction.py` | Limber κ power along the line of sight at a config's geometry (default the final joint): per ℓ the observed variance `C_ℓ^map + N_ℓ` split into the matter the model holds, the parts of `C_ℓ^out` (beyond the box, per-shell cut, shell end ramps, from the term's kernels) and the noise; the fraction of the full power captured against depth (§3.2) | `figures/lensing_fraction/lensing_budget.{png,npz}` |
+| `plot_2D_maps.py` | κ and galaxy-projection maps of one forward realisation, or of the Abacus data in abacus mode (observed and noiseless κ, projected galaxy counts N/N̄ − 1; the galaxy panel ray-casts the mesh, display only); the paper's `fig:data_maps` | `figures/maps/` |
 | `benchmark_cl_out_modes.py` | the `fixed` out-of-model term against `exact` over an (`Omega_m`, `sigma8`) grid at a config's geometry: band error and expected error on ln L (KL, nats); halofit against linear at the fiducial, and against the term's fiducial halofit boost at four points around it; per-ℓ curves in the npz (§7.18) | `figures/cl_out_modes/` |
 | `plot_highz_correction_vs_depth.py` | the beyond-box part of the term against depth | `figures/lensing_fraction/` |
 | `make_abacus_kappa_mask.py`, `plot_linear_vs_nbody.py` | AbacusLensing footprint at the model nside; linear against N-body field from one IC | — |
@@ -2274,6 +2287,12 @@ Configs: `abacus/abacus_{gxyonly,kappaonly_so,joint_so}_cosmo_box5000_m160.yaml`
   forces are computed on the particle grid itself with the CIC deconvolution of `pm_forces` commented
   out, and on a 32³ toy in the linear regime its displacement over Zel'dovich is 0.958 / 0.942 / 0.924
   at 5 / 10 / 20 steps (1.010 / 1.050 / 1.099 with the deconvolution restored). No run uses it.
+  At the model's spacing (17.9 Mpc/h) on the Abacus matter (`logs/vel_transfer/vel_pm.py`, `bf_control.py`, CPU jobs
+  62096671, 62097356) BullFrog does worse than 2LPT: with the PM mesh on the particle lattice, one step has 0.94 of
+  2LPT's displacement power and 0.89 of its velocity power at k 0.02–0.04 (it reproduces 2LPT only with exact
+  forces), its correlation with the N-body particles at k 0.08–0.1 falls to 0.95 (1 step) and 0.67 (8 steps)
+  against 0.995 for 2LPT; a mesh twice finer overshoots (lattice discreteness), three times finer is still 2–4 %
+  low at k 0.02–0.04; the deconvolved paint diverges. A few-step PM is not a fix at this resolution.
 - Angular spectra (`quick_cl_spectra.py`, closure 20 realisations with the Abacus profile biases as
   truth, `cl_closure_box5000_m160_20real`): κκ 0.97–1.01 to ℓ 237; gg and κg 0.97–1.02 to ℓ 111, then
   gg 1.03, 1.03, 1.05, 1.10, 1.19 and κg 0.99, 0.97, 0.94, 0.92, 0.96 at ℓ 129, 151, 175, 204, 237
@@ -2513,7 +2532,26 @@ the repository; jobs 60799506–60870100). `sigma8` is the chain's at the stated
   (0.87) at 0.081, 0.0234 (0.89) at 0.106, 0.0442 (0.92) at 0.131, 0.0785 (0.95) at 0.156; template
   variance per survey cell 0.0228 (`T_uv`), 0.0089 (`T_ptcl`). Added to a closure (data `m₀ + T_uv` plus the closure's noise, same seed as the 160³
   closure above), it drives the chain the Abacus way: `sigma8` 0.803 → 0.771 over 10 batches, `b1`
-  1.14 → 1.21, end χ²/N 0.912 (truth 0.920).
+  1.14 → 1.21, end χ²/N 0.912 (truth 0.920). This is one key with the order-2 model of the time: the two-key
+  rule (§5) was not applied, and at mesh 100 the same reading reversed on a second key (*`T_uv` on two keys*,
+  below).
+- *With the mesh-100 production model* (ph202, order 3, `gxy_fog`, `b2_slope_free`, `b1_curv_free`, the ph202
+  noise; `logs/uv_m160/cfg_ph202_m160.yaml`, the `_fog` config at cell 31.25 with init 240³, particles 280³,
+  paint 260³; no sampling). True-IC Newton (`galaxy_likelihood_profile.py --mode newton`,
+  `logs/uv_m160/cfg_ph202_m160_newton.json`): A_min 1.0069 ± 0.0008 (mesh 100 1.0019 ± 0.0021), `b1_curv` −2.36,
+  `bfog` 15.1, `b2_slope` 1.13, `s_e` 0.905, `s_ed` 0.230; the mesh-160 amplitude above 1 is not explained.
+  `T_uv` and `T_ptcl` rebuilt at this point (`logs/uv_m160/uv_build.py`, ICs at 384³ through 480³ particles, the
+  run's 260³ paint; odd/even parts from the missing shell δ_s and −δ_s as at mesh 100): the whitened Abacus residual
+  holds `T_uv` at α 0.927, Δχ² −62 070 (mesh 100: −8104), of which the odd part (δ_s × resolved field, 66 % of
+  |`T_uv`|²) α 1.02, Δχ² −49 782, and the bias templates take none of it; the even part α 0.75, Δχ² −13 567, 19 % of
+  it taken by the biases (`bfog` +6.5, `bn2` +0.77, `bnpar` +1.2), one set per radial shell taking no more; `T_ptcl`
+  α 0.63, Δχ² −5350. Fixed-field iterated Gauss–Newton in (A, every bias, `Omega_m`) (`logs/uv_m160/uv_gn.py`; the
+  runs stop at 10 iterations): the model at that point plus `T_uv` moves `Omega_m` by −0.0036 ± 0.0022, plus the
+  even part −0.0028, the odd part −0.0004, `T_ptcl` −0.0061; Abacus sits at 0.3055 ± 0.0016 and Abacus minus `T_uv`
+  at 0.3058 ± 0.0022. The responses do not add (removing `T_uv` from the data moves `Omega_m` by +0.0003 where
+  adding it to the model moves it by −0.0036): at mesh 160, as at mesh 100, fixed-field `Omega_m` is no estimate
+  of a chain's bias, and the mesh-160 galaxy question is read on chains of two keys, after the amplitude minimum is
+  understood.
 - *Model changes that do not remove it.* Init grid 160³ (the inferred field stops at the final
   Nyquist): χ²/N at the truth 1.079 against 0.897, profile minimum A ≈ 0.982
   (`abacus_gxyonly_cosmo_box5000_m160_amplitudem160_init1.json`); galaxy IC test at those biases
@@ -3274,18 +3312,204 @@ displacement alike (1.002 → 1.096), the same with the ICs cut at the model's i
 amplitude is the N-body's, and above k ≈ 0.03 the N-body particles move further and faster than 2LPT's, part of it
 incoherent. The light-cone halos' velocity (`vel_interp`, which the LRGs' redshifts carry) is the snapshot halo's
 `v_L2com` (ratio 1.00001 at z 0.8). Halos of LRG host mass (70–1100 particles, 3.6·10⁸) against the matter's
-density-weighted velocity smoothed at R, over the same estimate for matter particles: b_v 0.985 (R 20 Mpc/h), 0.993
-(R 40 Mpc/h). The matter's redshift-space field decides it (`vel_rsd_matter.py`, 2 % of subsample A, 3.9·10⁸
+density-weighted velocity smoothed at R, over the same estimate for matter particles: 0.985 (R 20 Mpc/h), 0.993
+(R 40 Mpc/h), an estimate attenuated by the noise of the smoothed field; the instrumental one gives b_v = 1.000 at
+large scales (§7.19, *Nor is it the host halos' velocities*). The matter's redshift-space field decides it (`vel_rsd_matter.py`, 2 % of subsample A, 3.9·10⁸
 particles, plane-parallel RSD, shot noise of the common particles subtracted): the same particles at their N-body
 positions and at the model's 2LPT ones, in real and redshift space, the redshift-space cross transfer over the
 real-space one per μ fitted with (1 + V f μ²)/(1 + f μ²): V = 0.997, 0.995, 0.990, 0.980, 0.958, 0.924, 0.878 at k
-0.005–0.01, 0.01–0.02, 0.02–0.03, 0.03–0.045, 0.045–0.063, 0.063–0.08, 0.08–0.1, and with a damping term free
-(as `bfog`, s² ≈ +6 (Mpc/h)²) 0.993, 0.997, 0.993, 0.989, 0.975, 0.953, 0.926; the Kaiser β of each field from its
-P2/P0 gives the same ratio. The N-body matter's redshift-space anisotropy falls below 2LPT's from k ≈ 0.02 on: 2LPT
-lacks the nonlinear suppression of the coherent velocity (the Lagrangian transfer above shows the N-body particles'
-velocities larger but less coherent). Where the galaxy likelihood measures V (k 0.055–0.085, above) the matter alone
-gives 0.95–0.975 with the damping free; the LRG hosts' 0.7–1.5 % and the growth rate's 0.3 % add to it. V is the
+0.005–0.01, 0.01–0.02, 0.02–0.03, 0.03–0.045, 0.045–0.063, 0.063–0.08, 0.08–0.1; the Kaiser β of each field from
+its P2/P0 gives the same ratio. The N-body matter's redshift-space anisotropy falls below 2LPT's from k ≈ 0.02 on.
+
+*The form of the velocity deficit* (`logs/vel_transfer/vel_transfer.py`, 1 % of subsample A, ph201 and ph202,
+z 0.5, 0.8, 1.1, plane-parallel RSD, ICs cut to the model's 240³ cube, grid 256³). The N-body redshift-space
+matter is fitted mode by mode with the model's fields painted from the same particles, on cross products of two
+random particle halves (no shot noise): a real-space transfer per k band, times (1 + V f μ²)/(1 + f μ²) per band,
+with or without one damping (1 − s² k²μ²/2) for all k, the `bfog` form. Without the damping V is the one above
+(z 0.8: 0.979, 0.957, 0.921, 0.861 at 0.03–0.045, 0.045–0.063, 0.063–0.08, 0.08–0.1; z 0.5 0.900 and z 1.1 0.938 at
+0.063–0.08). With it V is 0.998, 0.998, 0.999, 0.998, 0.997, 0.990, 0.970 at z 0.8 in the seven bands, the same
+to 0.004 at z 0.5 and 1.1, and s² = 17.6, 14.3, 10.9 (Mpc/h)² at z 0.5, 0.8, 1.1 (∝ D^1.7), ph201 and ph202 within
+0.4. On top of the damping, a velocity transfer per k band (the 2LPT velocity filtered) or one constant V lowers
+the residual by 0.25 % and 0.14 %. 3LPT (coefficients from the equations of motion in the code's convention,
+`logs/vel_transfer/lpt3_check.py`: +1/3 det ∇∇φ1, −10/21 μ2(φ1, φ2), transverse +1/7, velocity rate 3f) lowers the
+residual by 1.8 % (real-space positions) and makes the anisotropy deficit larger (V 0.907 at 0.063–0.08 at z 0.8),
+with the damping V as 2LPT's and s² 16.4. The deficit is a k²μ² damping of the 2LPT velocity that grows with time,
+not an error of its amplitude, and the matter's s² at z 0.8 is the galaxies' true-IC `bfog` (15–16); the model's
+`bfog` is one constant over the light cone, while the matter's damping varies by 1.6 between z 0.5 and 1.1. V is the
 2LPT velocity field, not the mock, the halos or the background.
+
+*A redshift-dependent damping does not remove it* (`logs/gxy_ph202/fogz_gn.py`, CPU job 62094622). The galaxy
+model of the `_fog` config with `bfog` × (D(a)/D(a_fid))^p per paint cell and the RSD velocity times V0, fitted at
+the true ICs in (A, every bias, V0[, p]) by Gauss–Newton:
+
+| | ph202 V0 | ph202 χ² − χ²(p = 0) | ph201 V0 | ph201 χ² − χ²(p = 0) |
+| --- | --- | --- | --- | --- |
+| p = 0 (the model) | 0.976 ± 0.008 (`bfog` 15.6) | 0 | 0.987 ± 0.008 (`bfog` 18.0) | 0 |
+| p = 2 (the matter's damping) | 0.972 ± 0.007 (`bfog` 13.2) | +20 | 0.980 ± 0.007 (`bfog` 14.5) | +61 |
+| p free | 0.976, p −0.05 ± 0.42 | −1 | 0.988, p −1.2 ± 0.37 | −10 |
+
+The galaxies' damping does not follow the matter's: they prefer it constant (or growing with z) over the light
+cone, and V0 stays below 1 with any p. The model keeps the constant `bfog`.
+
+*The velocity amplitude free, galaxies alone and joint* (`logs/bispec_fisher/bispec_fisher_curv.py --case fog --curv
+[--vfree] [--kappa abacus/abacus_joint_so_cosmo_box5000_m100_ph202.yaml]`, `run_vfree.sh`, CPU job 62095883). P+B
+Fisher of the `_fog` model with the curvature, V (f → V f) free or held at 1; the joint adds the tomographic Limber
+increment F[shells + κ] − F[shells] of the joint config (ℓ ≤ 256, SO noise, out-of-model term following the
+cosmology) on `Omega_m`, `sigma8`, `b1`, `bn2`, `b1_alpha`, `b1_curv`. Data: V 0.980 and the b(z) hump; shift = exact
+best fit (Gauss–Newton on the expected χ², κ entering as a quadratic term about the truth):
+
+| | σ(`Omega_m`) | σ(`sigma8`) | σ(V) | shift `Omega_m` | shift `sigma8` |
+| --- | --- | --- | --- | --- | --- |
+| galaxies, V held | 0.0033 | 0.0177 | — | −0.0001 | −0.0152 (−0.86σ) |
+| galaxies, V free | 0.0033 | 0.083 | 0.104 | +0.0001 | +0.013 (+0.16σ) |
+| joint, V held | 0.0025 | 0.0041 | — | +0.0011 | −0.0025 (−0.61σ) |
+| joint, V free | 0.0028 | 0.0044 | 0.023 | +0.0002 | −0.0011 (−0.25σ) |
+
+Alone, the galaxies lose `sigma8` with V (f`sigma8`–`b1``sigma8` degeneracy that only the bispectrum breaks): the shift
+falls below σ by the width growing 4.7 times, and V moves by −0.015 under the hump. With κ, which measures `sigma8`
+without velocities, freeing V costs 7 % on σ(`sigma8`) and 11 % on σ(`Omega_m`), measures V to 2.3 %, and takes the
+velocity part of the shift (the V of the fit returns to the data's to 0.002); what remains is the hump's. These are
+Fisher shifts of a constant V; the field level and the chains are not run with V free.
+
+*Which velocity error biases `sigma8`, against the galaxy resolution* (`bispec_fisher_curv.py --vk | --vdata 0.976
+[--kcut K | --cell 62.5] [--kappa …]`, `run_kcut.sh`, CPU job 62097090). Exact best-fit shift of the velocity error
+alone (model V 1, the damped model with the curvature), for two data: the matter's V(k) that 2LPT leaves after one
+damping (*The form of the velocity deficit*: 0.998 to k 0.045, 0.996, 0.990, 0.970 at 0.054, 0.072, 0.09, held
+beyond), or the galaxies' constant V0 0.976 (ph202, true ICs); the mesh-100 cube cut at |k| ≤ K, or a cube of cell
+62.5:
+
+| galaxy modes | σ(`sigma8`) galaxies / joint | shift `sigma8`, matter V(k), galaxies / joint | shift `sigma8`, V0 0.976, galaxies / joint |
+| --- | --- | --- | --- |
+| cube, cell 50 (corners 0.109) | 0.0174 / 0.0041 | +0.0015 / 0.0000 | −0.0187 / −0.0017 |
+| \|k\| ≤ 0.08 | 0.0191 / 0.0042 | +0.0004 / −0.0001 | −0.0184 / −0.0015 |
+| \|k\| ≤ 0.07 | 0.0226 / 0.0043 | −0.0003 / −0.0001 | −0.0184 / −0.0012 |
+| \|k\| ≤ 0.06 | 0.0294 / 0.0045 | −0.0006 / −0.0001 | −0.0186 / −0.0010 |
+| \|k\| ≤ 0.05 | 0.0420 / 0.0047 | −0.0008 / 0.0000 | −0.0187 / −0.0008 |
+| cube, cell 62.5 | 0.0243 / 0.0044 | +0.0002 / −0.0001 | −0.0186 / −0.0011 |
+
+The matter's scale-dependent deficit, once damped, moves `sigma8` by less than 0.1σ at every resolution: the
+counterterms take it. A constant V0 below 1 moves it by the same −0.0186 (ΔV0 −2.4 % → `sigma8` −2.3 %, the f`sigma8`
+of the redshift-space anisotropy) at every resolution while σ grows: a coarser galaxy grid or a k cut does not
+remove it. With κ the shift is 0.4σ at the full cube and falls with the cut. `Omega_m` moves by ≤ 0.0002 (galaxies)
+and +0.0012 (joint, V0 0.976). What biases `sigma8` is therefore a velocity amplitude constant in k in the galaxies,
+which the matter does not have once damped; the galaxies' V0 0.976 / 0.987 is a fixed-field fit of one constant to
+every mode of the cube, most of them at k > 0.07, and does not tell a constant deficit from a k-dependent one.
+
+*The galaxies' deficit is not the matter's* (`logs/gxy_ph202/vfilt_gn.py`, `run_vfilt.sh`, CPU job 62097751). The
+model's linear LPT velocity filtered by the matter's damped V(k) above (held beyond 0.09, or continued linearly:
+0.949 at 0.109, 0.904 at 0.15), then the same true-IC fit of V0 with every bias of the `_fog` config:
+
+| | no filter | V(k) held | V(k) continued |
+| --- | --- | --- | --- |
+| ph202 V0 | 0.976 | 0.975 | 0.974 |
+| ph201 V0 | 0.987 | 0.986 | 0.985 |
+
+(± 0.0075; χ² within −8 to +3 of the unfiltered fit; the filter moves `bnpar` by +1.5 to +3, `bfog` by −0.3 to
++0.5.) The counterterms take the matter's scale-dependent deficit; the galaxies' V0 below 1 is not it (it is the
+fixed-field fit's trade of V0 against the field amplitude, *at the true amplitude*, below).
+
+*Where the galaxies' deficit sits, and the radial monopole* (`vfilt_gn.py --bands`, `--ngbar_match`, `--selreal`,
+`--randoms_phase`; `run_vbands.sh`, `run_selngbar.sh`, `run_rand201.sh`; CPU jobs 62098467, 62099689, 62100130,
+62100543). The linear velocity times 1 + t_j in Lagrangian |k| bands, every t_j free with every bias, at the true ICs
+(percent, ± 0.8–2.1):
+
+| | k < 0.03 | 0.03–0.05 | 0.05–0.07 | > 0.07 |
+| --- | --- | --- | --- | --- |
+| ph202 | −3.3 | −2.7 | −2.7 | −6.1 |
+| ph202, ngbars at their optimum | −2.5 | −2.6 | −2.8 | −6.4 |
+| ph201 | −1.7 | −0.7 | −0.8 | −0.5 |
+| ph201, ngbars at their optimum | −1.1 | −0.5 | −0.5 | −0.1 |
+
+(bands 0.02 wide below 0.08: ph202 −4.0 ± 1.0 at k < 0.02, ph201 −3.0 ± 1.0.) The deficit is largest at the largest
+scales, which neither 2LPT (exact there, the matter's V 0.997) nor a tracer velocity bias (vanishing at k → 0) can
+give. The mock's n(z) is imposed, so its galaxies lack the radial monopole of their sky (above: data–model
+correlation +0.01 on ph202, +0.60 on ph201), which the model predicts; those modes are along the line of sight
+(μ = 1), where a lower V shrinks them. The model rescaled to the data's total in each radial bin of √3 cell (the
+optimum of free `ngbars`, `gxy_ngbar_free`) lowers χ² by 755 (ph202) and 618 (ph201), takes the large-scale excess
+out and V0 from 0.976 to 0.9805 (ph202) and from 0.987 to 0.991 (ph201, every band then within 1.2σ of 0). Two
+other readings are excluded: the selection applied at each particle's real-space distance (the mock's n(z) set in
+real space) raises χ² by 2000 (ph202) and 2900 (ph201) and takes V0 to 0.927: the mock's selection acts in redshift
+space, as the model's; and ph202's randoms (20 per galaxy in 0.4 < z < 1.1 against ph201's 100: four fifths of its
+rows have Z = 0) leave V0 where it is when the selection is built from ph201's (0.977, and 0.982 with the ngbars). The
+two phases with the ngbars differ by 1.0σ (0.9805, 0.991); together V0 = 0.986 ± 0.005, 2.7σ below 1. Nor are the
+initial modes beyond the 240³ cutoff (`T_uv` rebuilt at mesh 100 on each sky, `logs/uv_m160/uv_build.py --init_t 384
+--ptcl_t 480`, `run_uv_m100_v0.sh`, CPU job 62100638; |`T_uv`|² 9711 / 9632, Abacus residual on it α 0.92 / 0.94 on
+ph202 / ph201): the model at the true-IC fit plus `T_uv`, or its even or odd part, refitted with V0 free gives V0 =
+1.0002, 1.0013, 0.9989 (ph202) and 0.9995, 0.9995, 1.0001 (ph201); `bfog` takes the full and even parts (+8 to +9).
+*How significant, and where on the sky* (`vfilt_gn.py --noise_seed | --region`, `run_split.sh`, CPU jobs 62101458,
+62101461; start at each phase's fit with the ngbars). Closures at the true ICs (the model with V0 = 1 plus white
+noise of std 0.9 in whitened units, 8 seeds per phase): V0 = 0.9994 (ph202's fit) and 1.0014 (ph201's), scatter
+0.0070 and 0.0057, 0.0064 together: the estimator holds V0 and the Gauss–Newton σ (0.0075) is not small. Against that
+scatter ph202's 0.9805 is −3.0σ, ph201's 0.991 −1.4σ. V0 with the ngbars on each quadrant of the sky (x, y signs about
+the observer, ± 0.015) and on each third of the survey's distance range (± 0.012–0.015):
+
+| | quadrants | nearest / middle / farthest third |
+| --- | --- | --- |
+| ph202 | 0.987, 0.987, 0.967, 0.983 | 0.966 / 1.002 / 0.971 |
+| ph201 | 1.002, 0.979, 1.002, 0.980 | 0.997 / 0.994 / 0.981 |
+
+The quadrants agree within their errors (ph202: χ² 1.2 for 3 degrees of freedom about their mean): the deficit is
+spread over the sky, not a feature of one region; a third alone constrains the bias law in z poorly (`b1_curv` −1.1
+to −4.8), so the thirds are not read further. The two skies are consistent with one common amplitude, V0 = 0.986 ±
+0.005. Finer radial bins for the ngbars (`--ngbar_dr 50 | 25`, 26 and 52 bins
+against 15 of √3 cell, `run_ngbar_dr.sh`, CPU job of 2026-11-27) lower χ² further (ph202 −282 / −409, ph201 −370 /
+−531 at V0 = 1) but leave V0 at 0.981 / 0.982 (ph202) and 0.992 / 0.992 (ph201) and the bands where they were: the
+remaining deficit is not in the radial monopole.
+
+*Nor is it the host halos' velocities* (`logs/vel_transfer/halo_vbias.py`, `run_hvb.sh`, CPU job of 2026-11-27,
+snapshot z 0.8). Each object's velocity v/(aH) regressed on the matter's mass-weighted velocity field at its own
+position (subsample-A particles, 256³ CIC, split in |k| bands), with an instrumental estimator (fields from two
+independent particle halves, so their counting noise does not attenuate) and held-out matter particles as the control:
+halos of LRG host mass (70–1100 particles, a quarter of them, 8.9·10⁷) over the control give b_v = 1.0003, 1.0005,
+1.0007, 1.0021, 1.0041, 1.0084, 1.0149 (ph202) and 0.9995, 1.0004, 1.0008, 1.0022, 1.0043, 1.0081, 1.0150 (ph201) in
+the bands from k < 0.01 to 0.08–0.1 (± 0.0002–0.0004), the same for `v_L2com` (the velocity the mock gives its
+centrals) and `v_com`, rising to 1.022 at 0.08–0.1 for the heavier half: a velocity bias in k² of positive sign,
+`bnpar`'s form. The earlier 0.985 / 0.993 against the matter's velocity smoothed at 20 / 40 Mpc/h came from the noise
+of that smoothed regressor. *Nor the radial edges*: leaving out the cells within 150 Mpc/h of the survey's radial edges
+(`--region e150`) gives V0 = 0.987 (ph202) and 0.989 (ph201) ± 0.008: the two skies agree once the edges are out, and
+their mean, 0.988 ± 0.006, is still 2σ below 1. *Nor the bias law in z*: free linear-bias corrections in 6 radial
+shells (`--db_shells 6`, a term n̄S db_s (`matter_mesh` − 1), μ⁰ only) come out at −1 to −7 % (± 0.8 %) and lower V0
+further (0.977, 0.986).
+
+*At the true amplitude* (`vfilt_gn.py --fixA 1`, `run_fixA.sh`, CPU job of 2026-11-27, ngbars at their optimum): with
+the field amplitude held at A = 1 instead of free, V0 = 0.997 (ph202) and 1.000 (ph201) ± 0.0047, and per band
+(percent):
+
+| A = 1 | k < 0.03 | 0.03–0.05 | 0.05–0.07 | > 0.07 |
+| --- | --- | --- | --- | --- |
+| ph202 | −0.7 ± 0.6 | −1.1 ± 0.8 | −1.5 ± 1.3 | −5.2 ± 2.1 |
+| ph201 | −0.1 ± 0.6 | +0.4 ± 0.8 | +0.2 ± 1.3 | +0.6 ± 2.1 |
+
+χ² is only 8.4 (ph202) and 2.9 (ph201) above the fit with A free (A 1.0094, 1.0052). At the true field amplitude the
+model's redshift-space velocities reproduce the galaxies' to 0.3 %: the galaxies' V0 < 1 above is the fixed-field fit
+trading a slightly larger field (A, whose non-linear terms grow faster than the linear ones) against a lower velocity
+term, at Δχ² 3–8, not a velocity deficit; the constant-V0 Fisher shift of `sigma8` above does not describe the data.
+
+*The true-IC tests with the ngbars* (`logs/ngbars_prerun/`, CPU jobs 62109763 and 62110444, `profile_ngbars`, ph202
+config): A_min 1.0027 ± 0.0021, the noise refitted 0.8967 / 0.2160, the starts of §5 (`b1_alpha` 0.951, `b1_curv`
+−2.53, `b2_slope` 1.19, `bnpar` 11.3, `bfog` 15.7). Those starts are the second Gauss–Newton iterate, which the
+former stop on the step in A alone left unconverged in the biases. With the stop on every parameter (CPU job 62139402,
+`logs/ic_a1/newton2.log`, 7 iterations) A_min is unchanged, 1.0027 ± 0.0021, and the minimum moves along the
+`bn2`–`bnpar` degeneracy: `bnpar` 15.7, `bfog` 16.5, `bn2` −1.20, `b1_alpha` 0.955, `b2_slope` 1.18, `b1_curv` −2.52,
+χ² 331 796.7 → 331 785 (the last iterates scatter by ±1, float32). At A = 1 (`biases_A1`): `b1` 1.161, `bn2` −1.02,
+`bnpar` 16.4, `bfog` 16.5, χ² 331 786.7. The true-IC tests with those A = 1 biases (CPU job 62137890, `logs/ic_a1/`): over all cells the transfer is 0.997–1.003 at k 0.01–0.063 (closures
+0.999–1.001), offset +0.0004 ± 0.0004 (+0.0033 ± 0.0003 with the joint minimum's biases at A = 1, A_min − 1), the
+whitened residual 0.76–0.84 (closures 0.81–0.82); below k = 0.01 the transfer is 0.969 ± 0.027 and 0.995 ± 0.012.
+Per shell of χ (six) the transfer is 0.978–1.014 and the shell refits gain Δχ² 37 / 11 / 90 / 28 / 45 / 57 (267; from
+the joint minimum's biases 326, 179 without the ngbars). The joint test (κ × the final-grid galaxies, Abacus over
+model): 1.055 ± 0.075, 1.015 ± 0.049, 1.008 ± 0.027, 0.988 ± 0.019, 0.993 ± 0.016, 1.018 ± 0.021, 1.052 ± 0.096 in
+ℓ 2–10–20–40–70–110–160–257.
+
+*Do the mock's fluctuations scale with its imposed mean?* (`logs/ngbar_form/ngbar_form.py`, CPU job 62111754.) The
+ngbars multiply the counts, fluctuations included, as a random subsampling to the n(z) does and as randoms that take
+the data's n(z) imply. In each ngbar shell, the data fitted as a_i n̄S + g_i F (F the model's fluctuation counts, at
+the Newton biases): the data's own monopole is 0 to ±0.002 on both skies (the imposed n(z)), a − 1 is the model's
+(rms 0.0070 ph202, 0.0058 ph201), and the slope of g − 1 on a − 1 is 1.03 ± 0.36 (ph201) and 0.22 ± 0.22 (ph202),
+errors scaled by the scatter of g about the line (χ² 320 and 209 for 14 d.o.f.: g − 1 scatters by 0.6–0.9 % per
+82 Mpc/h shell against 0.16 % of noise, the shell-to-shell bias the refits see). ph201 subsamples; ph202 is 1.9σ from
+it. Where the fluctuations do not follow, the ngbars add ±0.7 % of amplitude from shell to shell, which is the larger
+refit gain above; its cell-weighted mean is 2·10⁻⁴ on both skies, so the amplitude, and `sigma8` with it, does not
+move. The radial monopole they remove is worth χ² −755.
 
 *`Omega_m`: the field's own band power predicts the free-IC posterior* (`logs/gxy_ph202/mixing/rand_ic_proxy.py`).
 The survey pseudo-power estimator above, on the two prior fields of the random-IC closures (regenerated from their
@@ -3324,7 +3548,7 @@ CPU job 61978389; ph201 with the same model, `logs/b1_curv/cfg_ph201_fog_slope_c
 0.2161 on ph202. The production configs start there (§5). The true-IC test at that minimum (`validate_galaxy_from_ic.py
 --n_shells 6`, CPU job 61978704; the paper's `fig:gxy_ic`, `figures/galaxy_ic_test/fig_gxy_ic.png`): over all cells
 the transfer is 0.997–1.005 at k 0.01–0.063 and the whitened residual 0.80–0.87; per shell of χ the transfer is
-0.996–1.010 at k 0.01–0.063 (0.978–1.012 with the power law), and the shell-by-shell refit of the biases gains Δχ²
+0.983–1.016 at k 0.01–0.063, and the shell-by-shell refit of the biases gains Δχ²
 31 / 3 / 11 / 6 / 104 / 24 (179) against 136 / 14 / 50 / 234 / 126 / 359 (919) without the curvature, χ²/cell 0.8166
 against 0.8192. The velocity factor with
 the damping: V0 0.980 ± 0.0075 (Δχ² −8.3, A 1.0069); a filter
@@ -3568,13 +3792,12 @@ the production step and path length before production runs):
    times narrower than their free-IC posterior and the chains still slid along `sigma8`–`b1`–`b2`–`bnpar`–`b3`
    at batch 39; the configs now take this run's widths and means (§5). `sigma8` is low by the RSD sector: the
    posterior keeps the density and weakens the RSD by 2–2.6 %, the fixed-field solution without the damping (V
-   0.956); with `gxy_fog` V is 0.980. V is the 2LPT velocity field: on the N-body matter from the same ICs
-   the redshift-space anisotropy falls below 2LPT's from k ≈ 0.02 (V 0.98 at 0.03–0.045, 0.96 at 0.045–0.063,
-   0.92 at 0.063–0.08; 0.99 / 0.975 / 0.95 with a damping term free), the large-scale velocity amplitude being
-   exact; the LRG host halos (0.7–1.5 % slower than the matter) and Abacus's growth rate (0.3 % lower) add to
-   it. The model keeps the 2LPT velocities: a velocity smoothing does not remove the damped V0 0.980 (§7.19),
-   whose `sigma8` shift is a limitation stated in the paper; a velocity transfer calibrated on N-body, or the
-   PM evolution of `nbody.py`, is a perspective. `Omega_m`: the field's own band power predicts free-IC closures to 0.0016, so +0.0054 of the +0.0099
+   0.956). With the damping, the curvature and the ngbars the fixed-field V0 is 0.9805 (ph202) and 0.991 (ph201)
+   with the field amplitude free, but 0.997 and 1.000 ± 0.005 with A held at 1, at Δχ² 3–8 (§7.19, *At the true
+   amplitude*): the model's velocities reproduce the galaxies' at the true amplitude, and V0 < 1 is the fixed-field
+   trade with A, not a velocity deficit (neither 2LPT's, which the damping takes on the matter, nor the host halos',
+   whose b_v is 1.000 at large scales, §7.19). 3LPT, an N-body velocity transfer, a `bfog` ∝ D^p and a few-step PM
+   are not needed. `Omega_m`: the field's own band power predicts free-IC closures to 0.0016, so +0.0054 of the +0.0099
    is the ph202 realisation. The initial scales beyond the 240³ cutoff (`T_uv`, the largest χ² gap at the true ICs)
    do not bias it: their effect is the bias renormalisation the counterterms take, and its `Omega_m` shift changes
    sign between two keys (+0.0046, −0.0041; §7.19); the first reading, one key, had taken it for the excess. The
@@ -3582,11 +3805,13 @@ the production step and path length before production runs):
    result only on two keys at least, its error their scatter, with the closure of each key at the realisation proxy
    first (§5). `b2` and `sigma8` above their closure with the damping (+0.11, +0.027) are one key too (key 11, whose
    closure sits at `sigma8` 0.837; key 12's at 0.811): they are read on the production run as well. The galaxies-alone ph202 run with the damping
-   runs with the curvature of `b₁(z)` (`b1_curv_free`, §2.4; job 61979418, submitted 2026-11-25; job 61858820, without it, cancelled).
-   Expected before it runs: the realisation proxy (`Omega_m` 0.3206, `sigma8` 0.8175) plus the P+B Fisher shifts of
-   the known model errors (V 0.98 against the damped model with the curvature free, which takes the b(z) hump,
-   `logs/bispec_fisher/curv_gn_total_curv.log`: `Omega_m` −0.0001, `sigma8` −0.015), i.e. `Omega_m` ≈ 0.3205, `sigma8`
-   ≈ 0.802 within the run's widths (0.0045, 0.019); a clear departure is a model error not in that budget. The joint
+   runs with the curvature of `b₁(z)` (`b1_curv_free`, §2.4) and, since 2026-11-27, the free ngbars
+   (`gxy_ngbar_free`): the mock's n(z) is imposed, its galaxies lack the radial monopole of their sky, which the model
+   without them predicts (§7.19, χ² −755 / −618 at the true ICs); job 61979418 (without them) is cancelled; job 62110210 (18 h) is submitted, the true-IC tests with the ngbars passed (§7.19, *The
+   true-IC tests with the ngbars*). Expected
+   before it runs: the realisation proxy (`Omega_m` 0.3206, `sigma8` 0.8175) plus the P+B Fisher shift of the b(z)
+   hump left by the curvature (`sigma8` −0.003, `Omega_m` +0.0004), within the run's widths (0.0045, 0.019); a clear
+   departure is a model error not in that budget. The joint
    config (`abacus/abacus_joint_so_cosmo_box5000_m100_ph202.yaml`) has the same galaxy model (`gxy_fog`,
    `b2_slope_free`, `b1_curv_free` and the same starts and units of the biases).
    Not pursued at mesh 100: the noise level in the linear spectrum (a 1 % error moves `sigma8` by −0.0002), the
@@ -3595,7 +3820,8 @@ the production step and path length before production runs):
    the n = 7 of order 2, −1.2 % for the n = 16 of order 3 at the Fisher width) is a fraction of σ; sampling
    `b_n·sigma8ⁿ` with a prior on it removes it (`b1_sigma8` keeps the prior on `b1`, §5). Beyond mesh 100 is a perspective, not a step before the
    paper (the paper's galaxies stay at mesh 100): the initial modes the 240³ field does not hold
-   (`T_uv`, the largest gap at mesh 160, §7.19) ask for a larger init grid after a memory bench, and a
+   (`T_uv`, the largest gap at mesh 160, §7.19) ask for a larger init grid after a memory bench, the true-IC
+   amplitude minimum at mesh 160 (A 1.0069 ± 0.0008 against 1.0019 ± 0.0021 at mesh 100, §7.19) is understood first, and a
    non-Gaussian noise (montecosmo's `quad_gauss` skewness, the noise field of arXiv:2511.05484) for the
    lower counts per cell; the Fisher joint σ(`sigma8`) is 0.0044 at mesh 100 and 0.0038 at mesh 160
    (σ(`Omega_m`) 0.0031 and 0.0017), against 0.0108 (0.0094) at mesh 54 with nside 32.
@@ -3648,8 +3874,52 @@ the production step and path length before production runs):
    `logs/arnaud_fs/read_fs.py`, figure `figures/fs_comparison/fs_vs_fieldlevel_omegam_sigma8.png`; `sigma8` × 1.00427 to
    ours): k_max 0.2, ph201 `Omega_m` 0.3137 ± 0.0058, `sigma8` 0.832 ± 0.017, ph202 0.3327 ± 0.0063 (+2.8σ, best fit
    0.3335), 0.833 ± 0.016; k_max 0.06, ph201 0.306 ± 0.014, 0.779 ± 0.046, ph202 0.313 ± 0.014, 0.770 ± 0.044. The ph202
-   sky pulls `Omega_m` up in the two-point analysis too. Asked: k_max 0.08 (the sphere with the final cube's number of
-   modes, k_N (6/π)^{1/3}), 0.10, 0.12, and a lower k_min. Still to settle: the bias, counterterm and noise parameters
+   sky pulls `Omega_m` up in the two-point analysis too. Second set (2026-11-27), the same fits with the shot noise
+   free and with it fixed (`sn0`); post-burn samples of every fit (`Omega_m`, total `sigma8`, thinned 4×) in
+   `figures/fs_comparison/arnaud_fs_samples.npz`, R̂ between his four chains ≤ 1.005; `sigma8` here in our convention:
+
+| fit (folder suffix ph201 / ph202) | ph201 `Omega_m` | ph201 `sigma8` | ph202 `Omega_m` | ph202 `sigma8` |
+| --- | --- | --- | --- | --- |
+| k_max 0.06, noise free (`614effb7` / `0f6015c0`) | 0.306 ± 0.014 | 0.779 ± 0.046 | 0.313 ± 0.014 | 0.770 ± 0.044 |
+| k_max 0.06, noise fixed (`034ee842` / `db748dca`) | 0.310 ± 0.013 | 0.765 ± 0.039 | 0.314 ± 0.013 | 0.763 ± 0.040 |
+| k_max 0.1, noise free (`4dcad479` / `bc104de5`) | 0.3141 ± 0.0107 | 0.811 ± 0.024 | 0.3280 ± 0.0125 | 0.819 ± 0.025 |
+| k_max 0.1, noise fixed (`d5281a4b` / `d9aadee9`) | 0.3218 ± 0.0083 | 0.809 ± 0.023 | 0.3272 ± 0.0078 | 0.820 ± 0.022 |
+| k_max 0.2, noise free (`bbc8f6a3` / `bf260f6a`) | 0.3137 ± 0.0058 | 0.832 ± 0.017 | 0.3327 ± 0.0063 | 0.833 ± 0.016 |
+
+   Freeing the noise widens `Omega_m` by 1.1 (k_max 0.06) and 1.3–1.6 (k_max 0.1), `sigma8` by 1.1. k_max 0.08, 0.12
+   and a lower k_min were asked as well.
+
+   *Where the field-level model's `Omega_m` width comes from* (`logs/fs_fisher/fs_fisher.py`, CPU job 62096671). The
+   power-spectrum Fisher of the light cone, each choice switched from the field-level model's to his, alone and
+   all together: z(χ) moving with the cosmology or held (his redshifts are observed; neither has AP); one bias law
+   (`b1`, `b1_alpha`, β) or one amplitude per DESI bin; `bn2`, `bnpar`, `bfog` shared or per bin; noise fixed or
+   s0 (and s2 k²μ²) per bin; k_min the survey's fundamental mode (0.0016) or 0.02; the mesh-100 cube (k_N 0.063,
+   corners 0.109, 0.0020 (h/Mpc)³ of modes) or a sphere to 0.1 (0.0042, the cube's mode count at radius 0.078);
+   full μ dependence or P₀ + P₂:
+
+| case | σ(`Omega_m`) | σ(`sigma8`) |
+| --- | --- | --- |
+| field-level model | 0.0041 | 0.0215 |
+| + his k_min 0.02 | 0.0058 | 0.0232 |
+| + his sphere k ≤ 0.1 | 0.0039 | 0.0176 |
+| + his bias per bin / counterterms per bin / P₀ + P₂ / z(χ) held / noise s0 + s2 per bin | 0.0040–0.0042 | 0.0214–0.0228 |
+| his choices, k_max 0.1, noise fixed | 0.0057 | 0.0201 |
+| his choices, k_max 0.1, noise free | 0.0059 | 0.0221 |
+| his choices, k_max 0.06, noise fixed / free | 0.0078 / 0.0086 | 0.039 / 0.044 |
+| his choices with k_min the fundamental mode | 0.0040 | 0.0188 |
+
+   The scales k < 0.02 carry the difference: they take σ(`Omega_m`) from 0.0058 to 0.0041; the single bias law,
+   the shared counterterms and the full μ dependence each change it by less than 5 %. On `sigma8` this Fisher
+   reproduces his chains (0.020–0.022 against 0.022–0.023 at k_max 0.1, 0.039 against 0.039–0.040 at 0.06), on
+   `Omega_m` it is 1.4 (noise fixed) to 1.8–2.1 (noise free, k_max 0.1) times narrower than his chains: what his
+   fit frees beyond this tree-level model (one-loop terms with `b2`, `bs`, `b3` per bin, his priors) is not in
+   it. The galaxies-alone field-level run's σ(`Omega_m`) 0.0045 (`run_20261119_042045_61543513`) sits at this
+   Fisher's 0.0041, below its k_min-0.02 value. Against k_min (`logs/fs_fisher/kmin_scan.py`), σ(`Omega_m`) of the
+   field-level model's choices is 0.0041, 0.0041, 0.0043, 0.0049, 0.0058, 0.0101 at k_min 0.0016, 0.005, 0.01, 0.015,
+   0.02, 0.03 (his choices alike): the information is in 0.01 < k < 0.02 (about 6700 modes of the 5.7·10¹⁰ (Mpc/h)³
+   shell, cosmic-variance limited), none below 0.01. With h, ω_b, n_s fixed, `Omega_m` sets the turnover: d ln P /
+   d `Omega_m` at fixed `sigma8` is −8.8, −7.9, −7.1 at k 0.01, 0.015, 0.02 against −2.5, −1.3 at 0.08, 0.1. This
+   lever holds for both analyses only because h is fixed. Still to settle: the bias, counterterm and noise parameters
    and their priors against the field level's single evolving bias law. Protocol fixed before either analysis runs: the two-point
    analysis takes the full theory `C_ℓ^κκ(θ)` (the shells' part and `C_ℓ^out`, both times w_ℓ², both
    following the cosmology) with `N_ℓ` as its only fixed noise, as a standard analysis does; the field

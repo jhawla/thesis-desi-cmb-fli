@@ -1536,6 +1536,19 @@ class FieldLevelModel(Model):
         ngbars_padded = jnp.concatenate([jnp.asarray(ngbars), jnp.ones((1,), ngbars.dtype)])
         return ngbars_padded[sid]
 
+    def profile_ngbars(self, mean, obs):
+        """Predicted counts with the ngbars at their optimum for ``obs``: each radial shell of
+        ``gxy_shell_id`` rescaled to the data's total there (the tests at the true ICs, which do not
+        sample the ngbars). Identity unless ``gxy_ngbar_free``."""
+        if not self.gxy_ngbar_free or getattr(self, "gxy_shell_id", None) is None:
+            return mean
+        sid = jnp.asarray(self.gxy_shell_id)
+        n = int(self.n_gxy_shells)
+        idx = jnp.where(sid >= 0, sid, n).ravel()
+        tot_obs = jnp.bincount(idx, jnp.asarray(obs, mean.dtype).ravel(), length=n + 1)[:n]
+        tot_mean = jnp.bincount(idx, mean.ravel(), length=n + 1)[:n]
+        return mean * self._ngbar_alpha_field(tot_obs / tot_mean)
+
     def obs_to_delta(self, obs):
         """Galaxy overdensity from the observed counts mesh, zero outside the survey mask.
 

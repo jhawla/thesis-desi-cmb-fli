@@ -4,10 +4,10 @@
 The galaxy counterpart of `validate_kappa_from_ic.py`: the true ICs of the config's `abacus_ic` go
 through the forward model (LPT, light cone, Lagrangian bias, RSD, paint, selection) at the Abacus
 cosmology and the biases of the galaxy profile at A = 1 (`--profile`, output of
-`galaxy_likelihood_profile.py --mode amplitude`) or of its joint minimum (`--mode newton`: the last
-iterate's biases, third order, `bfog`, `b2_slope`, `b1_curv` included and held in the shell refits, with the field kept at the true ICs), and the predicted counts m are compared with the
+`galaxy_likelihood_profile.py --mode amplitude`) or of a `--mode newton` JSON (its `biases_A1`, solved
+with A held at 1, docs/pipeline.md 2.5; third order, `bfog`, `b2_slope`, `b1_curv` included and held in the shell refits, with the field kept at the true ICs), and the predicted counts m are compared with the
 Abacus counts d over the survey cells, per k band (to sqrt(3) k_N: the likelihood keeps the corner modes of the cube) and per radial
-shell. No sampling is involved.
+shell. No sampling is involved; with `gxy_ngbar_free` the ngbars are at their optimum (`FieldLevelModel.profile_ngbars`).
 
 Per shell and k band it reports the coherence r = P_dm / sqrt(P_dd P_mm), the transfer T = P_dm / P_mm
 and the power of the whitened residual (d − m)/sqrt(n̄S) (1 for a model exact up to the Poisson
@@ -127,19 +127,21 @@ def main():
     cosmo = get_cosmology(Omega_m=float(truth["Omega_m"]), sigma8=float(truth["sigma8"]))
     src = json.loads(args.profile.read_text())
     if src.get("mode") == "newton":
-        biases = {k: v for k, v in src["iterations"][-1]["theta"].items() if k != "A"}
+        biases = src["biases_A1"]
     else:
         biases = next(p for p in src["profile"] if p["value"] == 1.0)["biases"]
     names = [k for k in NAMES + ["b3", "bds2", "bs3", "bfog", "b2_slope", "b1_curv"] if k in biases]
     theta0 = np.array([biases[k] for k in names])
     print(f"data loaded in {time.time() - t0:.0f} s; biases {biases}", flush=True)
 
+    obs_c = jnp.asarray(obs)
+
     @jax.jit
     def predict(theta):
         f = model.evolve(
             (cosmo, dict(zip(names, theta, strict=True)), {"init_mesh": init_true}, {"fNL": 0.0})
         )
-        return model.gxy_count * band_limit(f["gxy_paint"] * selec_paint, model._sim_mesh)
+        return model.profile_ngbars(model.gxy_count * band_limit(f["gxy_paint"] * selec_paint, model._sim_mesh), obs_c)
 
     box, n = float(model.box_shape[0]), int(model.mesh_shape[0])
     x = (np.arange(n) + 0.5) * box / n - box / 2

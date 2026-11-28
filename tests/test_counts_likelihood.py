@@ -107,6 +107,27 @@ def test_ngbars_rescale_counts_and_shot_noise_together(model):
     np.testing.assert_allclose(np.asarray(fn.variance), expected_mean, rtol=1e-10)
 
 
+def test_profiled_ngbars_match_the_data_total_per_shell(model):
+    """The ngbars at their optimum rescale each radial shell to the data's total, and nothing else."""
+    shape = tuple(int(s) for s in model.mesh_shape)
+    rng = np.random.default_rng(1)
+    sid = np.full(shape, -1)
+    sid[:6], sid[6:12] = 0, 1
+    model.gxy_shell_id = jnp.asarray(sid, dtype=jnp.int32)
+    model.n_gxy_shells = 2
+    mean = jnp.asarray(rng.uniform(1.0, 2.0, shape))
+    obs = jnp.asarray(rng.uniform(1.0, 3.0, shape))
+    model.gxy_ngbar_free = False
+    np.testing.assert_array_equal(np.asarray(model.profile_ngbars(mean, obs)), np.asarray(mean))
+    model.gxy_ngbar_free = True
+    out = np.asarray(model.profile_ngbars(mean, obs))
+    for b in (0, 1):
+        np.testing.assert_allclose(out[sid == b].sum(), np.asarray(obs)[sid == b].sum(), rtol=1e-12)
+        ratio = out[sid == b] / np.asarray(mean)[sid == b]
+        np.testing.assert_allclose(ratio, ratio[0], rtol=1e-12)
+    np.testing.assert_array_equal(out[sid == -1], np.asarray(mean)[sid == -1])
+
+
 def test_the_selection_multiplies_at_paint_resolution():
     """The predicted total count is right at paint resolution and biased at final resolution.
 

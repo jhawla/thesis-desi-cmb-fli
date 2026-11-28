@@ -1,24 +1,21 @@
-"""How much of the CMB-lensing convergence the runs hold, against the depth of the line of sight.
+"""How much of the CMB-lensing convergence the runs hold, per multipole and against depth.
 
-Limber C_l^kk (non-linear P(k), the fiducial cosmology of a run config) from the observer to the
-CMB, split by comoving distance. The integrand depends on the bounds only through the integration
-range, so it is tabulated once on a fine chi grid and every range is a cumulative sum of it (checked
-against cmb_lensing.compute_theoretical_cl_kappa at start). Two figures, both over the likelihood's
-band l = 2 ... 2 nside:
+One figure, `lensing_budget.png` (and its `.npz`), over the likelihood's band l = 2 ... 2 nside:
 
-- lensing_fraction_vs_z.png: power fraction C_l(chi_a -> chi(z_max)) / C_l(0 -> chi_s) against
-  z_max, from the observer and from the model's chi_matter_min; red line at the model's box edge.
-- lensing_spectra_comparison.png: total C_l, what the model shells hold (before the per-shell
-  multipole cut, which moves part of it to the covariance), what the data map holds (Abacus or
-  closure), the matter beyond the box, the part in neither, N_l, and the out-of-model term C_l^out
-  of the likelihood as the model computes it (model.cl_out_cached: beyond the box, tent ramps and
-  per-shell cut, exact-over-Limber ratio and window w_l^2, linear ACE spectrum; docs/pipeline.md 3.2).
+- left: the observed variance per multipole, C_l of the data map (Limber, non-linear P(k), the
+  config's cosmology) plus N_l, split into the matter the model holds, the parts the out-of-model
+  term C_l^out holds (what the per-shell multipole cut removes, the end ramps of the shells, the matter
+  beyond the box) and the noise. The split of the signal comes from the kernels of the term
+  (`cmb_lensing.compute_cl_outside_model`, linear Limber on the model's spectrum, cross terms in
+  the part they are added with): the term with the cut, without it, and without the matter beyond the box.
+- right: power fraction C_l(chi_a -> chi(z_max)) / C_l(0 -> chi_s) against z_max (band: spread over
+  l) from the observer; markers at the box edge and at the end of the map's matter.
 
-The printed bands give, per band, (N_l + C_l^out) / (N_l + C_l^out + w_l^2 C_l^neither): the share of
-a real map's out-of-model variance (the matter in neither reaches it through the same window) that
-the runs' covariance holds.
+The Limber integrand depends on the bounds only through the integration range, so it is tabulated
+once on a fine chi grid and every range is a cumulative sum of it (checked against
+cmb_lensing.compute_theoretical_cl_kappa at start). Prints the shares per band.
 
-Usage: python scripts/plot_lensing_fraction.py [--config configs/inference/abacus/abacus_joint_so_cosmo_box5000.yaml]
+Usage: python scripts/plot_lensing_fraction.py [--config configs/inference/abacus/abacus_joint_so_cosmo_box5000_m100_ph202.yaml]
 """
 
 import argparse
@@ -33,11 +30,16 @@ import yaml
 
 from desi_cmb_fli import utils
 from desi_cmb_fli.bricks import get_cosmology
-from desi_cmb_fli.cmb_lensing import compute_theoretical_cl_kappa, lensing_kernel, nonlinear_power
+from desi_cmb_fli.cmb_lensing import (
+    compute_cl_outside_model,
+    compute_theoretical_cl_kappa,
+    lensing_kernel,
+    nonlinear_power,
+)
 from desi_cmb_fli.model import get_model_from_config
 
 ROOT = Path(__file__).resolve().parents[1]
-BLUE, AQUA, ORANGE, RED, GREY = "#2a78d6", "#1baf7a", "#eb6834", "#e34948", "#8a8984"
+BLUE, AQUA, ORANGE, RED, GREY, INK = "#2a78d6", "#1baf7a", "#eb6834", "#e34948", "#8a8984", "#1f1f1e"
 
 
 def limber_integrand(cosmo, ell, chi, chi_s):
@@ -95,7 +97,7 @@ def weighted(ell, x):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument(
-        "--config", default=str(ROOT / "configs/inference/abacus/abacus_joint_so_cosmo_box5000.yaml")
+        "--config", default=str(ROOT / "configs/inference/abacus/abacus_joint_so_cosmo_box5000_m100_ph202.yaml")
     )
     ap.add_argument("--out_dir", default=str(ROOT / "figures/lensing_fraction"))
     args = ap.parse_args()
@@ -117,110 +119,91 @@ def main():
 
     z_of_chi = lambda c: float(1 / jc.background.a_of_chi(cosmo, jnp.atleast_1d(c))[0] - 1)  # noqa: E731
     tot = los.cl(1.0, chi_s)
-    parts = {
-        "model shells": los.cl(g["chi_min"], g["chi_boundary"]),
-        "data map": los.cl(g["chi_map_min"], g["chi_high_z_max"]),
-        "beyond the box": los.cl(g["chi_boundary"], g["chi_high_z_max"]),
-        "in neither": los.cl(1.0, g["chi_map_min"]) + los.cl(g["chi_high_z_max"], chi_s),
-    }
-    sel = np.isin(np.asarray(model.ell_1d).astype(int), ell.astype(int))
-    cl_out = np.asarray(model.cl_out_cached)[sel]
-    window2 = np.asarray(model.cmb_los_window2)[sel]
+    c_map = los.cl(g["chi_map_min"], g["chi_high_z_max"])
     nell = None
     if g["nell_file"]:
         tab = np.loadtxt(g["nell_file"])
         nell = g["nell_scale"] * np.interp(ell, tab[:, 0], tab[:, 1])
 
-    bands = [(2, 4), (5, 10), (11, 20), (21, 36), (37, g["lmax"])]
-    print(f"Power fraction of C_l(0 -> chi_s), (2l+1)-weighted per band; data-map matter from chi = "
-          f"{g['chi_map_min']:g} to {g['chi_high_z_max']:g} Mpc/h:")
-    for lo, hi in bands:
-        m = (ell >= lo) & (ell <= hi)
-        row = "  ".join(f"{k} {weighted(ell[m], v[m]) / weighted(ell[m], tot[m]):.3f}" for k, v in parts.items())
-        extra = f"  model/data map {weighted(ell[m], parts['model shells'][m]) / weighted(ell[m], parts['data map'][m]):.3f}"
-        if nell is not None:
-            cov = weighted(ell[m], nell[m] + cl_out[m])
-            extra += f"  N_l {weighted(ell[m], nell[m]) / weighted(ell[m], tot[m]):.2f}"
-            extra += f"  C_out {weighted(ell[m], cl_out[m]) / weighted(ell[m], tot[m]):.3f}"
-            extra += (f"  (N_l + C_out) / (N_l + C_out + w^2 neither) "
-                      f"{cov / (cov + weighted(ell[m], window2[m] * parts['in neither'][m])):.2f}")
-        print(f"  l {lo}-{hi}: {row}{extra}")
+    # Shares of the data map's signal, from the kernels of the out-of-model term (linear Limber,
+    # the model's spectrum): map W (no shell held), left out with the per-shell cut (the term), left
+    # out without the cut, and the same without the matter beyond the box.
+    sh = dict(model.cmb_shells)
+    li = ell.astype(int)
 
-    # ---- fraction vs depth -------------------------------------------------------------------
+    def left(taper, chi_max):
+        return np.asarray(compute_cl_outside_model(cosmo, li, **{**sh, "taper": taper}, chi_max=chi_max))
+
+    lin_map = left(np.zeros_like(np.asarray(sh["taper"])), g["chi_high_z_max"])
+    lin_out = left(sh["taper"], g["chi_high_z_max"])
+    lin_uncut = left(None, g["chi_high_z_max"])
+    lin_ends = left(None, 0.0)
+    shares = {
+        "held by the model": 1 - lin_out / lin_map,
+        "per-shell cut": (lin_out - lin_uncut) / lin_map,
+        "shell ends": lin_ends / lin_map,
+        "beyond the box": (lin_uncut - lin_ends) / lin_map,
+    }
+    var = c_map + (nell if nell is not None else 0.0)
+    frac = {k: v * c_map / var for k, v in shares.items()}
+    if nell is not None:
+        frac["noise $N_\\ell$"] = nell / var
+
+    bands = [(2, 10), (11, 64), (65, 128), (129, 192), (193, g["lmax"])]
+    print("Share of the data map's signal, (2l+1)-weighted per band (linear Limber kernels); then of the"
+          " observed variance C_map + N_l:")
+    for lo, hi in bands + [(2, g["lmax"])]:
+        m = (ell >= lo) & (ell <= hi)
+        sig = "  ".join(f"{k} {weighted(ell[m], v[m] * c_map[m]) / weighted(ell[m], c_map[m]):.3f}"
+                        for k, v in shares.items())
+        obs = "  ".join(f"{k} {weighted(ell[m], v[m] * var[m]) / weighted(ell[m], var[m]):.3f}"
+                        for k, v in frac.items())
+        print(f"  l {lo}-{hi}: signal: {sig}\n           observed: {obs}")
+    f_full = weighted(ell, los.cl(g["chi_min"], g["chi_boundary"])) / weighted(ell, tot)
+    f_map = weighted(ell, c_map) / weighted(ell, tot)
+    chi_of_z = lambda z: float(jc.background.radial_comoving_distance(cosmo, jnp.atleast_1d(1 / (1 + z)))[0])  # noqa: E731
+    f_obs_box = weighted(ell, los.cl(1.0, g["chi_boundary"])) / weighted(ell, tot)
+    f_lrg = (weighted(ell, los.cl(*map(chi_of_z, g["z_gxy"]))) / weighted(ell, tot)) if g["z_gxy"] else np.nan
+    print(f"Of the full lensing power (observer to CMB), l 2-{g['lmax']}: the box's matter "
+          f"{f_full:.3f} (from the observer {f_obs_box:.3f}), the data map's {f_map:.3f}, the LRG range {f_lrg:.3f}")
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.0))
+    ax = axes[0]
+    colors = {"held by the model": BLUE, "per-shell cut": ORANGE, "shell ends": "#f2b38f",
+              "beyond the box": RED, "noise $N_\\ell$": "0.82"}
+    ax.stackplot(ell, *frac.values(), colors=[colors[k] for k in frac], labels=list(frac), lw=0)
+    ax.set_xscale("log")
+    ax.set(xlim=(2, g["lmax"]), ylim=(0, 1), xlabel=r"$\ell$",
+           ylabel=r"share of $C_\ell^{\rm map} + N_\ell$")
+    h, lab = ax.get_legend_handles_labels()
+    ax.legend(h[::-1], lab[::-1], loc="lower left", fontsize=8, frameon=True, framealpha=0.85)
+
+    ax = axes[1]
     z_max = np.linspace(0.05, 5.0, 100)
     chi_max = np.asarray(jc.background.radial_comoving_distance(cosmo, jnp.asarray(1 / (1 + z_max))))
-    z_min_model, z_box = z_of_chi(g["chi_min"]), z_of_chi(g["chi_boundary"])
-
-    def curve(chi_a):
-        frac = np.array([los.cl(chi_a, c) / tot if c > chi_a else np.zeros_like(tot) for c in chi_max])
-        mean = np.array([weighted(ell, f * tot) / weighted(ell, tot) for f in frac])
-        return mean, frac.min(axis=1), frac.max(axis=1)
-
-    fig, ax = plt.subplots(figsize=(8, 5))
     if g["z_gxy"]:
-        ax.axvspan(*g["z_gxy"], color=GREY, alpha=0.15, lw=0)
-        ax.text(np.mean(g["z_gxy"]), 1.02, "LRG shell", ha="center", va="bottom", fontsize=9, color="0.3")
-    for chi_a, color, ls, label in (
-        (1.0, BLUE, "-", r"matter from the observer to $z_\mathrm{max}$"),
-        (g["chi_min"], AQUA, "--",
-         rf"matter from {g['chi_min']:.0f} Mpc/$h$ (where the map starts) to $z_\mathrm{{max}}$ (model)"),
-    ):
-        mean, lo, hi = curve(chi_a)
-        ok = chi_max > chi_a
-        ax.plot(z_max[ok], mean[ok], color=color, ls=ls, lw=2, label=label)
-        ax.fill_between(z_max[ok], lo[ok], hi[ok], color=color, alpha=0.15, lw=0)
-    f_model = weighted(ell, parts["model shells"]) / weighted(ell, tot)
-    ax.axvline(z_box, color=RED, ls="--", lw=1.5,
-               label=rf"box edge of the runs, $\chi$ = {g['chi_boundary']:.0f} Mpc/$h$ ($z$ = {z_box:.2f})")
-    ax.plot([z_box], [f_model], "o", color=RED, ms=7)
-    ax.annotate(f"model holds {f_model:.0%}", (z_box, f_model), xytext=(10, -14),
-                textcoords="offset points", fontsize=9, color="0.15")
-    f_map = weighted(ell, parts["data map"]) / weighted(ell, tot)
-    z_map = z_of_chi(g["chi_high_z_max"])
-    ax.plot([z_map], [f_map], "s", color=AQUA, ms=7, mec="k", mew=0.6)
-    ax.annotate(f"{g['data']} holds {f_map:.0%}", (z_map, f_map), xytext=(10, 6),
-                textcoords="offset points", fontsize=9, color="0.15")
-    ax.axvline(z_min_model, color=GREY, ls=":", lw=1)
-    ax.text(z_min_model, 0.02, r" map start", fontsize=9, color="0.3", ha="left")
-    ax.axhline(1.0, color="0.5", ls=":", lw=1)
-    ax.set_xlim(0, z_max[-1])
-    ax.set_ylim(0, 1.08)
-    ax.set_xlabel(r"depth of the integration $z_\mathrm{max}$")
-    ax.set_ylabel(r"fraction of the full CMB-lensing power $C_\ell^{\kappa\kappa}(0 \to \chi_s)$")
-    ax.set_title(rf"CMB-lensing power captured, $\ell$ = 2–{g['lmax']} (band: spread over $\ell$)")
+        ax.axvspan(*g["z_gxy"], color=GREY, alpha=0.15, lw=0, label="LRGs")
+    fr = np.array([los.cl(1.0, c) / tot for c in chi_max])
+    mean = np.array([weighted(ell, f * tot) / weighted(ell, tot) for f in fr])
+    ax.plot(z_max, mean, color=BLUE, lw=2, label="matter to $z_{\\rm max}$")
+    ax.fill_between(z_max, fr.min(axis=1), fr.max(axis=1), color=BLUE, alpha=0.12, lw=0)
+    z_box, z_map = z_of_chi(g["chi_boundary"]), z_of_chi(g["chi_high_z_max"])
+    ax.axvline(z_box, color=RED, ls="--", lw=1.4, label=f"box edge ({f_full:.0%})")
+    ax.axvline(z_map, color=INK, ls="--", lw=1.4, label=f"end of the map ({f_map:.0%})")
+    ax.set(xlim=(0, z_max[-1]), ylim=(0, 1), xlabel=r"depth $z_{\rm max}$",
+           ylabel=r"share of $C_\ell^{\kappa\kappa}$ (observer to CMB)")
     ax.grid(alpha=0.25)
-    ax.legend(loc="lower right", fontsize=9)
+    ax.legend(loc="lower right", fontsize=8)
+    for a in axes:
+        a.tick_params(labelsize=9)
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
-    fig.savefig(out / "lensing_fraction_vs_z.png", dpi=150)
+    fig.savefig(out / "lensing_budget.png", dpi=200)
     plt.close(fig)
-
-    # ---- spectra -----------------------------------------------------------------------------
-    fig, ax = plt.subplots(figsize=(11, 5))
-    ax.loglog(ell, tot, color="k", lw=2, label=r"total, observer $\to$ CMB")
-    ax.loglog(ell, parts["model shells"], color=BLUE, lw=2,
-              label=rf"model shells, {g['chi_min']:.0f}–{g['chi_boundary']:.0f} Mpc/$h$")
-    ax.loglog(ell, parts["data map"], color=AQUA, ls="--", lw=2,
-              label=rf"{g['data']}, {g['chi_map_min']:.1f}–{g['chi_high_z_max']:.0f} Mpc/$h$")
-    ax.loglog(ell, parts["beyond the box"], color=ORANGE, ls=":", lw=1.5,
-              label=rf"beyond the box, {g['chi_boundary']:.0f}–{g['chi_high_z_max']:.0f} Mpc/$h$")
-    ax.loglog(ell, cl_out, color=ORANGE, ls="-.", lw=2,
-              label=r"out-of-model term of the likelihood, $w_\ell^2 C_\ell^\mathrm{out}$ (model)")
-    ax.loglog(ell, parts["in neither"], color=RED, ls=":", lw=2, label=f"in neither (absent from the {g['data']})")
-    if nell is not None:
-        ax.loglog(ell, nell, color=GREY, lw=1.5,
-                  label=rf"$N_\ell$ ({Path(g['nell_file']).stem} $\times${g['nell_scale']:g})")
-    ax.set_xlabel(r"$\ell$")
-    ax.set_ylabel(r"$C_\ell^{\kappa\kappa}$ (Limber, non-linear $P$; $C_\ell^\mathrm{out}$: the model's)")
-    ax.set_title("What each part of the line of sight contributes")
-    ax.grid(alpha=0.25, which="both")
-    ax.legend(fontsize=8, loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=False)
-    fig.tight_layout()
-    fig.savefig(out / "lensing_spectra_comparison.png", dpi=150)
-    plt.close(fig)
-    print(f"Saved {out / 'lensing_fraction_vs_z.png'} and {out / 'lensing_spectra_comparison.png'}")
-
+    np.savez(out / "lensing_budget.npz", ell=ell, c_map=c_map, nell=np.zeros_like(ell) if nell is None else nell,
+             tot=tot, **{k.split(" $")[0].replace(" ", "_"): v for k, v in frac.items()})
+    print(f"Saved {out / 'lensing_budget.png'} and .npz")
 
 if __name__ == "__main__":
     main()

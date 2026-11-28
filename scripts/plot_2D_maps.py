@@ -77,7 +77,6 @@ def _project_masked_healpix(kappa_mask, cmb_mask, cmb_nside, xsize=1200):
 
     full_map = np.full(hp.nside2npix(cmb_nside), hp.UNSEEN, dtype=float)
     full_map[np.asarray(cmb_mask, dtype=bool)] = np.asarray(kappa_mask, dtype=float)
-    # Remplacer cartview par mollview
     proj = hp.mollview(full_map, return_projected_map=True, xsize=xsize)
     plt.close()
     proj = np.asarray(proj, dtype=float)
@@ -90,7 +89,6 @@ def _project_full_healpix(kappa_full, cmb_mask=None, xsize=1200):
     full_map = np.asarray(kappa_full, dtype=float).copy()
     if cmb_mask is not None and full_map.size == np.asarray(cmb_mask).size:
         full_map[~np.asarray(cmb_mask, dtype=bool)] = hp.UNSEEN
-    # Remplacer cartview par mollview
     proj = hp.mollview(full_map, return_projected_map=True, xsize=xsize)
     plt.close()
     proj = np.asarray(proj, dtype=float)
@@ -262,8 +260,7 @@ def main():
             obs_extent = [180, -180, -90, 90]
             obs_xlabel = "lon [deg]"
             obs_ylabel = "lat [deg]"
-        obs_title = ("κ observed (Abacus + $N_\\ell$ noise)" if observation_mode == "abacus"
-                     else "κ observed (pred + noise)")
+        obs_title = "observed κ (map + noise)"
         panels.append((obs_arr, obs_title, "RdBu_r", "κ", obs_extent, obs_xlabel, obs_ylabel))
 
     if cmb_enabled and kappa_pred is not None:
@@ -279,8 +276,7 @@ def main():
             pred_extent = [180, -180, -90, 90]
             pred_xlabel = "lon [deg]"
             pred_ylabel = "lat [deg]"
-        pred_title = ("κ Abacus (noiseless)" if observation_mode == "abacus"
-                      else "κ predicted (noiseless)")
+        pred_title = "noiseless κ"
         panels.append((pred_arr, pred_title, "RdBu_r", "κ", pred_extent, pred_xlabel, pred_ylabel))
 
     if galaxies_enabled and obs_field is not None:
@@ -297,13 +293,13 @@ def main():
             chi_max=float(getattr(model, "chi_boundary", np.linalg.norm(model.box_shape))),
         )
 
-        gxy_proj = _project_masked_healpix(gxy_proj_mask, model.cmb_mask, model.cmb_nside)
-
-        gxy_title = ("Galaxy density projected (Abacus LRG)" if observation_mode == "abacus"
-                     else "Galaxy density (projected)")
+        gxy_proj_mask = np.asarray(gxy_proj_mask, dtype=float)
+        gxy_proj = _project_masked_healpix(gxy_proj_mask / gxy_proj_mask.mean() - 1.0, model.cmb_mask,
+                                           model.cmb_nside)
 
         extent = [180, -180, -90, 90]
-        panels.append((gxy_proj, gxy_title, "viridis", "N (projected)", extent, "lon [deg]", "lat [deg]"))
+        panels.append((gxy_proj, "projected galaxy counts", "RdBu_r", r"$N/\bar N - 1$", extent,
+                       "lon [deg]", "lat [deg]"))
 
     if not panels:
         print("No panels to plot (check cmb_enabled and galaxies_enabled).")
@@ -339,8 +335,8 @@ def main():
             + (f" | Diagnostic FOV: {field_size:.1f}° | {npix}×{npix} pix" if galaxies_enabled else "")
             + (f" | HEALPix nside={model.cmb_nside}" if cmb_enabled else "")
             + f" | seed={seed}")
-    fig.suptitle(info, fontsize=9, y=0.02)
-    plt.tight_layout(rect=[0, 0.04, 1, 1])
+    print(info)
+    plt.tight_layout()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     outfile = output_dir / f"2D_maps_{timestamp}.png"

@@ -89,8 +89,9 @@ reconstruction figures), `compare_runs.py` / `compare_reconstruction.py` (overla
 - **The galaxy likelihood is on counts, not `1+δ`** (§3.1), and the selection multiplies at *paint*
   resolution. Runs predating that refactor store overdensity and are neither resumable nor
   comparable with current ones.
-- **Cosmology is inferable but fixed by default** (`mcmc.fixed_params: [Omega_m, sigma8]`,
-  `cl_out_mode: fixed`) so the constraint concentrates on PNG.
+- **Cosmology is fixed in the reference config** (`mcmc.fixed_params: [Omega_m, sigma8]`), inferred
+  in the `*_cosmo_*` production configs; every κ run uses `cl_out_mode: exact` (the out-of-model
+  term follows the sampled cosmology; `fixed` only for `pixel_exact`).
 - **`png_type`**: use `fNL` (universality). `fNL_bias` frees the PNG amplitudes and is not
   identifiable — it is bimodal in the sign of a quadratic PNG combination.
 - Upstream pins matter: `jax<0.10`, a forked `jax_cosmo`, a pinned commit of `JaxPM` (its former `41-spherical-lensing` branch, deleted upstream), a pinned `jax-healpy`

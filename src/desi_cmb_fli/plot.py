@@ -256,11 +256,10 @@ def plot_trans(ks, trans, *args, log=False, fill=None, **kwargs):
             plt.xscale("log"), plt.yscale("log")
     else:
         if fill is None:
-            out = plt.semilogy(ks, trans, *args, **kwargs)
+            out = plt.plot(ks, trans, *args, **kwargs)
         else:
             scis = credint(trans, fill, axis=0)
             out = plt.fill_between(ks[0], *scis.T, *args, alpha=(1 - fill) ** 0.5, **kwargs)
-            plt.yscale("log")
     plt.xlabel("$k$ [$h$/Mpc]"), plt.ylabel("transfer")
     return out
 
@@ -275,11 +274,10 @@ def plot_coh(ks, coh, *args, log=False, fill=None, **kwargs):
             plt.xscale("log"), plt.yscale("log")
     else:
         if fill is None:
-            out = plt.semilogy(ks, coh, *args, **kwargs)
+            out = plt.plot(ks, coh, *args, **kwargs)
         else:
             scis = credint(coh, fill, axis=0)
             out = plt.fill_between(ks[0], *scis.T, *args, alpha=(1 - fill) ** 0.5, **kwargs)
-            plt.yscale("log")
     plt.xlabel("$k$ [$h$/Mpc]"), plt.ylabel("coherence")
     return out
 
